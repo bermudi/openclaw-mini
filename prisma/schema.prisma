@@ -1,0 +1,131 @@
+// OpenClaw Agent Runtime - Database Schema
+// Event-driven AI agent runtime with persistent storage
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Agent - AI agent instance
+model Agent {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  status      String   @default("idle") // idle, busy, error, disabled
+  skills      String   @default("[]") // JSON array of skill names
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  tasks       Task[]
+  memories    Memory[]
+  sessions    Session[]
+  triggers    Trigger[]
+  
+  @@map("agents")
+}
+
+// Session - Communication channel context
+model Session {
+  id          String   @id @default(cuid())
+  agentId     String
+  channel     String   // slack, whatsapp, telegram, imessage, webhook, internal
+  channelKey  String   // unique identifier for the channel (e.g., chat_id, phone number)
+  context     String   @default("{}") // JSON context data
+  lastActive  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  tasks       Task[]
+  
+  @@unique([channel, channelKey])
+  @@map("sessions")
+}
+
+// Task - Queued task for agent execution
+model Task {
+  id          String   @id @default(cuid())
+  agentId     String
+  sessionId   String?
+  type        String   // message, heartbeat, cron, webhook, hook, a2a
+  priority    Int      @default(5) // 1-10, lower = higher priority
+  status      String   @default("pending") // pending, processing, completed, failed
+  payload     String   @default("{}") // JSON task data
+  result      String?  // JSON result data
+  error       String?
+  source      String?  // origin of the task
+  createdAt   DateTime @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  
+  agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  session     Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  
+  @@index([status, priority, createdAt])
+  @@map("tasks")
+}
+
+// Trigger - Scheduled or event-based triggers
+model Trigger {
+  id          String   @id @default(cuid())
+  agentId     String
+  name        String
+  type        String   // heartbeat, cron, webhook, hook
+  config      String   @default("{}") // JSON configuration
+  enabled     Boolean  @default(true)
+  lastTriggered DateTime?
+  nextTrigger   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  
+  @@map("triggers")
+}
+
+// Memory - Persistent storage entries
+model Memory {
+  id          String   @id @default(cuid())
+  agentId     String
+  key         String   // memory key (e.g., "preferences", "context", "history")
+  value       String   // Markdown content
+  category    String   @default("general") // general, preferences, history, context
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  
+  @@unique([agentId, key])
+  @@map("memories")
+}
+
+// WebhookLog - Track incoming webhooks
+model WebhookLog {
+  id          String   @id @default(cuid())
+  source      String   // github, jira, custom, etc.
+  payload     String   // JSON payload
+  processed   Boolean  @default(false)
+  taskId      String?  // Created task ID if processed
+  createdAt   DateTime @default(now())
+  
+  @@map("webhook_logs")
+}
+
+// AuditLog - Security audit trail
+model AuditLog {
+  id          String   @id @default(cuid())
+  action      String   // task_created, task_completed, agent_action, etc.
+  entityType  String   // agent, task, trigger, memory
+  entityId    String
+  details     String   @default("{}") // JSON details
+  severity    String   @default("info") // info, warning, error, critical
+  createdAt   DateTime @default(now())
+  
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
