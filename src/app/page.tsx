@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -47,6 +47,10 @@ import {
   AlertCircle,
   CheckCircle2,
   Loader2,
+  Shield,
+  Wrench,
+  Radio,
+  Terminal,
 } from 'lucide-react';
 
 // Types
@@ -100,6 +104,29 @@ interface Stats {
   total: number;
 }
 
+interface AuditLog {
+  id: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  details: Record<string, unknown>;
+  severity: string;
+  createdAt: string;
+}
+
+interface Tool {
+  name: string;
+  description: string;
+  parameters: Array<{ name: string; type: string; description: string; required: boolean }>;
+  riskLevel: string;
+}
+
+interface WSEvent {
+  type: string;
+  data: Record<string, unknown>;
+  timestamp: string;
+}
+
 // Status badge component
 function StatusBadge({ status }: { status: string }) {
   const variants: Record<string, { color: string; icon: React.ReactNode }> = {
@@ -123,6 +150,22 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+// Severity badge component
+function SeverityBadge({ severity }: { severity: string }) {
+  const colors: Record<string, string> = {
+    info: 'bg-blue-500',
+    warning: 'bg-yellow-500',
+    error: 'bg-red-500',
+    critical: 'bg-red-700',
+  };
+
+  return (
+    <Badge variant="secondary" className={`${colors[severity] || 'bg-gray-500'} text-white`}>
+      {severity}
+    </Badge>
+  );
+}
+
 // Task type icon
 function TaskTypeIcon({ type }: { type: string }) {
   const icons: Record<string, React.ReactNode> = {
@@ -141,15 +184,22 @@ export default function OpenClawDashboard() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [triggers, setTriggers] = useState<Trigger[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [tools, setTools] = useState<Tool[]>([]);
   const [stats, setStats] = useState<Stats>({ pending: 0, processing: 0, completed: 0, failed: 0, total: 0 });
   const [loading, setLoading] = useState(true);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [activeTab, setActiveTab] = useState('agents');
+  const [wsEvents, setWsEvents] = useState<WSEvent[]>([]);
+  const [wsConnected, setWsConnected] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
 
   // Dialog states
   const [createAgentOpen, setCreateAgentOpen] = useState(false);
   const [createTriggerOpen, setCreateTriggerOpen] = useState(false);
   const [sendMessageOpen, setSendMessageOpen] = useState(false);
+  const [testToolOpen, setTestToolOpen] = useState(false);
+  const [selectedTool, setSelectedTool] = useState<Tool | null>(null);
 
   // Form states
   const [newAgentName, setNewAgentName] = useState('');
@@ -158,21 +208,29 @@ export default function OpenClawDashboard() {
   const [newTriggerName, setNewTriggerName] = useState('');
   const [newTriggerType, setNewTriggerType] = useState<'heartbeat' | 'cron' | 'webhook' | 'hook'>('heartbeat');
   const [newTriggerInterval, setNewTriggerInterval] = useState('30');
+  const [newTriggerCron, setNewTriggerCron] = useState('0 9 * * *');
+  const [newTriggerSecret, setNewTriggerSecret] = useState('');
   const [messageContent, setMessageContent] = useState('');
   const [messageChannel, setMessageChannel] = useState('slack');
+  const [toolParams, setToolParams] = useState('{}');
+  const [toolResult, setToolResult] = useState<string | null>(null);
 
   // Fetch data
   const fetchData = useCallback(async () => {
     try {
-      const [agentsRes, tasksRes, triggersRes] = await Promise.all([
+      const [agentsRes, tasksRes, triggersRes, auditRes, toolsRes] = await Promise.all([
         fetch('/api/agents'),
         fetch('/api/tasks'),
         fetch('/api/triggers'),
+        fetch('/api/audit?limit=50'),
+        fetch('/api/tools'),
       ]);
 
       const agentsData = await agentsRes.json();
       const tasksData = await tasksRes.json();
       const triggersData = await triggersRes.json();
+      const auditData = await auditRes.json();
+      const toolsData = await toolsRes.json();
 
       if (agentsData.success) setAgents(agentsData.data);
       if (tasksData.success) {
@@ -180,6 +238,8 @@ export default function OpenClawDashboard() {
         setStats(tasksData.stats);
       }
       if (triggersData.success) setTriggers(triggersData.data);
+      if (auditData.success) setAuditLogs(auditData.data);
+      if (toolsData.success) setTools(toolsData.data);
     } catch (error) {
       console.error('Failed to fetch data:', error);
     } finally {
@@ -187,9 +247,59 @@ export default function OpenClawDashboard() {
     }
   }, []);
 
+  // WebSocket connection
+  useEffect(() => {
+    const connectWS = () => {
+      try {
+        const ws = new WebSocket('ws://localhost:3003/socket.io/?EIO=4&transport=websocket');
+        
+        ws.onopen = () => {
+          setWsConnected(true);
+          // Subscribe to all events
+          ws.send(JSON.stringify({ type: 'subscribe:all' }));
+        };
+        
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type && data.data) {
+              setWsEvents(prev => [data, ...prev].slice(0, 100));
+              // Refresh data on relevant events
+              if (['task:created', 'task:completed', 'task:failed', 'agent:status'].includes(data.type)) {
+                fetchData();
+              }
+            }
+          } catch {
+            // Ignore parse errors
+          }
+        };
+        
+        ws.onclose = () => {
+          setWsConnected(false);
+          // Reconnect after 5 seconds
+          setTimeout(connectWS, 5000);
+        };
+        
+        ws.onerror = () => {
+          setWsConnected(false);
+        };
+        
+        wsRef.current = ws;
+      } catch {
+        setWsConnected(false);
+      }
+    };
+
+    connectWS();
+
+    return () => {
+      wsRef.current?.close();
+    };
+  }, [fetchData]);
+
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 5000);
+    const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -255,6 +365,10 @@ export default function OpenClawDashboard() {
       const config: Record<string, unknown> = {};
       if (newTriggerType === 'heartbeat') {
         config.interval = parseInt(newTriggerInterval);
+      } else if (newTriggerType === 'cron') {
+        config.cronExpression = newTriggerCron;
+      } else if (newTriggerType === 'webhook') {
+        config.secret = newTriggerSecret;
       }
 
       const res = await fetch('/api/triggers', {
@@ -271,6 +385,8 @@ export default function OpenClawDashboard() {
       if (res.ok) {
         setNewTriggerName('');
         setNewTriggerInterval('30');
+        setNewTriggerCron('0 9 * * *');
+        setNewTriggerSecret('');
         setCreateTriggerOpen(false);
         fetchData();
       }
@@ -343,6 +459,30 @@ export default function OpenClawDashboard() {
     }
   };
 
+  // Test tool
+  const handleTestTool = async () => {
+    if (!selectedTool) return;
+    setToolResult(null);
+
+    try {
+      let params = {};
+      if (toolParams.trim()) {
+        params = JSON.parse(toolParams);
+      }
+
+      const res = await fetch('/api/tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool: selectedTool.name, params }),
+      });
+
+      const data = await res.json();
+      setToolResult(JSON.stringify(data, null, 2));
+    } catch (error) {
+      setToolResult(`Error: ${error}`);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -367,6 +507,12 @@ export default function OpenClawDashboard() {
               </div>
             </div>
             <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+                <span className="text-xs text-muted-foreground">
+                  {wsConnected ? 'WS Connected' : 'WS Disconnected'}
+                </span>
+              </div>
               <Button variant="outline" size="sm" onClick={fetchData}>
                 <RefreshCw className="w-4 h-4 mr-2" />
                 Refresh
@@ -400,6 +546,12 @@ export default function OpenClawDashboard() {
               <span className="font-medium">{stats.failed}</span>
               <span className="text-muted-foreground">Failed</span>
             </div>
+            <Separator orientation="vertical" className="h-4" />
+            <div className="flex items-center gap-2">
+              <Wrench className="w-4 h-4 text-purple-500" />
+              <span className="font-medium">{tools.length}</span>
+              <span className="text-muted-foreground">Tools</span>
+            </div>
           </div>
         </div>
       </div>
@@ -419,6 +571,18 @@ export default function OpenClawDashboard() {
             <TabsTrigger value="triggers" className="gap-2">
               <Zap className="w-4 h-4" />
               Triggers
+            </TabsTrigger>
+            <TabsTrigger value="tools" className="gap-2">
+              <Wrench className="w-4 h-4" />
+              Tools
+            </TabsTrigger>
+            <TabsTrigger value="audit" className="gap-2">
+              <Shield className="w-4 h-4" />
+              Audit Log
+            </TabsTrigger>
+            <TabsTrigger value="events" className="gap-2">
+              <Radio className="w-4 h-4" />
+              Live Events
             </TabsTrigger>
           </TabsList>
 
@@ -468,6 +632,9 @@ export default function OpenClawDashboard() {
                         onChange={(e) => setNewAgentSkills(e.target.value)}
                         placeholder="e.g., research, writing, coding"
                       />
+                      <p className="text-xs text-muted-foreground">
+                        Available skills: research, writing, coding, communication, data, datetime, general
+                      </p>
                     </div>
                   </div>
                   <DialogFooter>
@@ -623,6 +790,11 @@ export default function OpenClawDashboard() {
                                     Result: {(task.result.response as string).substring(0, 200)}...
                                   </p>
                                 )}
+                                {task.result?.toolCalls && (
+                                  <p className="text-xs text-purple-500 mt-1">
+                                    Tools: {(task.result.toolCalls as Array<{ tool: string }>).map(t => t.tool).join(', ')}
+                                  </p>
+                                )}
                               </div>
                             </div>
                             {task.status === 'pending' && (
@@ -743,6 +915,32 @@ export default function OpenClawDashboard() {
                         />
                       </div>
                     )}
+                    {newTriggerType === 'cron' && (
+                      <div className="grid gap-2">
+                        <Label htmlFor="cron">Cron Expression</Label>
+                        <Input
+                          id="cron"
+                          value={newTriggerCron}
+                          onChange={(e) => setNewTriggerCron(e.target.value)}
+                          placeholder="0 9 * * *"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Example: "0 9 * * *" = Every day at 9:00 AM
+                        </p>
+                      </div>
+                    )}
+                    {newTriggerType === 'webhook' && (
+                      <div className="grid gap-2">
+                        <Label htmlFor="secret">Webhook Secret (optional)</Label>
+                        <Input
+                          id="secret"
+                          type="password"
+                          value={newTriggerSecret}
+                          onChange={(e) => setNewTriggerSecret(e.target.value)}
+                          placeholder="Secret for signature verification"
+                        />
+                      </div>
+                    )}
                   </div>
                   <DialogFooter>
                     <Button variant="outline" onClick={() => setCreateTriggerOpen(false)}>
@@ -792,6 +990,9 @@ export default function OpenClawDashboard() {
                                 {trigger.type === 'heartbeat' && trigger.config.interval && (
                                   <> • Every {trigger.config.interval} min</>
                                 )}
+                                {trigger.type === 'cron' && trigger.config.cronExpression && (
+                                  <> • {trigger.config.cronExpression}</>
+                                )}
                               </p>
                             </div>
                           </div>
@@ -821,6 +1022,163 @@ export default function OpenClawDashboard() {
               </div>
             )}
           </TabsContent>
+
+          {/* Tools Tab */}
+          <TabsContent value="tools">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Available Tools</h2>
+              <p className="text-sm text-muted-foreground">
+                Tools that agents can use to perform actions
+              </p>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {tools.map((tool) => (
+                <Card key={tool.name}>
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-sm font-mono">{tool.name}</CardTitle>
+                      <Badge 
+                        variant={tool.riskLevel === 'high' ? 'destructive' : tool.riskLevel === 'medium' ? 'secondary' : 'outline'}
+                        className="text-xs"
+                      >
+                        {tool.riskLevel}
+                      </Badge>
+                    </div>
+                    <CardDescription className="text-xs">{tool.description}</CardDescription>
+                  </CardHeader>
+                  <CardContent className="pb-3">
+                    {tool.parameters.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium">Parameters:</p>
+                        {tool.parameters.map((param) => (
+                          <div key={param.name} className="text-xs text-muted-foreground">
+                            <span className="font-mono">{param.name}</span>
+                            {param.required && <span className="text-red-500">*</span>}
+                            <span className="ml-1">({param.type})</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <Separator className="my-3" />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => {
+                        setSelectedTool(tool);
+                        setToolParams('{}');
+                        setToolResult(null);
+                        setTestToolOpen(true);
+                      }}
+                    >
+                      <Terminal className="w-4 h-4 mr-2" />
+                      Test Tool
+                    </Button>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </TabsContent>
+
+          {/* Audit Log Tab */}
+          <TabsContent value="audit">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Audit Log</h2>
+              <Badge variant="outline">{auditLogs.length} events</Badge>
+            </div>
+
+            {auditLogs.length === 0 ? (
+              <Card className="border-dashed">
+                <CardContent className="py-12 text-center">
+                  <Shield className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                  <h3 className="text-lg font-medium mb-2">No audit events</h3>
+                  <p className="text-muted-foreground">
+                    Events will be logged here as agents perform actions.
+                  </p>
+                </CardContent>
+              </Card>
+            ) : (
+              <Card>
+                <ScrollArea className="h-[600px]">
+                  <div className="divide-y">
+                    {auditLogs.map((log) => (
+                      <div key={log.id} className="p-4 hover:bg-muted/50">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="font-medium">{log.action}</span>
+                              <SeverityBadge severity={log.severity} />
+                            </div>
+                            <p className="text-sm text-muted-foreground">
+                              {log.entityType}: {log.entityId}
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {new Date(log.createdAt).toLocaleString()}
+                            </p>
+                            {Object.keys(log.details).length > 0 && (
+                              <pre className="text-xs text-muted-foreground mt-2 bg-muted p-2 rounded overflow-x-auto">
+                                {JSON.stringify(log.details, null, 2)}
+                              </pre>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </Card>
+            )}
+          </TabsContent>
+
+          {/* Live Events Tab */}
+          <TabsContent value="events">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Live Events</h2>
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+                <span className="text-sm text-muted-foreground">
+                  {wsConnected ? 'Connected' : 'Disconnected'}
+                </span>
+              </div>
+            </div>
+
+            {wsEvents.length === 0 ? (
+              <Card className="border-dashed">
+                <CardContent className="py-12 text-center">
+                  <Radio className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                  <h3 className="text-lg font-medium mb-2">No events yet</h3>
+                  <p className="text-muted-foreground">
+                    Real-time events will appear here as they occur.
+                  </p>
+                </CardContent>
+              </Card>
+            ) : (
+              <Card>
+                <ScrollArea className="h-[600px]">
+                  <div className="divide-y">
+                    {wsEvents.map((event, index) => (
+                      <div key={index} className="p-4 hover:bg-muted/50">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <Badge variant="secondary">{event.type}</Badge>
+                            </div>
+                            <pre className="text-xs text-muted-foreground bg-muted p-2 rounded overflow-x-auto">
+                              {JSON.stringify(event.data, null, 2)}
+                            </pre>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {new Date(event.timestamp).toLocaleString()}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </Card>
+            )}
+          </TabsContent>
         </Tabs>
       </main>
 
@@ -830,7 +1188,8 @@ export default function OpenClawDashboard() {
           <DialogHeader>
             <DialogTitle>Send Message to {selectedAgent?.name}</DialogTitle>
             <DialogDescription>
-              Send a test message to this agent to see how it responds.
+              Send a test message to this agent. You can use tools by including them in your message:
+              [TOOL: tool_name(param: value)]
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -854,7 +1213,7 @@ export default function OpenClawDashboard() {
                 id="message"
                 value={messageContent}
                 onChange={(e) => setMessageContent(e.target.value)}
-                placeholder="Type your message..."
+                placeholder="Type your message... (try: What time is it? [TOOL: get_datetime()])"
                 rows={4}
               />
             </div>
@@ -866,6 +1225,47 @@ export default function OpenClawDashboard() {
             <Button onClick={handleSendMessage} disabled={!messageContent.trim()}>
               <Send className="w-4 h-4 mr-2" />
               Send Message
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Test Tool Dialog */}
+      <Dialog open={testToolOpen} onOpenChange={setTestToolOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Test Tool: {selectedTool?.name}</DialogTitle>
+            <DialogDescription>
+              {selectedTool?.description}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label>Parameters (JSON)</Label>
+              <Textarea
+                value={toolParams}
+                onChange={(e) => setToolParams(e.target.value)}
+                placeholder='{"param1": "value1"}'
+                rows={4}
+                className="font-mono text-sm"
+              />
+            </div>
+            {toolResult && (
+              <div className="grid gap-2">
+                <Label>Result</Label>
+                <pre className="text-xs bg-muted p-3 rounded overflow-x-auto max-h-64">
+                  {toolResult}
+                </pre>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTestToolOpen(false)}>
+              Close
+            </Button>
+            <Button onClick={handleTestTool}>
+              <Play className="w-4 h-4 mr-2" />
+              Execute
             </Button>
           </DialogFooter>
         </DialogContent>

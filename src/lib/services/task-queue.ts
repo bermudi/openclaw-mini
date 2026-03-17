@@ -3,6 +3,8 @@
 
 import { db } from '@/lib/db';
 import { Task, TaskStatus, TaskType } from '@/lib/types';
+import { broadcastTaskCreated, broadcastTaskStarted, broadcastTaskCompleted, broadcastTaskFailed } from './ws-client';
+import { auditService } from './audit-service';
 
 export interface CreateTaskInput {
   agentId: string;
@@ -40,7 +42,20 @@ class TaskQueueService {
       },
     });
 
-    return this.mapTask(task);
+    const mappedTask = this.mapTask(task);
+
+    // Broadcast task created event
+    broadcastTaskCreated(input.agentId, task.id, input.type);
+
+    // Log audit event
+    await auditService.log({
+      action: 'task_created',
+      entityType: 'task',
+      entityId: task.id,
+      details: { agentId: input.agentId, type: input.type, priority: input.priority ?? 5 },
+    });
+
+    return mappedTask;
   }
 
   /**
@@ -106,7 +121,12 @@ class TaskQueueService {
 
     this.processing.set(task.agentId, true);
 
-    return this.mapTask(updated);
+    const mappedTask = this.mapTask(updated);
+
+    // Broadcast task started event
+    broadcastTaskStarted(task.agentId, taskId);
+
+    return mappedTask;
   }
 
   /**
@@ -132,7 +152,12 @@ class TaskQueueService {
 
     this.processing.delete(task.agentId);
 
-    return this.mapTask(updated);
+    const mappedTask = this.mapTask(updated);
+
+    // Broadcast task completed event
+    broadcastTaskCompleted(task.agentId, taskId, result);
+
+    return mappedTask;
   }
 
   /**
@@ -158,7 +183,12 @@ class TaskQueueService {
 
     this.processing.delete(task.agentId);
 
-    return this.mapTask(updated);
+    const mappedTask = this.mapTask(updated);
+
+    // Broadcast task failed event
+    broadcastTaskFailed(task.agentId, taskId, error);
+
+    return mappedTask;
   }
 
   /**
