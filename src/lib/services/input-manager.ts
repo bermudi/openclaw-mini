@@ -50,11 +50,16 @@ class InputManagerService {
    * Process message input from messaging platforms
    */
   private async processMessage(input: MessageInput, targetAgentId?: string): Promise<ProcessInputResult> {
-    if (!targetAgentId) {
-      return { success: false, error: 'Target agent ID required for message input' };
+    let resolvedAgentId = targetAgentId;
+    if (!resolvedAgentId) {
+      const resolved = await this.resolveAgent(input.channel, input.channelKey);
+      if (!resolved.agentId) {
+        return { success: false, error: resolved.error ?? 'No default agent configured' };
+      }
+      resolvedAgentId = resolved.agentId;
     }
 
-    const agent = await agentService.getAgent(targetAgentId);
+    const agent = await agentService.getAgent(resolvedAgentId);
     if (!agent) {
       return { success: false, error: 'Agent not found' };
     }
@@ -65,7 +70,8 @@ class InputManagerService {
 
     // Find or create session
     const session = await this.getOrCreateSession(
-      targetAgentId,
+      resolvedAgentId,
+      'main',
       input.channel,
       input.channelKey
     );
@@ -78,7 +84,7 @@ class InputManagerService {
 
     // Create task
     const task = await taskQueue.createTask({
-      agentId: targetAgentId,
+      agentId: resolvedAgentId,
       sessionId: session.id,
       type: 'message',
       priority: 3, // Messages have higher priority
@@ -172,8 +178,13 @@ class InputManagerService {
    * Process webhook input
    */
   private async processWebhook(input: WebhookInput, targetAgentId?: string): Promise<ProcessInputResult> {
-    if (!targetAgentId) {
-      return { success: false, error: 'Target agent ID required for webhook input' };
+    let resolvedAgentId = targetAgentId;
+    if (!resolvedAgentId) {
+      const resolved = await this.resolveAgent('webhook', input.source);
+      if (!resolved.agentId) {
+        return { success: false, error: resolved.error ?? 'No default agent configured' };
+      }
+      resolvedAgentId = resolved.agentId;
     }
 
     // Log the webhook
@@ -185,14 +196,14 @@ class InputManagerService {
       },
     });
 
-    const agent = await agentService.getAgent(targetAgentId);
+    const agent = await agentService.getAgent(resolvedAgentId);
     if (!agent || agent.status === 'disabled') {
       return { success: false, error: 'Agent not found or disabled' };
     }
 
     // Create task
     const task = await taskQueue.createTask({
-      agentId: targetAgentId,
+      agentId: resolvedAgentId,
       type: 'webhook',
       priority: 4,
       payload: {
@@ -217,17 +228,22 @@ class InputManagerService {
    * Process internal hook
    */
   private async processHook(input: HookInput, targetAgentId?: string): Promise<ProcessInputResult> {
-    if (!targetAgentId) {
-      return { success: false, error: 'Target agent ID required for hook input' };
+    let resolvedAgentId = targetAgentId;
+    if (!resolvedAgentId) {
+      const resolved = await this.resolveAgent('internal', input.event);
+      if (!resolved.agentId) {
+        return { success: false, error: resolved.error ?? 'No default agent configured' };
+      }
+      resolvedAgentId = resolved.agentId;
     }
 
-    const agent = await agentService.getAgent(targetAgentId);
+    const agent = await agentService.getAgent(resolvedAgentId);
     if (!agent || agent.status === 'disabled') {
       return { success: false, error: 'Agent not found or disabled' };
     }
 
     const task = await taskQueue.createTask({
-      agentId: targetAgentId,
+      agentId: resolvedAgentId,
       type: 'hook',
       priority: 2, // Hooks have high priority
       payload: {
@@ -269,19 +285,51 @@ class InputManagerService {
   }
 
   /**
+   * Resolve agent by channel binding with default fallback
+   */
+  private async resolveAgent(
+    channel: ChannelType,
+    channelKey: string
+  ): Promise<{ agentId?: string; error?: string }> {
+    const exact = await db.channelBinding.findFirst({
+      where: { channel, channelKey },
+    });
+
+    if (exact) {
+      return { agentId: exact.agentId };
+    }
+
+    const wildcard = await db.channelBinding.findFirst({
+      where: { channel, channelKey: '*' },
+    });
+
+    if (wildcard) {
+      return { agentId: wildcard.agentId };
+    }
+
+    const defaultAgent = await agentService.getDefaultAgent();
+    if (!defaultAgent) {
+      return { error: 'No default agent configured' };
+    }
+
+    return { agentId: defaultAgent.id };
+  }
+
+  /**
    * Get or create a session for a channel
    */
   private async getOrCreateSession(
     agentId: string,
+    sessionScope: string,
     channel: ChannelType,
     channelKey: string
   ): Promise<{ id: string }> {
     let session = await db.session.findUnique({
       where: {
-        channel_channelKey: {
-          channel,
-          channelKey,
-        },
+        agentId_sessionScope: {
+          agentId,
+          sessionScope,
+        }
       },
     });
 
@@ -291,7 +339,8 @@ class InputManagerService {
           agentId,
           channel,
           channelKey,
-          context: '{}',
+          sessionScope,
+          context: JSON.stringify({ messages: [], metadata: {} }),
         },
       });
     }

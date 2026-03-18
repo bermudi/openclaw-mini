@@ -4,6 +4,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentService } from '@/lib/services/agent-service';
 import { memoryService } from '@/lib/services/memory-service';
+import { z } from 'zod';
+
+const createAgentSchema = z.object({
+  name: z.string().min(1, 'Agent name is required'),
+  description: z.string().optional(),
+  skills: z.array(z.string().min(1)).optional(),
+});
 
 // GET /api/agents - List all agents
 export async function GET() {
@@ -26,19 +33,21 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { name, description, skills } = body;
+    const parsed = createAgentSchema.safeParse(body);
 
-    if (!name) {
+    if (!parsed.success) {
       return NextResponse.json(
-        { success: false, error: 'Agent name is required' },
+        { success: false, error: parsed.error.flatten().formErrors.join(', ') },
         { status: 400 }
       );
     }
 
+    const { name, description, skills } = parsed.data;
+
     const agent = await agentService.createAgent({
       name,
       description,
-      skills,
+      skills: skills ?? [],
     });
 
     // Initialize default memories for the agent

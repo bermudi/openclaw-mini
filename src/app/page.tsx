@@ -60,6 +60,7 @@ interface Agent {
   description?: string;
   status: 'idle' | 'busy' | 'error' | 'disabled';
   skills: string[];
+  isDefault: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -67,13 +68,15 @@ interface Agent {
 interface Task {
   id: string;
   agentId: string;
-  type: 'message' | 'heartbeat' | 'cron' | 'webhook' | 'hook' | 'a2a';
+  type: 'message' | 'heartbeat' | 'cron' | 'webhook' | 'hook' | 'a2a' | 'subagent';
   priority: number;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   payload: Record<string, unknown>;
   result?: Record<string, unknown>;
   error?: string;
   source?: string;
+  parentTaskId?: string | null;
+  skillName?: string | null;
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
@@ -625,15 +628,15 @@ export default function OpenClawDashboard() {
                       />
                     </div>
                     <div className="grid gap-2">
-                      <Label htmlFor="skills">Skills (comma-separated)</Label>
+                      <Label htmlFor="skills">Skills (SKILL.md names)</Label>
                       <Input
                         id="skills"
                         value={newAgentSkills}
                         onChange={(e) => setNewAgentSkills(e.target.value)}
-                        placeholder="e.g., research, writing, coding"
+                        placeholder="e.g., web-search, pdf-gen"
                       />
                       <p className="text-xs text-muted-foreground">
-                        Available skills: research, writing, coding, communication, data, datetime, general
+                        Leave blank to allow all enabled skills discovered in /skills.
                       </p>
                     </div>
                   </div>
@@ -675,6 +678,11 @@ export default function OpenClawDashboard() {
                           </div>
                           <div>
                             <CardTitle className="text-lg">{agent.name}</CardTitle>
+                            {agent.isDefault && (
+                              <Badge variant="outline" className="mt-1 text-xs">
+                                Default
+                              </Badge>
+                            )}
                             <StatusBadge status={agent.status} />
                           </div>
                         </div>

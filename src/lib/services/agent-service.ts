@@ -1,6 +1,7 @@
 // OpenClaw Agent Runtime - Agent Service
 // Agent management and status tracking
 
+import type { Agent as DbAgent } from '@prisma/client';
 import { db } from '@/lib/db';
 import { Agent, AgentStatus } from '@/lib/types';
 
@@ -22,16 +23,59 @@ class AgentService {
    * Create a new agent
    */
   async createAgent(input: CreateAgentInput): Promise<Agent> {
+    const defaultAgent = await db.agent.findFirst({
+      where: { isDefault: true },
+      select: { id: true },
+    });
+
     const agent = await db.agent.create({
       data: {
         name: input.name,
         description: input.description,
         skills: JSON.stringify(input.skills ?? []),
         status: 'idle',
+        isDefault: !defaultAgent,
       },
     });
 
     return this.mapAgent(agent);
+  }
+
+  /**
+   * Get the default agent
+   */
+  async getDefaultAgent(): Promise<Agent | null> {
+    const agent = await db.agent.findFirst({
+      where: { isDefault: true },
+    });
+
+    return agent ? this.mapAgent(agent) : null;
+  }
+
+  /**
+   * Set an agent as the default (exactly one default)
+   */
+  async setDefaultAgent(agentId: string): Promise<Agent | null> {
+    const agent = await db.agent.findUnique({
+      where: { id: agentId },
+    });
+
+    if (!agent) {
+      return null;
+    }
+
+    const [, updated] = await db.$transaction([
+      db.agent.updateMany({
+        where: { isDefault: true },
+        data: { isDefault: false },
+      }),
+      db.agent.update({
+        where: { id: agentId },
+        data: { isDefault: true },
+      }),
+    ]);
+
+    return this.mapAgent(updated);
   }
 
   /**
@@ -148,21 +192,14 @@ class AgentService {
   /**
    * Map database agent to interface
    */
-  private mapAgent(agent: {
-    id: string;
-    name: string;
-    description: string | null;
-    status: string;
-    skills: string;
-    createdAt: Date;
-    updatedAt: Date;
-  }): Agent {
+  private mapAgent(agent: DbAgent): Agent {
     return {
       id: agent.id,
       name: agent.name,
       description: agent.description ?? undefined,
       status: agent.status as AgentStatus,
       skills: JSON.parse(agent.skills),
+      isDefault: Boolean(agent.isDefault),
       createdAt: agent.createdAt,
       updatedAt: agent.updatedAt,
     };

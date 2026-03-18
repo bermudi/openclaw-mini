@@ -1,15 +1,25 @@
 // OpenClaw Agent Runtime - Tools/Skills System
 // Defines available tools that agents can use
 
-import { asSchema, tool, type Tool as CoreTool } from 'ai';
+import type { Tool as CoreTool } from 'ai';
 import type { JSONSchema7 } from '@ai-sdk/provider';
+import { asSchema, tool } from '@ai-sdk/provider-utils';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
+import { taskQueue } from '@/lib/services/task-queue';
+import { sessionService } from '@/lib/services/session-service';
+import { db } from '@/lib/db';
+import { getSkillForSubAgent } from '@/lib/services/skill-service';
 
 export interface ToolParameter {
   name: string;
   type: string;
   description: string;
   required: boolean;
+}
+
+export function withSpawnSubagentContext<T>(context: SpawnSubagentContext, fn: () => Promise<T>): Promise<T> {
+  return spawnSubagentContext.run(context, fn);
 }
 
 export interface ToolResult {
@@ -28,11 +38,17 @@ export interface RegisteredTool {
   meta: ToolMeta;
 }
 
+export interface SpawnSubagentContext {
+  agentId: string;
+  parentTaskId: string;
+}
+
 // ============================================
 // Tool Registry
 // ============================================
 const tools: Map<string, CoreTool> = new Map();
 const toolMeta: Map<string, ToolMeta> = new Map();
+const spawnSubagentContext = new AsyncLocalStorage<SpawnSubagentContext>();
 
 export function registerTool(name: string, registeredTool: CoreTool, meta: ToolMeta): void {
   tools.set(name, registeredTool);
@@ -108,43 +124,107 @@ export async function getToolSchemas(): Promise<Array<{
   );
 }
 
-export function getToolsForAgent(skills: string[]): Record<string, CoreTool> {
+export function getToolsForAgent(_skills: string[]): Record<string, CoreTool> {
   const allTools = getAvailableTools();
+  return Object.fromEntries(allTools.map(({ name, tool: registeredTool }) => [name, registeredTool]));
+}
 
-  if (skills.length === 0) {
-    return Object.fromEntries(
-      allTools
-        .filter(({ meta }) => meta.riskLevel === 'low')
-        .map(({ name, tool: registeredTool }) => [name, registeredTool]),
-    );
-  }
-
-  const skillToolMap: Record<string, string[]> = {
-    research: ['web_search', 'read_file', 'list_files'],
-    writing: ['write_note', 'read_file'],
-    coding: ['calculate', 'read_file', 'write_note'],
-    communication: ['send_message_to_agent', 'log_event'],
-    data: ['calculate', 'random', 'read_file', 'write_note'],
-    datetime: ['get_datetime', 'wait'],
-    general: ['get_datetime', 'calculate', 'random', 'read_file', 'write_note', 'list_files'],
-  };
-
-  const allowedTools = new Set<string>();
-  allowedTools.add('get_datetime');
-
-  for (const skill of skills) {
-    const toolsForSkill = skillToolMap[skill.toLowerCase()];
-    if (toolsForSkill) {
-      toolsForSkill.forEach(toolName => allowedTools.add(toolName));
-    }
-  }
-
+export function getLowRiskTools(): Record<string, CoreTool> {
   return Object.fromEntries(
-    allTools
-      .filter(({ name }) => allowedTools.has(name))
+    getAvailableTools()
+      .filter(({ meta }) => meta.riskLevel === 'low')
       .map(({ name, tool: registeredTool }) => [name, registeredTool]),
   );
 }
+
+export function getToolsByNames(names: string[]): Record<string, CoreTool> {
+  const allowed = new Set(names.map(name => name.toLowerCase()));
+  return Object.fromEntries(
+    getAvailableTools()
+      .filter(({ name }) => allowed.has(name.toLowerCase()))
+      .map(({ name, tool: registeredTool }) => [name, registeredTool]),
+  );
+}
+
+registerTool(
+  'spawn_subagent',
+  tool({
+    description: 'Spawn a sub-agent to execute a focused task using a specific skill',
+    inputSchema: z.object({
+      skill: z.string().describe('Skill name to use for the sub-agent'),
+      task: z.string().describe('Task to assign to the sub-agent'),
+      timeoutSeconds: z.number().int().positive().optional().describe('Timeout in seconds (default: 120)'),
+    }),
+    execute: async ({ skill, task, timeoutSeconds }): Promise<ToolResult> => {
+      const context = spawnSubagentContext.getStore();
+      if (!context) {
+        return { success: false, error: 'spawn_subagent called without task context' };
+      }
+
+      const skillResult = await getSkillForSubAgent(skill);
+      if (!skillResult.skill) {
+        return { success: false, error: skillResult.error ?? `Skill '${skill}' not found or disabled` };
+      }
+
+      const newTask = await taskQueue.createTask({
+        agentId: context.agentId,
+        type: 'subagent',
+        priority: 5,
+        payload: {
+          task,
+          skill: skillResult.skill.name,
+        },
+        source: `subagent:${context.parentTaskId}`,
+        parentTaskId: context.parentTaskId,
+        skillName: skillResult.skill.name,
+      });
+
+      const sessionScope = `subagent:${newTask.id}`;
+      const session = await sessionService.getOrCreateSession(
+        context.agentId,
+        sessionScope,
+        'internal',
+        sessionScope,
+      );
+
+      await db.task.update({
+        where: { id: newTask.id },
+        data: { sessionId: session.id },
+      });
+
+      const timeoutMs = Math.max(1, timeoutSeconds ?? 120) * 1000;
+      const deadline = Date.now() + timeoutMs;
+
+      while (Date.now() < deadline) {
+        const current = await taskQueue.getTask(newTask.id);
+        if (!current) {
+          return { success: false, error: 'Sub-agent task disappeared' };
+        }
+
+        if (current.status === 'completed') {
+          const response = (current.result as { response?: string } | undefined)?.response ?? '';
+          return {
+            success: true,
+            data: {
+              response,
+              skill: skillResult.skill.name,
+            },
+          };
+        }
+
+        if (current.status === 'failed') {
+          return { success: false, error: `Sub-agent failed: ${current.error ?? 'unknown error'}` };
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      const timeoutLabel = timeoutSeconds ?? 120;
+      return { success: false, error: `Sub-agent timed out after ${timeoutLabel}s` };
+    },
+  }),
+  { riskLevel: 'medium' },
+);
 
 // ============================================
 // Built-in Tools

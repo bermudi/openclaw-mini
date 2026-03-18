@@ -9,18 +9,20 @@ export interface Agent {
   description?: string;
   status: AgentStatus;
   skills: string[];
+  isDefault: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
 
 // Session Types
-export type ChannelType = 'slack' | 'whatsapp' | 'telegram' | 'imessage' | 'webhook' | 'internal';
+export type ChannelType = 'slack' | 'discord' | 'whatsapp' | 'telegram' | 'imessage' | 'webhook' | 'internal';
 
 export interface Session {
   id: string;
   agentId: string;
   channel: ChannelType;
   channelKey: string;
+  sessionScope: string;
   context: Record<string, unknown>;
   lastActive: Date;
   createdAt: Date;
@@ -28,7 +30,7 @@ export interface Session {
 }
 
 // Task Types
-export type TaskType = 'message' | 'heartbeat' | 'cron' | 'webhook' | 'hook' | 'a2a';
+export type TaskType = 'message' | 'heartbeat' | 'cron' | 'webhook' | 'hook' | 'a2a' | 'subagent';
 export type TaskStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
 export interface Task {
@@ -42,9 +44,19 @@ export interface Task {
   result?: Record<string, unknown>;
   error?: string;
   source?: string;
+  parentTaskId?: string | null;
+  skillName?: string | null;
   createdAt: Date;
   startedAt?: Date;
   completedAt?: Date;
+}
+
+export interface ChannelBinding {
+  id: string;
+  channel: string;
+  channelKey: string;
+  agentId: string;
+  createdAt: Date;
 }
 
 // Trigger Types

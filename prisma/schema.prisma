@@ -17,6 +17,7 @@ model Agent {
   description String?
   status      String   @default("idle") // idle, busy, error, disabled
   skills      String   @default("[]") // JSON array of skill names
+  isDefault   Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
@@ -24,6 +25,7 @@ model Agent {
   memories    Memory[]
   sessions    Session[]
   triggers    Trigger[]
+  channelBindings ChannelBinding[]
   
   @@map("agents")
 }
@@ -34,6 +36,7 @@ model Session {
   agentId     String
   channel     String   // slack, whatsapp, telegram, imessage, webhook, internal
   channelKey  String   // unique identifier for the channel (e.g., chat_id, phone number)
+  sessionScope String  @default("main")
   context     String   @default("{}") // JSON context data
   lastActive  DateTime @default(now())
   createdAt   DateTime @default(now())
@@ -42,8 +45,22 @@ model Session {
   agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
   tasks       Task[]
   
-  @@unique([channel, channelKey])
+  @@unique([agentId, sessionScope])
   @@map("sessions")
+}
+
+// ChannelBinding - Bind a channel to an agent
+model ChannelBinding {
+  id         String @id @default(cuid())
+  channel    String
+  channelKey String
+  agentId    String
+  createdAt  DateTime @default(now())
+
+  agent      Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([channel, channelKey])
+  @@map("channel_bindings")
 }
 
 // Task - Queued task for agent execution
@@ -51,19 +68,23 @@ model Task {
   id          String   @id @default(cuid())
   agentId     String
   sessionId   String?
-  type        String   // message, heartbeat, cron, webhook, hook, a2a
+  type        String   // message, heartbeat, cron, webhook, hook, a2a, subagent
   priority    Int      @default(5) // 1-10, lower = higher priority
   status      String   @default("pending") // pending, processing, completed, failed
   payload     String   @default("{}") // JSON task data
   result      String?  // JSON result data
   error       String?
   source      String?  // origin of the task
+  parentTaskId String?
+  skillName    String?
   createdAt   DateTime @default(now())
   startedAt   DateTime?
   completedAt DateTime?
   
   agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
   session     Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  parentTask  Task?    @relation("TaskParent", fields: [parentTaskId], references: [id], onDelete: SetNull)
+  childTasks  Task[]   @relation("TaskParent")
   
   @@index([status, priority, createdAt])
   @@map("tasks")

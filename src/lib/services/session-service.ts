@@ -9,6 +9,8 @@ export interface SessionContext {
     role: 'user' | 'assistant' | 'system';
     content: string;
     sender?: string;
+    channel?: ChannelType;
+    channelKey?: string;
     timestamp: string;
   }>;
   metadata: Record<string, unknown>;
@@ -20,15 +22,16 @@ class SessionService {
    */
   async getOrCreateSession(
     agentId: string,
+    sessionScope: string,
     channel: ChannelType,
     channelKey: string
   ): Promise<{ id: string; context: SessionContext }> {
     let session = await db.session.findUnique({
       where: {
-        channel_channelKey: {
-          channel,
-          channelKey,
-        },
+        agentId_sessionScope: {
+          agentId,
+          sessionScope,
+        }
       },
     });
 
@@ -38,6 +41,7 @@ class SessionService {
           agentId,
           channel,
           channelKey,
+          sessionScope,
           context: JSON.stringify({ messages: [], metadata: {} }),
         },
       });
@@ -77,7 +81,10 @@ class SessionService {
 
     return messages.map(msg => {
       const sender = msg.sender ? ` (${msg.sender})` : '';
-      return `${msg.role}${sender}: ${msg.content}`;
+      const channelTag = msg.channel
+        ? ` [${msg.channel}${msg.channelKey ? `:${msg.channelKey}` : ''}]`
+        : '';
+      return `${msg.role}${sender}${channelTag}: ${msg.content}`;
     }).join('\n\n');
   }
 
@@ -90,6 +97,8 @@ class SessionService {
       role: 'user' | 'assistant' | 'system';
       content: string;
       sender?: string;
+      channel?: ChannelType;
+      channelKey?: string;
     }
   ): Promise<void> {
     const session = await this.getSession(sessionId);

@@ -8,8 +8,9 @@ import { memoryService } from './memory-service';
 import { sessionService } from './session-service';
 import { auditService } from './audit-service';
 import { getLanguageModel } from './model-provider';
-import { Task } from '@/lib/types';
-import { getToolsForAgent, type ToolResult } from '@/lib/tools';
+import { ChannelType, Task } from '@/lib/types';
+import { getLowRiskTools, getToolsByNames, getToolsForAgent, type ToolResult, withSpawnSubagentContext } from '@/lib/tools';
+import { getSkillForSubAgent, getSkillSummaries } from './skill-service';
 
 export interface ExecutionResult {
   success: boolean;
@@ -63,20 +64,40 @@ class AgentExecutorService {
         sessionContext = await sessionService.getSessionContext(task.sessionId);
       }
 
-      // Get available tools for this agent
-      const tools = getToolsForAgent(agent.skills);
+      const isSubagent = task.type === 'subagent';
+      const skillName = task.skillName ?? (task.payload as { skill?: string }).skill;
+      const skill = isSubagent && skillName ? await getSkillForSubAgent(skillName) : undefined;
+
+      if (isSubagent && (!skill || !skill.skill)) {
+        throw new Error(skill?.error ?? `Skill '${skillName ?? 'unknown'}' not found or disabled`);
+      }
+
+      const tools = isSubagent
+        ? (skill?.skill?.tools && skill.skill.tools.length > 0
+            ? getToolsByNames(skill.skill.tools)
+            : getLowRiskTools())
+        : getToolsForAgent(agent.skills);
 
       // Build prompt based on task type
       const prompt = this.buildPrompt(task, context, sessionContext);
 
+      const systemPrompt = isSubagent
+        ? (skill?.skill?.instructions ?? 'You are a sub-agent executing a focused task.')
+        : await this.getSystemPrompt(agent, task);
+
       // Execute with AI SDK
-      const result = await generateText({
-        model: getLanguageModel(),
-        system: this.getSystemPrompt(agent, task),
-        prompt,
-        tools,
-        stopWhen: stepCountIs(5),
-      });
+      const executeGeneration = () =>
+        generateText({
+          model: getLanguageModel(),
+          system: systemPrompt,
+          prompt,
+          tools,
+          stopWhen: stepCountIs(5),
+        });
+
+      const result = isSubagent
+        ? await executeGeneration()
+        : await withSpawnSubagentContext({ agentId: task.agentId, parentTaskId: task.id }, executeGeneration);
 
       const response = result.text;
       const toolCalls = result.steps.flatMap(step => step.toolCalls ?? []);
@@ -103,15 +124,24 @@ class AgentExecutorService {
 
       // Update session context if this is a message
       if (task.sessionId && task.type === 'message') {
-        const payload = task.payload as { content?: string; sender?: string };
+        const payload = task.payload as {
+          content?: string;
+          sender?: string;
+          channel?: ChannelType;
+          channelKey?: string;
+        };
         await sessionService.appendToContext(task.sessionId, {
           role: 'user',
           content: payload.content || '',
           sender: payload.sender,
+          channel: payload.channel,
+          channelKey: payload.channelKey,
         });
         await sessionService.appendToContext(task.sessionId, {
           role: 'assistant',
           content: response,
+          channel: payload.channel,
+          channelKey: payload.channelKey,
         });
       }
 
@@ -183,19 +213,25 @@ class AgentExecutorService {
   /**
    * Get system prompt for agent
    */
-  private getSystemPrompt(
+  private async getSystemPrompt(
     agent: { name: string; description?: string; skills: string[] },
     task: Task
-  ): string {
-    const skillsList = agent.skills.length > 0
-      ? `Your available skills: ${agent.skills.join(', ')}`
-      : 'You have no specific skills configured.';
+  ): Promise<string> {
+    const summaries = await getSkillSummaries(agent.skills);
+    const summaryLines = summaries.map(skill => `- ${skill.name}: ${skill.description}`);
+    let skillSection = summaryLines.length > 0
+      ? `Available skills:\n${summaryLines.join('\n')}`
+      : 'No skills are currently available.';
+
+    if (skillSection.length > 5000) {
+      skillSection = `${skillSection.slice(0, 5000)}...`;
+    }
 
     return `You are ${agent.name}, an AI agent in the OpenClaw runtime system.
 
 ${agent.description ? `Description: ${agent.description}` : ''}
 
-${skillsList}
+${skillSection}
 
 Current task type: ${task.type}
 Your Agent ID: ${task.agentId}
@@ -291,15 +327,22 @@ DATA: ${JSON.stringify((task.payload as { data?: unknown }).data, null, 2)}
 
 Process this inter-agent communication. You can respond by using the send_message_to_agent tool.`;
 
+      case 'subagent': {
+        const payload = task.payload as { task?: string };
+        return `Sub-agent task received.
+
+CONTEXT FROM MEMORY:
+${contextPreview}${sessionSection}
+
+TASK:
+${payload.task ?? 'No task provided.'}`;
+      }
+
       default:
         return `Task received: ${task.type}
 
 CONTEXT FROM MEMORY:
-${contextPreview}
-
-PAYLOAD: ${JSON.stringify(task.payload, null, 2)}
-
-Process this task appropriately.`;
+${contextPreview}`;
     }
   }
 }

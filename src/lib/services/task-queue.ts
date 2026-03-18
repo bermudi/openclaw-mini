@@ -1,6 +1,7 @@
 // OpenClaw Agent Runtime - Task Queue Service
 // Sequential task processing with priority ordering
 
+import type { Task as DbTask } from '@prisma/client';
 import { db } from '@/lib/db';
 import { Task, TaskStatus, TaskType } from '@/lib/types';
 import { broadcastTaskCreated, broadcastTaskStarted, broadcastTaskCompleted, broadcastTaskFailed } from './ws-client';
@@ -13,6 +14,8 @@ export interface CreateTaskInput {
   priority?: number;
   payload: Record<string, unknown>;
   source?: string;
+  parentTaskId?: string | null;
+  skillName?: string | null;
 }
 
 export interface TaskQueueStats {
@@ -39,6 +42,8 @@ class TaskQueueService {
         status: 'pending',
         payload: JSON.stringify(input.payload),
         source: input.source,
+        parentTaskId: input.parentTaskId ?? null,
+        skillName: input.skillName ?? null,
       },
     });
 
@@ -259,21 +264,7 @@ class TaskQueueService {
   /**
    * Map database task to interface
    */
-  private mapTask(task: {
-    id: string;
-    agentId: string;
-    sessionId: string | null;
-    type: string;
-    priority: number;
-    status: string;
-    payload: string;
-    result: string | null;
-    error: string | null;
-    source: string | null;
-    createdAt: Date;
-    startedAt: Date | null;
-    completedAt: Date | null;
-  }): Task {
+  private mapTask(task: DbTask): Task {
     return {
       id: task.id,
       agentId: task.agentId,
@@ -285,6 +276,8 @@ class TaskQueueService {
       result: task.result ? JSON.parse(task.result) : undefined,
       error: task.error ?? undefined,
       source: task.source ?? undefined,
+      parentTaskId: task.parentTaskId ?? undefined,
+      skillName: task.skillName ?? undefined,
       createdAt: task.createdAt,
       startedAt: task.startedAt ?? undefined,
       completedAt: task.completedAt ?? undefined,
