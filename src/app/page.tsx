@@ -785,12 +785,12 @@ export default function OpenClawDashboard() {
                                 {task.error && (
                                   <p className="text-xs text-red-500 mt-1">{task.error}</p>
                                 )}
-                                {task.result?.response && (
+                                {typeof task.result?.response === 'string' && (
                                   <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                                    Result: {(task.result.response as string).substring(0, 200)}...
+                                    Result: {task.result.response.substring(0, 200)}...
                                   </p>
                                 )}
-                                {task.result?.toolCalls && (
+                                {Array.isArray(task.result?.toolCalls) && (
                                   <p className="text-xs text-purple-500 mt-1">
                                     Tools: {(task.result.toolCalls as Array<{ tool: string }>).map(t => t.tool).join(', ')}
                                   </p>
@@ -1188,8 +1188,7 @@ export default function OpenClawDashboard() {
           <DialogHeader>
             <DialogTitle>Send Message to {selectedAgent?.name}</DialogTitle>
             <DialogDescription>
-              Send a test message to this agent. You can use tools by including them in your message:
-              [TOOL: tool_name(param: value)]
+              Send a test message to this agent.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -1213,7 +1212,7 @@ export default function OpenClawDashboard() {
                 id="message"
                 value={messageContent}
                 onChange={(e) => setMessageContent(e.target.value)}
-                placeholder="Type your message... (try: What time is it? [TOOL: get_datetime()])"
+                placeholder="Type your message... (try: What time is it?)"
                 rows={4}
               />
             </div>

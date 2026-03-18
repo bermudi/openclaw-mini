@@ -2,7 +2,7 @@
 // Tool management endpoints
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getAvailableTools, getTool } from '@/lib/tools';
+import { getTool, getToolMeta, getToolSchemas } from '@/lib/tools';
 
 // GET /api/tools - List all available tools
 export async function GET(request: NextRequest) {
@@ -18,23 +18,25 @@ export async function GET(request: NextRequest) {
           { status: 404 }
         );
       }
+
+      const toolMeta = getToolMeta(toolName);
+      const schemas = await getToolSchemas();
+      const toolSchema = schemas.find(schema => schema.name === toolName);
+
+      if (!toolSchema || !toolMeta) {
+        return NextResponse.json(
+          { success: false, error: 'Tool schema not found' },
+          { status: 404 }
+        );
+      }
+
       return NextResponse.json({
         success: true,
-        data: {
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.parameters,
-          riskLevel: tool.riskLevel,
-        },
+        data: toolSchema,
       });
     }
 
-    const tools = getAvailableTools().map(tool => ({
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-      riskLevel: tool.riskLevel,
-    }));
+    const tools = await getToolSchemas();
 
     return NextResponse.json({
       success: true,
@@ -70,7 +72,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await tool.execute(params || {});
+    if (!tool.execute) {
+      return NextResponse.json(
+        { success: false, error: 'Tool execution not available' },
+        { status: 400 }
+      );
+    }
+
+    const result = await tool.execute(params || {}, {
+      toolCallId: `manual-${Date.now()}`,
+      messages: [],
+    });
 
     return NextResponse.json({
       success: true,
