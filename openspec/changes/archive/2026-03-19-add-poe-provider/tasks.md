@@ -34,9 +34,6 @@
  - [x] 5.1 Update `getModelConfig()` to read `AI_FALLBACK_MODEL` env var
  - [x] 5.2 Update `resolveModelConfig()` to accept and propagate `fallbackModel?: string`
  - [x] 5.3 Implement fallback logic (consider extracting to `runWithModelFallback()` helper for reusability):
-   - Try primary model
-   - On retryable error (429, 500, 502, 503, network errors), try fallback
-   - If fallback also fails, chain errors and throw
  - [x] 5.4 Do NOT attempt fallback on 401, 403, 400 errors
  
  ## 6. Testing
