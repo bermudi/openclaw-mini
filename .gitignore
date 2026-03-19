@@ -48,6 +48,5 @@ test
 prompt
 
 server.log
-db/*.db
-prisma/**/*.db
+**/*.db
 *.log

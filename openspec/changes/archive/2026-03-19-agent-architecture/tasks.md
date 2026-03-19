@@ -51,8 +51,8 @@
 
 ## 8. Tests & Verification
 
-- [ ] 8.1 Write tests for routing resolution: exact match, wildcard match, default fallback, no default error, explicit agentId override
-- [ ] 8.2 Write tests for session unification: two channels same agent share session, different agents get different sessions
-- [ ] 8.3 Write tests for skill loading: discovery, frontmatter parsing, gating (missing binary, missing env, platform mismatch), cache TTL
-- [ ] 8.4 Write tests for sub-agent lifecycle: spawn with valid skill, spawn with unknown skill, timeout, result return
-- [ ] 8.5 End-to-end test: send a message via `/api/input` with no agentId → routing resolves → task created → executor runs → response includes skill summaries in prompt
+- [x] 8.1 Write tests for routing resolution: exact match, wildcard match, default fallback, no default error, explicit agentId override
+- [x] 8.2 Write tests for session unification: two channels same agent share session, different agents get different sessions
+- [x] 8.3 Write tests for skill loading: discovery, frontmatter parsing, gating (missing binary, missing env, platform mismatch), cache TTL
+- [x] 8.4 Write tests for sub-agent lifecycle: spawn with valid skill, spawn with unknown skill, timeout, result return
+- [x] 8.5 End-to-end test: send a message via `/api/input` with no agentId → routing resolves → task created → executor runs → response includes skill summaries in prompt
