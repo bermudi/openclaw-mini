@@ -49,4 +49,5 @@ prompt
 
 server.log
 db/*.db
+prisma/**/*.db
 *.log
