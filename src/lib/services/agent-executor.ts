@@ -224,7 +224,14 @@ class AgentExecutorService {
       : 'No skills are currently available.';
 
     if (skillSection.length > 5000) {
-      skillSection = `${skillSection.slice(0, 5000)}...`;
+      const limit = 5000;
+      const boundaryCandidates = [
+        skillSection.lastIndexOf('\n\n', limit),
+        skillSection.lastIndexOf('\n', limit),
+        skillSection.lastIndexOf(' ', limit),
+      ];
+      const boundary = boundaryCandidates.find(index => index > 0) ?? limit;
+      skillSection = `${skillSection.slice(0, boundary)}...`;
     }
 
     return `You are ${agent.name}, an AI agent in the OpenClaw runtime system.

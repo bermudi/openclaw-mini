@@ -22,9 +22,9 @@ export async function GET() {
       data,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Skills API] Failed to load skills:', error);
     return NextResponse.json(
-      { success: false, error: message },
+      { success: false, error: 'Internal server error' },
       { status: 500 },
     );
   }

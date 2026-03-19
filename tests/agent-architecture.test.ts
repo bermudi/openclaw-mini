@@ -3,9 +3,16 @@
 import { afterAll, beforeAll, beforeEach, expect, mock, test } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
+import { NextRequest } from 'next/server';
 import type { PrismaClient } from '@prisma/client';
 
 let lastSystemPrompt = '';
+
+type SpawnResult = {
+  success?: boolean;
+  error?: string;
+  data?: { response?: string };
+};
 
 mock.module('ai', () => ({
   generateText: async ({ system }: { system?: string }) => {
@@ -26,6 +33,7 @@ let taskQueue: typeof import('../src/lib/services/task-queue').taskQueue;
 let agentExecutor: typeof import('../src/lib/services/agent-executor').agentExecutor;
 let skillService: typeof import('../src/lib/services/skill-service');
 let toolsModule: typeof import('../src/lib/tools');
+let channelBindingByIdRoute: typeof import('../src/app/api/channels/bindings/[id]/route');
 
 async function resetDb() {
   await db.task.deleteMany();
@@ -94,6 +102,7 @@ beforeAll(async () => {
   agentExecutor = (await import('../src/lib/services/agent-executor')).agentExecutor;
   skillService = await import('../src/lib/services/skill-service');
   toolsModule = await import('../src/lib/tools');
+  channelBindingByIdRoute = await import('../src/app/api/channels/bindings/[id]/route');
 
   await resetDb();
 });
@@ -135,7 +144,8 @@ test('routing resolution covers exact, wildcard, default, missing default, and e
     content: 'hello',
   });
   expect(exactResult.success).toBe(true);
-  const exactTask = await taskQueue.getTask(exactResult.taskId ?? '');
+  expect(exactResult.taskId).toBeDefined();
+  const exactTask = await taskQueue.getTask(exactResult.taskId!);
   expect(exactTask?.agentId).toBe(agentB.id);
 
   const wildcardResult = await inputManager.processInput({
@@ -145,7 +155,8 @@ test('routing resolution covers exact, wildcard, default, missing default, and e
     content: 'ping',
   });
   expect(wildcardResult.success).toBe(true);
-  const wildcardTask = await taskQueue.getTask(wildcardResult.taskId ?? '');
+  expect(wildcardResult.taskId).toBeDefined();
+  const wildcardTask = await taskQueue.getTask(wildcardResult.taskId!);
   expect(wildcardTask?.agentId).toBe(agentB.id);
 
   const defaultResult = await inputManager.processInput({
@@ -155,7 +166,8 @@ test('routing resolution covers exact, wildcard, default, missing default, and e
     content: 'fallback',
   });
   expect(defaultResult.success).toBe(true);
-  const defaultTask = await taskQueue.getTask(defaultResult.taskId ?? '');
+  expect(defaultResult.taskId).toBeDefined();
+  const defaultTask = await taskQueue.getTask(defaultResult.taskId!);
   expect(defaultTask?.agentId).toBe(agentA.id);
 
   const overrideResult = await inputManager.processInput(
@@ -168,7 +180,8 @@ test('routing resolution covers exact, wildcard, default, missing default, and e
     agentB.id,
   );
   expect(overrideResult.success).toBe(true);
-  const overrideTask = await taskQueue.getTask(overrideResult.taskId ?? '');
+  expect(overrideResult.taskId).toBeDefined();
+  const overrideTask = await taskQueue.getTask(overrideResult.taskId!);
   expect(overrideTask?.agentId).toBe(agentB.id);
 
   await db.agent.deleteMany();
@@ -236,7 +249,7 @@ test('skill loading parses frontmatter, gating, and cache TTL', async () => {
   );
   writeSkill(
     'needs-platform',
-    'name: needs-platform\ndescription: Needs darwin\nrequires:\n  platform:\n    - darwin',
+    'name: needs-platform\ndescription: Needs unsupported platform\nrequires:\n  platform:\n    - no-such-platform',
     'Requires darwin.',
   );
   writeSkill('invalid', 'description: Missing name', 'Missing name.');
@@ -271,7 +284,9 @@ test('skill loading parses frontmatter, gating, and cache TTL', async () => {
   expect(cachedWebSearch?.description).toBe('Search the web');
 
   const originalNow = Date.now;
-  Date.now = () => originalNow() + 61_000;
+  const ttlMs = skillService.SKILL_CACHE_TTL_MS;
+  // Advance past the cache TTL to force a refresh.
+  Date.now = () => originalNow() + ttlMs + 1_000;
   const refreshedSkills = await skillService.loadAllSkills();
   const refreshedWebSearch = refreshedSkills.find(skill => skill.name === 'web-search');
   expect(refreshedWebSearch?.description).toBe('Updated description');
@@ -308,24 +323,65 @@ test('spawn_subagent tool handles success, missing skill, and timeout', async ()
   const subTask = await waitForSubagentTask(parentTask.id);
   await taskQueue.completeTask(subTask.id, { response: 'done' });
 
-  const successResult = (await successPromise) as { success?: boolean; data?: { response?: string } } | undefined;
+  const successResult = (await successPromise) as SpawnResult | undefined;
   expect(successResult?.success).toBe(true);
   expect((successResult?.data as { response?: string } | undefined)?.response).toBe('done');
 
   const missingResult = (await toolsModule.withSpawnSubagentContext(
     { agentId: agent.id, parentTaskId: parentTask.id },
     () => spawnTool.execute?.({ skill: 'unknown', task: 'fail' }, { toolCallId: 'test', messages: [] }),
-  )) as { success?: boolean; error?: string } | undefined;
+  )) as SpawnResult | undefined;
   expect(missingResult?.success).toBe(false);
   expect(missingResult?.error).toContain('not found');
 
   const timeoutPromise = toolsModule.withSpawnSubagentContext(
     { agentId: agent.id, parentTaskId: parentTask.id },
-    () => spawnTool.execute?.({ skill: 'helper', task: 'timeout', timeoutSeconds: 1 }, { toolCallId: 'test', messages: [] }),
+    () => spawnTool.execute?.({ skill: 'helper', task: 'timeout', timeoutSeconds: 3 }, { toolCallId: 'test', messages: [] }),
   );
-  const timeoutResult = (await timeoutPromise) as { success?: boolean; error?: string } | undefined;
+  const timeoutResult = (await timeoutPromise) as SpawnResult | undefined;
   expect(timeoutResult?.success).toBe(false);
   expect(timeoutResult?.error).toContain('timed out');
+});
+
+test('channel binding delete requires API key auth', async () => {
+  process.env.OPENCLAW_API_KEY = 'super-secret-key';
+
+  const agent = await agentService.createAgent({ name: 'Bound Agent' });
+  const binding = await db.channelBinding.create({
+    data: { channel: 'slack', channelKey: 'room-1', agentId: agent.id },
+  });
+
+  const unauthorizedRequest = new NextRequest(`http://localhost/api/channels/bindings/${binding.id}`, {
+    method: 'DELETE',
+  });
+  const unauthorizedResponse = await channelBindingByIdRoute.DELETE(
+    unauthorizedRequest,
+    { params: Promise.resolve({ id: binding.id }) },
+  );
+  expect(unauthorizedResponse.status).toBe(401);
+
+  const forbiddenRequest = new NextRequest(`http://localhost/api/channels/bindings/${binding.id}`, {
+    method: 'DELETE',
+    headers: { authorization: 'Bearer wrong-key' },
+  });
+  const forbiddenResponse = await channelBindingByIdRoute.DELETE(
+    forbiddenRequest,
+    { params: Promise.resolve({ id: binding.id }) },
+  );
+  expect(forbiddenResponse.status).toBe(403);
+
+  const authorizedRequest = new NextRequest(`http://localhost/api/channels/bindings/${binding.id}`, {
+    method: 'DELETE',
+    headers: { 'x-api-key': 'super-secret-key' },
+  });
+  const authorizedResponse = await channelBindingByIdRoute.DELETE(
+    authorizedRequest,
+    { params: Promise.resolve({ id: binding.id }) },
+  );
+  expect(authorizedResponse.status).toBe(200);
+
+  const deletedBinding = await db.channelBinding.findUnique({ where: { id: binding.id } });
+  expect(deletedBinding).toBeNull();
 });
 
 test('end-to-end input routes without agentId and prompt includes skill summaries', async () => {
@@ -351,7 +407,6 @@ test('end-to-end input routes without agentId and prompt includes skill summarie
   if (!execResult.success) {
     throw new Error(`Executor failed: ${execResult.error ?? 'unknown error'}`);
   }
-  expect(execResult.success).toBe(true);
   expect(execResult.response).toBe('stub response');
   expect(lastSystemPrompt).toContain('Available skills');
   expect(lastSystemPrompt).toContain('web-search');

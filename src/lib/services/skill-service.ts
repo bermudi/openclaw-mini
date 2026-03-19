@@ -3,10 +3,16 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import matter from 'gray-matter';
 
 const SKILLS_DIR = path.join(process.cwd(), 'skills');
 const DEFAULT_CACHE_TTL_MS = 60_000;
+const execFileAsync = promisify(execFile);
+const binaryCache = new Map<string, boolean>();
+
+export const SKILL_CACHE_TTL_MS = DEFAULT_CACHE_TTL_MS;
 
 export interface SkillRequirements {
   binaries?: string[];
@@ -57,12 +63,12 @@ function normalizeStringArray(value: unknown): string[] | undefined {
   return filtered.length > 0 ? filtered : undefined;
 }
 
-function resolveGatingReason(requires?: SkillRequirements): string | undefined {
+async function resolveGatingReason(requires?: SkillRequirements): Promise<string | undefined> {
   if (!requires) return undefined;
 
   if (requires.binaries) {
     for (const binary of requires.binaries) {
-      if (!isBinaryAvailable(binary)) {
+      if (!await isBinaryAvailable(binary)) {
         return `missing binary: ${binary}`;
       }
     }
@@ -85,15 +91,22 @@ function resolveGatingReason(requires?: SkillRequirements): string | undefined {
   return undefined;
 }
 
-function isBinaryAvailable(binary: string): boolean {
-  const pathEntries = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
-  const candidates = process.platform === 'win32'
-    ? [`${binary}.exe`, `${binary}.cmd`, `${binary}.bat`, binary]
-    : [binary];
+async function isBinaryAvailable(binary: string): Promise<boolean> {
+  const cached = binaryCache.get(binary);
+  if (cached !== undefined) {
+    return cached;
+  }
 
-  return pathEntries.some((dir) =>
-    candidates.some((candidate) => fs.existsSync(path.join(dir, candidate)))
-  );
+  const command = process.platform === 'win32' ? 'where' : 'which';
+
+  try {
+    await execFileAsync(command, [binary], { windowsHide: true });
+    binaryCache.set(binary, true);
+    return true;
+  } catch {
+    binaryCache.set(binary, false);
+    return false;
+  }
 }
 
 function shouldUseCache(): boolean {
@@ -119,7 +132,7 @@ async function readSkillFile(skillPath: string): Promise<LoadedSkill | null> {
     return null;
   }
 
-  const requires: SkillRequirements | undefined = data.requires && typeof data.requires === 'object'
+  const requires: SkillRequirements | undefined = data.requires != null && typeof data.requires === 'object'
     ? {
         binaries: normalizeStringArray((data.requires as SkillRequirements).binaries),
         env: normalizeStringArray((data.requires as SkillRequirements).env),
@@ -128,7 +141,7 @@ async function readSkillFile(skillPath: string): Promise<LoadedSkill | null> {
     : undefined;
 
   const tools = normalizeStringArray(data.tools);
-  const gatingReason = resolveGatingReason(requires);
+  const gatingReason = await resolveGatingReason(requires);
 
   return {
     name,
@@ -168,7 +181,14 @@ export async function loadAllSkills(): Promise<LoadedSkill[]> {
     try {
       const skill = await readSkillFile(skillPath);
       if (skill) {
-        skills.set(skill.name, skill);
+        if (skills.has(skill.name)) {
+          const existing = skills.get(skill.name);
+          console.warn(
+            `Duplicate skill name '${skill.name}' from ${skillPath}. Existing source: ${existing?.source ?? 'unknown'}`,
+          );
+        } else {
+          skills.set(skill.name, skill);
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -204,12 +224,12 @@ export async function getSkillForSubAgent(skillName: string): Promise<SkillLooku
   const matched = skills.find((skill) => skill.name.toLowerCase() === skillName.toLowerCase());
 
   if (!matched) {
-    return { error: `Skill '${skillName}' not found or disabled` };
+    return { error: `Skill '${skillName}' not found` };
   }
 
   if (!matched.enabled) {
     return {
-      error: `Skill '${matched.name}' not found or disabled: ${matched.gatingReason ?? 'disabled'}`,
+      error: `Skill '${matched.name}' is disabled${matched.gatingReason ? `: ${matched.gatingReason}` : ''}`,
     };
   }
 

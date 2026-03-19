@@ -192,17 +192,43 @@ registerTool(
         data: { sessionId: session.id },
       });
 
+      const cleanupSession = async () => {
+        if (session?.id) {
+          await sessionService.deleteSession(session.id);
+        }
+      };
+
       const timeoutMs = Math.max(1, timeoutSeconds ?? 120) * 1000;
       const deadline = Date.now() + timeoutMs;
+      const baseDelayMs = 500;
+      const maxDelayMs = 5000;
+      let delayMs = baseDelayMs;
+      let lastStatus: string | undefined;
 
       while (Date.now() < deadline) {
         const current = await taskQueue.getTask(newTask.id);
         if (!current) {
+          await cleanupSession();
           return { success: false, error: 'Sub-agent task disappeared' };
         }
 
+        if (current.status !== lastStatus) {
+          delayMs = baseDelayMs;
+          lastStatus = current.status;
+        }
+
         if (current.status === 'completed') {
-          const response = (current.result as { response?: string } | undefined)?.response ?? '';
+          const resultValue = current.result;
+          const response =
+            typeof resultValue === 'object' && resultValue !== null &&
+            typeof (resultValue as { response?: unknown }).response === 'string'
+              ? (resultValue as { response: string }).response
+              : undefined;
+
+          if (!response) {
+            await cleanupSession();
+            return { success: false, error: 'Sub-agent completed without a valid response' };
+          }
           return {
             success: true,
             data: {
@@ -213,13 +239,17 @@ registerTool(
         }
 
         if (current.status === 'failed') {
+          await cleanupSession();
           return { success: false, error: `Sub-agent failed: ${current.error ?? 'unknown error'}` };
         }
 
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        const jitter = Math.floor(delayMs * 0.1 * Math.random());
+        await new Promise(resolve => setTimeout(resolve, delayMs + jitter));
+        delayMs = Math.min(delayMs * 2, maxDelayMs);
       }
 
       const timeoutLabel = timeoutSeconds ?? 120;
+      await cleanupSession();
       return { success: false, error: `Sub-agent timed out after ${timeoutLabel}s` };
     },
   }),

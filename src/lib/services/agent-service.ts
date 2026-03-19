@@ -1,7 +1,7 @@
 // OpenClaw Agent Runtime - Agent Service
 // Agent management and status tracking
 
-import type { Agent as DbAgent } from '@prisma/client';
+import { Prisma, type Agent as DbAgent } from '@prisma/client';
 import { db } from '@/lib/db';
 import { Agent, AgentStatus } from '@/lib/types';
 
@@ -23,20 +23,22 @@ class AgentService {
    * Create a new agent
    */
   async createAgent(input: CreateAgentInput): Promise<Agent> {
-    const defaultAgent = await db.agent.findFirst({
-      where: { isDefault: true },
-      select: { id: true },
-    });
+    const agent = await db.$transaction(async (tx) => {
+      const defaultAgent = await tx.agent.findFirst({
+        where: { isDefault: true },
+        select: { id: true },
+      });
 
-    const agent = await db.agent.create({
-      data: {
-        name: input.name,
-        description: input.description,
-        skills: JSON.stringify(input.skills ?? []),
-        status: 'idle',
-        isDefault: !defaultAgent,
-      },
-    });
+      return tx.agent.create({
+        data: {
+          name: input.name,
+          description: input.description,
+          skills: JSON.stringify(input.skills ?? []),
+          status: 'idle',
+          isDefault: !defaultAgent,
+        },
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
     return this.mapAgent(agent);
   }
@@ -56,26 +58,27 @@ class AgentService {
    * Set an agent as the default (exactly one default)
    */
   async setDefaultAgent(agentId: string): Promise<Agent | null> {
-    const agent = await db.agent.findUnique({
-      where: { id: agentId },
-    });
+    return db.$transaction(async (tx) => {
+      const agent = await tx.agent.findUnique({
+        where: { id: agentId },
+      });
 
-    if (!agent) {
-      return null;
-    }
+      if (!agent) {
+        return null;
+      }
 
-    const [, updated] = await db.$transaction([
-      db.agent.updateMany({
+      await tx.agent.updateMany({
         where: { isDefault: true },
         data: { isDefault: false },
-      }),
-      db.agent.update({
+      });
+
+      const updated = await tx.agent.update({
         where: { id: agentId },
         data: { isDefault: true },
-      }),
-    ]);
+      });
 
-    return this.mapAgent(updated);
+      return this.mapAgent(updated);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
   /**
@@ -129,19 +132,38 @@ class AgentService {
    * Delete agent and all related data
    */
   async deleteAgent(agentId: string): Promise<boolean> {
-    const agent = await db.agent.findUnique({
-      where: { id: agentId },
-    });
+    return db.$transaction(async (tx) => {
+      const agent = await tx.agent.findUnique({
+        where: { id: agentId },
+      });
 
-    if (!agent) {
-      return false;
-    }
+      if (!agent) {
+        return false;
+      }
 
-    await db.agent.delete({
-      where: { id: agentId },
-    });
+      await tx.agent.delete({
+        where: { id: agentId },
+      });
 
-    return true;
+      if (agent.isDefault) {
+        const replacement = await tx.agent.findFirst({
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (replacement) {
+          await tx.agent.updateMany({
+            where: { isDefault: true },
+            data: { isDefault: false },
+          });
+          await tx.agent.update({
+            where: { id: replacement.id },
+            data: { isDefault: true },
+          });
+        }
+      }
+
+      return true;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
   /**

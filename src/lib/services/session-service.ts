@@ -176,6 +176,25 @@ class SessionService {
   }
 
   /**
+   * Delete a session by ID
+   */
+  async deleteSession(sessionId: string): Promise<boolean> {
+    const session = await db.session.findUnique({
+      where: { id: sessionId },
+    });
+
+    if (!session) {
+      return false;
+    }
+
+    await db.session.delete({
+      where: { id: sessionId },
+    });
+
+    return true;
+  }
+
+  /**
    * Get all sessions for an agent
    */
   async getAgentSessions(agentId: string): Promise<Array<{

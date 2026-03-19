@@ -187,7 +187,12 @@ class InputManagerService {
       resolvedAgentId = resolved.agentId;
     }
 
-    // Log the webhook
+    const agent = await agentService.getAgent(resolvedAgentId);
+    if (!agent || agent.status === 'disabled') {
+      return { success: false, error: 'Agent not found or disabled' };
+    }
+
+    // Log the webhook after validating the agent
     const webhookLog = await db.webhookLog.create({
       data: {
         source: input.source,
@@ -195,11 +200,6 @@ class InputManagerService {
         processed: false,
       },
     });
-
-    const agent = await agentService.getAgent(resolvedAgentId);
-    if (!agent || agent.status === 'disabled') {
-      return { success: false, error: 'Agent not found or disabled' };
-    }
 
     // Create task
     const task = await taskQueue.createTask({

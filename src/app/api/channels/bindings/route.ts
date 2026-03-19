@@ -25,7 +25,7 @@ export async function GET() {
       channel: binding.channel,
       channelKey: binding.channelKey,
       agentId: binding.agentId,
-      agentName: binding.agent.name,
+      agentName: binding.agent?.name ?? null,
       createdAt: binding.createdAt,
     }));
 
@@ -34,9 +34,9 @@ export async function GET() {
       data,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[ChannelBinding GET] Failed to list bindings:', error);
     return NextResponse.json(
-      { success: false, error: message },
+      { success: false, error: 'Internal server error' },
       { status: 500 },
     );
   }
@@ -45,7 +45,18 @@ export async function GET() {
 // POST /api/channels/bindings - Create a new channel binding
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    let body: { channel?: string; channelKey?: string; agentId?: string };
+    try {
+      body = await request.json();
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        return NextResponse.json(
+          { success: false, error: 'Invalid JSON payload' },
+          { status: 400 },
+        );
+      }
+      throw error;
+    }
     const { channel, channelKey, agentId } = body as {
       channel?: string;
       channelKey?: string;
@@ -80,9 +91,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const message = error instanceof Error ? error.message : 'Unknown error';
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+      return NextResponse.json(
+        { success: false, error: 'Invalid agentId: referenced agent not found' },
+        { status: 400 },
+      );
+    }
+
+    console.error('[ChannelBinding POST] Failed to create binding:', error);
     return NextResponse.json(
-      { success: false, error: message },
+      { success: false, error: 'Internal server error' },
       { status: 500 },
     );
   }

@@ -36,8 +36,11 @@ export async function POST(request: NextRequest) {
     const parsed = createAgentSchema.safeParse(body);
 
     if (!parsed.success) {
+      const { formErrors, fieldErrors } = parsed.error.flatten();
+      const fieldMessages = Object.values(fieldErrors).flat().filter(Boolean);
+      const message = [...formErrors, ...fieldMessages].join(', ') || 'Invalid request payload';
       return NextResponse.json(
-        { success: false, error: parsed.error.flatten().formErrors.join(', ') },
+        { success: false, error: message },
         { status: 400 }
       );
     }

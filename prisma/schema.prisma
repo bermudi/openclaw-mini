@@ -60,6 +60,7 @@ model ChannelBinding {
   agent      Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
   @@unique([channel, channelKey])
+  @@index([agentId])
   @@map("channel_bindings")
 }
 
@@ -87,6 +88,7 @@ model Task {
   childTasks  Task[]   @relation("TaskParent")
   
   @@index([status, priority, createdAt])
+  @@index([parentTaskId])
   @@map("tasks")
 }
 
