@@ -179,19 +179,9 @@ class SessionService {
     sessionId: string,
     metadata: Record<string, unknown>
   ): Promise<void> {
-    const session = await db.session.findUnique({
-      where: { id: sessionId },
-      select: { context: true },
-    });
-    if (!session) return;
-
-    const parsedContext = this.parseContext(session.context);
-    parsedContext.metadata = { ...parsedContext.metadata, ...metadata };
-
-    await db.session.update({
-      where: { id: sessionId },
-      data: { context: JSON.stringify(parsedContext) },
-    });
+    void sessionId;
+    void metadata;
+    throw new Error('Session metadata updates are no longer supported because Session.context is reserved for legacy migration only.');
   }
 
   /**
@@ -301,17 +291,6 @@ class SessionService {
 
     this.compactingSessions.set(sessionId, compaction);
     return compaction;
-  }
-
-  /**
-   * Parse context JSON
-   */
-  private parseContext(contextStr: string): SessionContext {
-    try {
-      return JSON.parse(contextStr) as SessionContext;
-    } catch {
-      return { messages: [], metadata: {} };
-    }
   }
 
   private async compactSessionInternal(

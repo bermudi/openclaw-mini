@@ -178,6 +178,27 @@ test('appendToContext stores SessionMessage rows, getSessionContext formats them
   expect(rows.some(row => row.content === 'parallel-2')).toBe(true);
 });
 
+test('updateMetadata no longer writes legacy Session.context storage', async () => {
+  const agent = await createAgent('Session Metadata Agent');
+  const session = await sessionService.getOrCreateSession(agent.id, 'main', 'telegram', 'metadata-1');
+
+  const before = await db.session.findUnique({
+    where: { id: session.id },
+    select: { context: true },
+  });
+
+  await expect(
+    sessionService.updateMetadata(session.id, { replyToMessageId: 42 }),
+  ).rejects.toThrow('Session metadata updates are no longer supported');
+
+  const after = await db.session.findUnique({
+    where: { id: session.id },
+    select: { context: true },
+  });
+
+  expect(after?.context).toBe(before?.context);
+});
+
 test('appendToContext auto-compacts above threshold and manual compact endpoint no-ops below retention', async () => {
   process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '4';
   process.env.OPENCLAW_SESSION_RETAIN_COUNT = '2';
