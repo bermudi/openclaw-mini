@@ -14,6 +14,16 @@ type SpawnResult = {
   data?: { response?: string };
 };
 
+type InputRouteResponse = {
+  success?: boolean;
+  data?: {
+    taskId?: string;
+    sessionId?: string;
+  };
+  error?: string;
+  message?: string;
+};
+
 mock.module('ai', () => ({
   generateText: async ({ system }: { system?: string }) => {
     lastSystemPrompt = system ?? '';
@@ -34,6 +44,7 @@ let agentExecutor: typeof import('../src/lib/services/agent-executor').agentExec
 let skillService: typeof import('../src/lib/services/skill-service');
 let toolsModule: typeof import('../src/lib/tools');
 let channelBindingByIdRoute: typeof import('../src/app/api/channels/bindings/[id]/route');
+let inputRoute: typeof import('../src/app/api/input/route');
 
 async function resetDb() {
   await db.task.deleteMany();
@@ -103,6 +114,7 @@ beforeAll(async () => {
   skillService = await import('../src/lib/services/skill-service');
   toolsModule = await import('../src/lib/tools');
   channelBindingByIdRoute = await import('../src/app/api/channels/bindings/[id]/route');
+  inputRoute = await import('../src/app/api/input/route');
 
   await resetDb();
 });
@@ -395,15 +407,34 @@ test('end-to-end input routes without agentId and prompt includes skill summarie
   const agent = await agentService.createAgent({ name: 'Main Agent' });
   await agentService.setDefaultAgent(agent.id);
 
-  const result = await inputManager.processInput({
-    type: 'message',
-    channel: 'telegram',
-    channelKey: 'chat-500',
-    content: 'Find info',
+  const request = new NextRequest('http://localhost/api/input', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      input: {
+        type: 'message',
+        channel: 'telegram',
+        channelKey: 'chat-500',
+        content: 'Find info',
+      },
+    }),
   });
-  expect(result.success).toBe(true);
+  const response = await inputRoute.POST(request);
+  expect(response.status).toBe(200);
 
-  const execResult = await agentExecutor.executeTask(result.taskId ?? '');
+  const responseBody = (await response.json()) as InputRouteResponse;
+  expect(responseBody.success).toBe(true);
+  expect(responseBody.data?.taskId).toBeDefined();
+
+  const taskId = responseBody.data?.taskId;
+  if (!taskId) {
+    throw new Error(`Input route failed to return taskId: ${responseBody.error ?? 'unknown error'}`);
+  }
+
+  const createdTask = await taskQueue.getTask(taskId);
+  expect(createdTask?.agentId).toBe(agent.id);
+
+  const execResult = await agentExecutor.executeTask(taskId);
   if (!execResult.success) {
     throw new Error(`Executor failed: ${execResult.error ?? 'unknown error'}`);
   }
