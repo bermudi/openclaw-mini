@@ -98,7 +98,8 @@ export async function POST(
     }
 
     // Verify webhook signatures for each trigger
-    const validTriggers = [];
+    type MatchingTrigger = (typeof matchingTriggers)[number];
+    const validTriggers: MatchingTrigger[] = [];
     for (const trigger of matchingTriggers) {
       const config = JSON.parse(trigger.config);
       
@@ -131,7 +132,7 @@ export async function POST(
     const eventType = extractWebhookEvent(source, payload);
 
     // Create tasks for each valid trigger
-    const tasks = [];
+    const tasks: Awaited<ReturnType<typeof taskQueue.createTask>>[] = [];
     for (const trigger of validTriggers) {
       const agent = trigger.agent;
       

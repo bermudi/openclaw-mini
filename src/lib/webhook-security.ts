@@ -170,7 +170,12 @@ export function extractWebhookEvent(source: string, payload: Record<string, unkn
       return (payload.action as string) || (payload.event as string) || 'unknown';
     
     case 'slack':
-      return (payload.type as string) || (payload.event?.type as string) || 'unknown';
+      const slackEvent = payload.event;
+      const slackEventType =
+        typeof slackEvent === 'object' && slackEvent !== null && 'type' in slackEvent
+          ? (slackEvent as { type?: unknown }).type
+          : undefined;
+      return (payload.type as string) || (typeof slackEventType === 'string' ? slackEventType : 'unknown');
     
     case 'jira':
       return (payload.webhookEvent as string) || 'unknown';

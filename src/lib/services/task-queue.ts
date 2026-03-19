@@ -1,11 +1,13 @@
 // OpenClaw Agent Runtime - Task Queue Service
 // Sequential task processing with priority ordering
 
-import type { Task as DbTask } from '@prisma/client';
+import type { Prisma, PrismaClient, Task as DbTask } from '@prisma/client';
 import { db } from '@/lib/db';
 import { Task, TaskStatus, TaskType } from '@/lib/types';
 import { broadcastTaskCreated, broadcastTaskStarted, broadcastTaskCompleted, broadcastTaskFailed } from './ws-client';
 import { auditService } from './audit-service';
+
+type DbClient = PrismaClient | Prisma.TransactionClient;
 
 export interface CreateTaskInput {
   agentId: string;
@@ -138,7 +140,18 @@ class TaskQueueService {
    * Complete a task with result
    */
   async completeTask(taskId: string, result?: Record<string, unknown>): Promise<Task | null> {
-    const task = await db.task.findUnique({
+    const updated = await this.completeTaskTx(db, taskId, result);
+    if (!updated) {
+      return null;
+    }
+
+    this.completeTaskSideEffects(updated.agentId, taskId, result);
+
+    return updated;
+  }
+
+  async completeTaskTx(tx: DbClient, taskId: string, result?: Record<string, unknown>): Promise<Task | null> {
+    const task = await tx.task.findUnique({
       where: { id: taskId },
     });
 
@@ -146,7 +159,7 @@ class TaskQueueService {
       return null;
     }
 
-    const updated = await db.task.update({
+    const updated = await tx.task.update({
       where: { id: taskId },
       data: {
         status: 'completed',
@@ -155,21 +168,25 @@ class TaskQueueService {
       },
     });
 
-    this.processing.delete(task.agentId);
-
-    const mappedTask = this.mapTask(updated);
-
-    // Broadcast task completed event
-    broadcastTaskCompleted(task.agentId, taskId, result);
-
-    return mappedTask;
+    return this.mapTask(updated);
   }
 
   /**
    * Fail a task with error
    */
   async failTask(taskId: string, error: string): Promise<Task | null> {
-    const task = await db.task.findUnique({
+    const updated = await this.failTaskTx(db, taskId, error);
+    if (!updated) {
+      return null;
+    }
+
+    this.failTaskSideEffects(updated.agentId, taskId, error);
+
+    return updated;
+  }
+
+  async failTaskTx(tx: DbClient, taskId: string, error: string): Promise<Task | null> {
+    const task = await tx.task.findUnique({
       where: { id: taskId },
     });
 
@@ -177,7 +194,7 @@ class TaskQueueService {
       return null;
     }
 
-    const updated = await db.task.update({
+    const updated = await tx.task.update({
       where: { id: taskId },
       data: {
         status: 'failed',
@@ -186,14 +203,17 @@ class TaskQueueService {
       },
     });
 
-    this.processing.delete(task.agentId);
+    return this.mapTask(updated);
+  }
 
-    const mappedTask = this.mapTask(updated);
+  completeTaskSideEffects(agentId: string, taskId: string, result?: Record<string, unknown>): void {
+    this.processing.delete(agentId);
+    broadcastTaskCompleted(agentId, taskId, result);
+  }
 
-    // Broadcast task failed event
-    broadcastTaskFailed(task.agentId, taskId, error);
-
-    return mappedTask;
+  failTaskSideEffects(agentId: string, taskId: string, error: string): void {
+    this.processing.delete(agentId);
+    broadcastTaskFailed(agentId, taskId, error);
   }
 
   /**

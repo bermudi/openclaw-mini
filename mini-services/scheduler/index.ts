@@ -3,6 +3,8 @@
 
 import cron from 'node-cron';
 import { PrismaClient } from '@prisma/client';
+import { initializeAdapters } from '../../src/lib/adapters';
+import { processPendingDeliveries } from '../../src/lib/services/delivery-service';
 
 const prisma = new PrismaClient();
 
@@ -13,6 +15,8 @@ const HEARTBEAT_CHECK_INTERVAL = 60000; // 1 minute
 let isRunning = false;
 let tasksProcessed = 0;
 let triggersFired = 0;
+let deliveriesSent = 0;
+let deliveriesFailed = 0;
 
 console.log('[Scheduler] OpenClaw Scheduler Service starting...');
 
@@ -142,9 +146,20 @@ async function processDueTriggers() {
 // ============================================
 // Cron Expression Parser
 // ============================================
+type CronExpressionParser = {
+  parseExpression?: (expression: string) => {
+    next: () => {
+      toDate: () => Date;
+    };
+  };
+};
+
 function getNextCronDate(expression: string): Date {
   try {
-    const schedule = cron.parseExpression(expression);
+    const schedule = (cron as CronExpressionParser).parseExpression?.(expression);
+    if (!schedule) {
+      throw new Error('Cron expression parsing is unavailable');
+    }
     return schedule.next().toDate();
   } catch (error) {
     console.error('[Scheduler] Invalid cron expression:', expression);
@@ -176,11 +191,26 @@ async function cleanupOldTasks() {
   }
 }
 
+async function runDeliveryLoop() {
+  try {
+    const stats = await processPendingDeliveries();
+    deliveriesSent += stats.sent;
+    deliveriesFailed += stats.failed;
+  } catch (error) {
+    console.error('[Scheduler] Error processing deliveries:', error);
+  } finally {
+    if (isRunning) {
+      setTimeout(runDeliveryLoop, 2000);
+    }
+  }
+}
+
 // ============================================
 // Main Loop
 // ============================================
 async function start() {
   isRunning = true;
+  initializeAdapters();
   console.log('[Scheduler] Service started');
 
   // Task polling loop
@@ -206,10 +236,11 @@ async function start() {
   // Initial processing
   await processPendingTasks();
   await processDueTriggers();
+  void runDeliveryLoop();
 
   // Status logging every 5 minutes
   setInterval(() => {
-    console.log(`[Scheduler] Status: ${tasksProcessed} tasks processed, ${triggersFired} triggers fired`);
+    console.log(`[Scheduler] Status: ${tasksProcessed} tasks processed, ${triggersFired} triggers fired, ${deliveriesSent} deliveries sent, ${deliveriesFailed} deliveries failed`);
   }, 300000);
 }
 

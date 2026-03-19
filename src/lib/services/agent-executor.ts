@@ -2,13 +2,15 @@
 // Execute tasks using AI integration with tool support
 
 import { generateText, stepCountIs } from 'ai';
+import { db } from '@/lib/db';
 import { taskQueue } from './task-queue';
 import { agentService } from './agent-service';
 import { memoryService } from './memory-service';
 import { sessionService } from './session-service';
 import { auditService } from './audit-service';
+import { enqueueDeliveryTx } from './delivery-service';
 import { getLanguageModel } from './model-provider';
-import { ChannelType, Task } from '@/lib/types';
+import { ChannelType, DeliveryTarget, Task } from '@/lib/types';
 import { getLowRiskTools, getToolsByNames, getToolsForAgent, type ToolResult, withSpawnSubagentContext } from '@/lib/tools';
 import { getSkillForSubAgent, getSkillSummaries } from './skill-service';
 
@@ -122,14 +124,24 @@ class AgentExecutorService {
         data: (toolResult.output as ToolResult | undefined)?.data,
       }));
 
-      // Update session context if this is a message
+      const payload = task.payload as {
+        content?: string;
+        sender?: string;
+        channel?: ChannelType;
+        channelKey?: string;
+        deliveryTarget?: DeliveryTarget;
+      };
+      const deliveryTarget = task.type === 'message'
+        ? payload.deliveryTarget ?? this.buildFallbackDeliveryTarget(payload)
+        : undefined;
+      const taskResult = {
+        response,
+        taskType: task.type,
+        toolCalls: executionToolCalls.map(tc => ({ tool: tc.tool, success: tc.result.success })),
+      };
+      const shouldAutoDeliver = task.type === 'message' && response.trim().length > 0 && !!deliveryTarget;
+
       if (task.sessionId && task.type === 'message') {
-        const payload = task.payload as {
-          content?: string;
-          sender?: string;
-          channel?: ChannelType;
-          channelKey?: string;
-        };
         await sessionService.appendToContext(task.sessionId, {
           role: 'user',
           content: payload.content || '',
@@ -145,29 +157,26 @@ class AgentExecutorService {
         });
       }
 
-      // Update memory with this interaction
-      await memoryService.appendHistory(
-        task.agentId,
-        `**Task ${task.id}** (${task.type}): ${JSON.stringify(task.payload).substring(0, 200)}...\n\n**Response:** ${response.substring(0, 500)}...${executionToolCalls.length > 0 ? `\n\n**Tool Calls:** ${executionToolCalls.length} tools executed` : ''}`
-      );
+      if (shouldAutoDeliver && deliveryTarget) {
+        // Delivery semantics are at-least-once: a crash after channel API success but before DB status update can duplicate sends.
+        await db.$transaction(async (tx) => {
+          await taskQueue.completeTaskTx(tx, taskId, taskResult);
+          await enqueueDeliveryTx(
+            tx,
+            taskId,
+            deliveryTarget.channel,
+            deliveryTarget.channelKey,
+            JSON.stringify(deliveryTarget),
+            response,
+            `task:${taskId}`,
+          );
+        });
+        taskQueue.completeTaskSideEffects(task.agentId, taskId, taskResult);
+      } else {
+        await taskQueue.completeTask(taskId, taskResult);
+      }
 
-      // Complete task
-      await taskQueue.completeTask(taskId, {
-        response,
-        taskType: task.type,
-        toolCalls: executionToolCalls.map(tc => ({ tool: tc.tool, success: tc.result.success })),
-      });
-
-      // Set agent back to idle
-      await agentService.setAgentStatus(task.agentId, 'idle');
-
-      // Log audit event
-      await auditService.log({
-        action: 'task_completed',
-        entityType: 'task',
-        entityId: taskId,
-        details: { agentId: task.agentId, success: true, toolCallsCount: executionToolCalls.length },
-      });
+      await this.runPostCommitSideEffects(task.agentId, taskId, task, response, executionToolCalls);
 
       return {
         success: true,
@@ -195,6 +204,55 @@ class AgentExecutorService {
         success: false,
         error: errorMessage,
       };
+    }
+  }
+
+  private buildFallbackDeliveryTarget(payload: {
+    channel?: ChannelType;
+    channelKey?: string;
+  }): DeliveryTarget | undefined {
+    if (!payload.channel || !payload.channelKey) {
+      return undefined;
+    }
+
+    return {
+      channel: payload.channel,
+      channelKey: payload.channelKey,
+      metadata: {},
+    };
+  }
+
+  private async runPostCommitSideEffects(
+    agentId: string,
+    taskId: string,
+    task: Task,
+    response: string,
+    executionToolCalls: NonNullable<ExecutionResult['toolCalls']>,
+  ): Promise<void> {
+    try {
+      await memoryService.appendHistory(
+        agentId,
+        `**Task ${task.id}** (${task.type}): ${JSON.stringify(task.payload).substring(0, 200)}...\n\n**Response:** ${response.substring(0, 500)}...${executionToolCalls.length > 0 ? `\n\n**Tool Calls:** ${executionToolCalls.length} tools executed` : ''}`
+      );
+    } catch (error) {
+      console.error('[AgentExecutor] Failed to append task history after commit:', error);
+    }
+
+    try {
+      await agentService.setAgentStatus(agentId, 'idle');
+    } catch (error) {
+      console.error(`[AgentExecutor] Failed to set agent ${agentId} to idle after task ${taskId}:`, error);
+    }
+
+    try {
+      await auditService.log({
+        action: 'task_completed',
+        entityType: 'task',
+        entityId: taskId,
+        details: { agentId, success: true, toolCallsCount: executionToolCalls.length },
+      });
+    } catch (error) {
+      console.error(`[AgentExecutor] Failed to log task_completed audit event for task ${taskId}:`, error);
     }
   }
 

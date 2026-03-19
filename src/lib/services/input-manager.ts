@@ -5,6 +5,7 @@ import { db } from '@/lib/db';
 import { taskQueue } from './task-queue';
 import { agentService } from './agent-service';
 import { 
+  DeliveryTarget,
   Input, 
   MessageInput, 
   HeartbeatInput, 
@@ -82,6 +83,12 @@ class InputManagerService {
       data: { lastActive: new Date() },
     });
 
+    const deliveryTarget: DeliveryTarget = input.deliveryTarget ?? {
+      channel: input.channel,
+      channelKey: input.channelKey,
+      metadata: {},
+    };
+
     // Create task
     const task = await taskQueue.createTask({
       agentId: resolvedAgentId,
@@ -93,6 +100,7 @@ class InputManagerService {
         sender: input.sender,
         channel: input.channel,
         channelKey: input.channelKey,
+        deliveryTarget,
         metadata: input.metadata,
       },
       source: `${input.channel}:${input.channelKey}`,

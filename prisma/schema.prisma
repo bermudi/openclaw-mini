@@ -86,10 +86,36 @@ model Task {
   session     Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
   parentTask  Task?    @relation("TaskParent", fields: [parentTaskId], references: [id], onDelete: SetNull)
   childTasks  Task[]   @relation("TaskParent")
+  deliveries  OutboundDelivery[]
   
   @@index([status, priority, createdAt])
   @@index([parentTaskId])
   @@map("tasks")
+}
+
+// OutboundDelivery - Durable outbox for channel response delivery
+model OutboundDelivery {
+  id                String   @id @default(cuid())
+  taskId            String
+  channel           String
+  channelKey        String
+  targetJson        String
+  text              String
+  status            String   @default("pending") // pending, sent, failed
+  attempts          Int      @default(0)
+  nextAttemptAt     DateTime?
+  lastError         String?
+  sentAt            DateTime?
+  externalMessageId String?
+  dedupeKey         String   @unique
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  task              Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt, createdAt])
+  @@index([taskId])
+  @@map("outbound_deliveries")
 }
 
 // Trigger - Scheduled or event-based triggers
