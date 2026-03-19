@@ -7,6 +7,8 @@ import { NextRequest } from 'next/server';
 import type { PrismaClient } from '@prisma/client';
 
 let lastSystemPrompt = '';
+let lastToolNames: string[] = [];
+let lastStepCount = 0;
 
 type SpawnResult = {
   success?: boolean;
@@ -25,11 +27,21 @@ type InputRouteResponse = {
 };
 
 mock.module('ai', () => ({
-  generateText: async ({ system }: { system?: string }) => {
+  generateText: async ({
+    system,
+    tools,
+  }: {
+    system?: string;
+    tools?: Record<string, unknown>;
+  }) => {
     lastSystemPrompt = system ?? '';
+    lastToolNames = Object.keys(tools ?? {});
     return { text: 'stub response', steps: [] };
   },
-  stepCountIs: () => () => true,
+  stepCountIs: (count: number) => {
+    lastStepCount = count;
+    return () => true;
+  },
 }));
 
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'test.db');
@@ -124,6 +136,8 @@ beforeEach(async () => {
   skillService.clearSkillCache();
   resetSkillsDir();
   lastSystemPrompt = '';
+  lastToolNames = [];
+  lastStepCount = 0;
 });
 
 afterAll(async () => {
@@ -305,6 +319,68 @@ test('skill loading parses frontmatter, gating, and cache TTL', async () => {
   Date.now = originalNow;
 });
 
+test('sub-agent overrides are validated and surfaced as skill diagnostics', async () => {
+  writeSkill(
+    'invalid-overrides',
+    'name: invalid-overrides\ndescription: Invalid overrides\noverrides:\n  provider: made-up\n  allowedTools:\n    - no_such_tool',
+    'This skill should be disabled.',
+  );
+
+  skillService.clearSkillCache();
+  const skills = await skillService.loadAllSkills();
+  const invalidSkill = skills.find(skill => skill.name === 'invalid-overrides');
+
+  expect(invalidSkill?.enabled).toBe(false);
+  expect(invalidSkill?.gatingReason).toContain('invalid overrides');
+  expect(invalidSkill?.overrideErrors?.join(' | ')).toContain('provider');
+  expect(invalidSkill?.overrideErrors?.join(' | ')).toContain('unknown tool');
+});
+
+test('sub-agent config resolution merges base runtime and overrides deterministically', async () => {
+  const { resolveSubAgentConfig } = await import('../src/lib/subagent-config');
+
+  const resolved = resolveSubAgentConfig({
+    baseConfig: {
+      provider: 'openai',
+      model: 'gpt-4.1-mini',
+      agentSkills: ['planner', 'executor'],
+      defaultSystemPrompt: 'Base prompt',
+      defaultToolNames: ['get_datetime', 'random'],
+      defaultMaxIterations: 5,
+    },
+    overrides: {
+      model: 'openrouter/gpt-4',
+      maxIterations: 8,
+      allowedTools: ['get_datetime'],
+    },
+  });
+
+  expect(resolved.provider).toBe('openai');
+  expect(resolved.model).toBe('openrouter/gpt-4');
+  expect(resolved.systemPrompt).toBe('Base prompt');
+  expect(resolved.maxIterations).toBe(8);
+  expect(resolved.allowedSkills).toEqual(['planner', 'executor']);
+  expect(resolved.allowedTools).toEqual(['get_datetime']);
+  expect(resolved.overrideFieldsApplied).toEqual(['model', 'maxIterations', 'allowedTools']);
+});
+
+test('model provider resolves credentialRef from environment at instantiation time', async () => {
+  process.env.OPENCLAW_CREDENTIAL_PROVIDERS_OPENROUTER_PLANNER = 'planner-secret';
+
+  const { resolveModelConfig } = await import('../src/lib/services/model-provider');
+  const resolved = resolveModelConfig({
+    provider: 'openrouter',
+    model: 'openrouter/gpt-4',
+    credentialRef: 'providers/openrouter/planner',
+  });
+
+  expect(resolved.apiKey).toBe('planner-secret');
+  expect(resolved.credentialRef).toBe('providers/openrouter/planner');
+  expect(resolved.baseURL).toBe('https://openrouter.ai/api/v1');
+
+  delete process.env.OPENCLAW_CREDENTIAL_PROVIDERS_OPENROUTER_PLANNER;
+});
+
 test('spawn_subagent tool handles success, missing skill, and timeout', async () => {
   writeSkill(
     'helper',
@@ -353,6 +429,89 @@ test('spawn_subagent tool handles success, missing skill, and timeout', async ()
   const timeoutResult = (await timeoutPromise) as SpawnResult | undefined;
   expect(timeoutResult?.success).toBe(false);
   expect(timeoutResult?.error).toContain('timed out');
+});
+
+test('sub-agent executor applies overrides to prompt, toolset, iterations, and audit logs', async () => {
+  writeSkill(
+    'planner',
+    'name: planner\ndescription: Planning skill\ntools:\n  - get_datetime\n  - random\noverrides:\n  systemPrompt: Specialized planner prompt\n  maxIterations: 8\n  allowedTools:\n    - get_datetime',
+    'Base planner instructions.',
+  );
+  skillService.clearSkillCache();
+
+  const agent = await agentService.createAgent({ name: 'Planner Agent', skills: ['planner'] });
+  const task = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'subagent',
+    priority: 5,
+    payload: { task: 'Plan the work', skill: 'planner' },
+    source: 'test',
+    skillName: 'planner',
+  });
+
+  const result = await agentExecutor.executeTask(task.id);
+  if (!result.success) {
+    throw new Error(`Executor failed: ${result.error ?? 'unknown error'}`);
+  }
+
+  expect(lastSystemPrompt).toBe('Specialized planner prompt');
+  expect(lastToolNames).toEqual(['get_datetime']);
+  expect(lastStepCount).toBe(8);
+
+  const auditLogs = await db.auditLog.findMany({
+    where: {
+      entityId: task.id,
+      action: 'subagent_overrides_applied',
+    },
+  });
+  expect(auditLogs).toHaveLength(1);
+  expect(JSON.parse(auditLogs[0].details)).toMatchObject({
+    agentId: agent.id,
+    skill: 'planner',
+    overrideFieldsApplied: ['systemPrompt', 'maxIterations', 'allowedTools'],
+  });
+});
+
+test('sub-agent policy rejects disallowed tool and skill invocations', async () => {
+  writeSkill(
+    'helper',
+    'name: helper\ndescription: Helper skill',
+    'Handle helper work.',
+  );
+  writeSkill(
+    'planner',
+    'name: planner\ndescription: Planner skill',
+    'Handle planning work.',
+  );
+  skillService.clearSkillCache();
+
+  const randomTool = toolsModule.getTool('random');
+  const spawnTool = toolsModule.getTool('spawn_subagent');
+  if (!randomTool?.execute || !spawnTool?.execute) {
+    throw new Error('Expected tools are not registered');
+  }
+
+  await expect(
+    toolsModule.withSpawnSubagentContext(
+      {
+        agentId: 'agent-1',
+        parentTaskId: 'task-1',
+        allowedTools: ['get_datetime'],
+      },
+      () => randomTool.execute?.({ type: 'number' }, { toolCallId: 'tool-1', messages: [] }),
+    ),
+  ).rejects.toThrow("Tool 'random' is not permitted for this sub-agent");
+
+  await expect(
+    toolsModule.withSpawnSubagentContext(
+      {
+        agentId: 'agent-1',
+        parentTaskId: 'task-1',
+        allowedSkills: ['helper'],
+      },
+      () => spawnTool.execute?.({ skill: 'planner', task: 'do planner work' }, { toolCallId: 'tool-2', messages: [] }),
+    ),
+  ).rejects.toThrow("Skill 'planner' is not permitted for this sub-agent");
 });
 
 test('channel binding delete requires API key auth', async () => {

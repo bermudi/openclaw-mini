@@ -9,10 +9,11 @@ import { memoryService } from './memory-service';
 import { sessionService } from './session-service';
 import { auditService } from './audit-service';
 import { enqueueDeliveryTx } from './delivery-service';
-import { getLanguageModel } from './model-provider';
+import { getLanguageModel, getModelConfig } from './model-provider';
 import { ChannelType, DeliveryTarget, Task } from '@/lib/types';
 import { getLowRiskTools, getToolsByNames, getToolsForAgent, type ToolResult, withSpawnSubagentContext } from '@/lib/tools';
 import { getSkillForSubAgent, getSkillSummaries } from './skill-service';
+import { type SubAgentOverrides, resolveSubAgentConfig } from '@/lib/subagent-config';
 
 export interface ExecutionResult {
   success: boolean;
@@ -67,39 +68,94 @@ class AgentExecutorService {
       }
 
       const isSubagent = task.type === 'subagent';
-      const skillName = task.skillName ?? (task.payload as { skill?: string }).skill;
+      const subagentPayload = task.payload as {
+        skill?: string;
+        skillTools?: string[];
+        systemPrompt?: string;
+        overrides?: SubAgentOverrides;
+      };
+      const skillName = task.skillName ?? subagentPayload.skill;
       const skill = isSubagent && skillName ? await getSkillForSubAgent(skillName) : undefined;
 
       if (isSubagent && (!skill || !skill.skill)) {
         throw new Error(skill?.error ?? `Skill '${skillName ?? 'unknown'}' not found or disabled`);
       }
 
+      const defaultSubagentSystemPrompt = subagentPayload.systemPrompt
+        ?? skill?.skill?.instructions
+        ?? 'You are a sub-agent executing a focused task.';
+      const defaultSubagentToolNames = subagentPayload.skillTools && subagentPayload.skillTools.length > 0
+        ? subagentPayload.skillTools
+        : (skill?.skill?.tools && skill.skill.tools.length > 0
+            ? skill.skill.tools
+            : Object.keys(getLowRiskTools()));
+      const resolvedSubagentConfig = isSubagent
+        ? resolveSubAgentConfig({
+            baseConfig: {
+              ...getModelConfig(),
+              agentSkills: agent.skills,
+              defaultSystemPrompt: defaultSubagentSystemPrompt,
+              defaultToolNames: defaultSubagentToolNames,
+            },
+            overrides: subagentPayload.overrides ?? skill?.skill?.overrides,
+          })
+        : undefined;
+
       const tools = isSubagent
-        ? (skill?.skill?.tools && skill.skill.tools.length > 0
-            ? getToolsByNames(skill.skill.tools)
-            : getLowRiskTools())
+        ? getToolsByNames(resolvedSubagentConfig?.allowedTools ?? defaultSubagentToolNames)
         : getToolsForAgent(agent.skills);
 
       // Build prompt based on task type
       const prompt = this.buildPrompt(task, context, sessionContext);
 
       const systemPrompt = isSubagent
-        ? (skill?.skill?.instructions ?? 'You are a sub-agent executing a focused task.')
+        ? (resolvedSubagentConfig?.systemPrompt ?? defaultSubagentSystemPrompt)
         : await this.getSystemPrompt(agent, task);
+
+      if (isSubagent && resolvedSubagentConfig) {
+        await auditService.log({
+          action: 'subagent_overrides_applied',
+          entityType: 'task',
+          entityId: task.id,
+          details: {
+            agentId: task.agentId,
+            skill: skillName,
+            overrideFieldsApplied: resolvedSubagentConfig.overrideFieldsApplied,
+          },
+        });
+      }
 
       // Execute with AI SDK
       const executeGeneration = () =>
         generateText({
-          model: getLanguageModel(),
+          model: getLanguageModel(
+            resolvedSubagentConfig
+              ? {
+                  provider: resolvedSubagentConfig.provider,
+                  model: resolvedSubagentConfig.model,
+                  baseURL: resolvedSubagentConfig.baseURL,
+                  apiKey: resolvedSubagentConfig.apiKey,
+                  credentialRef: resolvedSubagentConfig.credentialRef,
+                }
+              : undefined,
+          ),
           system: systemPrompt,
           prompt,
           tools,
-          stopWhen: stepCountIs(5),
+          stopWhen: stepCountIs(resolvedSubagentConfig?.maxIterations ?? 5),
         });
 
-      const result = isSubagent
-        ? await executeGeneration()
-        : await withSpawnSubagentContext({ agentId: task.agentId, parentTaskId: task.id }, executeGeneration);
+      const result = await withSpawnSubagentContext(
+        {
+          agentId: task.agentId,
+          parentTaskId: task.id,
+          allowedSkills: resolvedSubagentConfig?.allowedSkills,
+          allowedTools: resolvedSubagentConfig?.allowedTools,
+          maxToolInvocations: resolvedSubagentConfig?.maxToolInvocations,
+          toolInvocationCount: { count: 0 },
+        },
+        executeGeneration,
+      );
 
       const response = result.text;
       const toolCalls = result.steps.flatMap(step => step.toolCalls ?? []);

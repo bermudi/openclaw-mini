@@ -14,6 +14,8 @@ export async function GET() {
       description: skill.description,
       enabled: skill.enabled,
       gatingReason: skill.gatingReason,
+      overrides: skill.overrides,
+      overrideErrors: skill.overrideErrors,
       source: skill.source,
     }));
 

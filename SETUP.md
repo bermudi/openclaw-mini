@@ -147,6 +147,62 @@ Some tools require specific skills on the agent. Add skills when creating:
 - `communication` → send_message_to_agent, log_event
 - `general` → get_datetime, calculate, random, files
 
+## Sub-agent overrides
+
+Sub-agents are currently defined through `skills/<name>/SKILL.md`. That skill manifest is the bridge to a future dedicated agent manifest layer, and it already supports a frontmatter `overrides` block for runtime specialization.
+
+Supported override fields:
+
+- `model`
+- `provider`
+- `credentialRef`
+- `systemPrompt`
+- `maxIterations`
+- `allowedSkills`
+- `allowedTools`
+- `maxToolInvocations`
+
+Precedence is resolved in this order:
+
+1. Gateway defaults from the environment (`AI_PROVIDER`, `AI_MODEL`, `AI_BASE_URL`)
+2. Parent agent runtime context (for example the agent's allowed skills)
+3. Sub-agent skill defaults from `SKILL.md` (`tools` and the skill body instructions)
+4. `overrides` from the same `SKILL.md`
+
+Only fields present in `overrides` replace upstream values. Unspecified fields continue to inherit from the earlier layers.
+
+Example frontmatter:
+
+```yaml
+---
+name: planner
+description: High-context planning specialist
+tools:
+  - get_datetime
+  - spawn_subagent
+overrides:
+  provider: openrouter
+  model: openrouter/openai/gpt-4.1
+  credentialRef: providers/openrouter/planner
+  systemPrompt: You are the planning specialist. Produce plans, not final execution.
+  maxIterations: 8
+  allowedSkills:
+    - executor
+  allowedTools:
+    - get_datetime
+    - spawn_subagent
+  maxToolInvocations: 3
+---
+```
+
+Security notes:
+
+- Secrets must be referenced through `credentialRef`; do not place raw API keys in `SKILL.md`.
+- `credentialRef` resolves from either `env:YOUR_ENV_VAR` or `OPENCLAW_CREDENTIAL_<SANITIZED_REF>`.
+- For example, `providers/openrouter/planner` maps to `OPENCLAW_CREDENTIAL_PROVIDERS_OPENROUTER_PLANNER`.
+- Audit logs record `overrideFieldsApplied`, but never the secret value itself.
+- Invalid overrides disable the skill and surface the validation error through skill loading and the `/api/skills` endpoint.
+
 ## Environment Variables
 
 Create a `.env` file if needed:

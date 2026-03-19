@@ -6,6 +6,11 @@ import path from 'path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import matter from 'gray-matter';
+import {
+  type SubAgentOverrides,
+  createSubAgentOverridesSchema,
+  formatSubAgentOverrideIssues,
+} from '@/lib/subagent-config';
 
 const SKILLS_DIR = path.join(process.cwd(), 'skills');
 const DEFAULT_CACHE_TTL_MS = 60_000;
@@ -24,6 +29,8 @@ export interface SkillMetadata {
   name: string;
   description: string;
   tools?: string[];
+  overrides?: SubAgentOverrides;
+  overrideErrors?: string[];
   requires?: SkillRequirements;
   enabled: boolean;
   gatingReason?: string;
@@ -50,6 +57,10 @@ export interface SkillSummary {
 interface SkillCache {
   loadedAt: number;
   skills: Map<string, LoadedSkill>;
+}
+
+interface UnvalidatedLoadedSkill extends LoadedSkill {
+  rawOverrides?: unknown;
 }
 
 const cache: SkillCache = {
@@ -119,7 +130,15 @@ function saveCache(skills: Map<string, LoadedSkill>): void {
   cache.loadedAt = Date.now();
 }
 
-async function readSkillFile(skillPath: string): Promise<LoadedSkill | null> {
+function mergeGatingReason(existing: string | undefined, next: string): string {
+  if (!existing) {
+    return next;
+  }
+
+  return `${existing}; ${next}`;
+}
+
+async function readSkillFile(skillPath: string): Promise<UnvalidatedLoadedSkill | null> {
   const raw = await fs.promises.readFile(skillPath, 'utf-8');
   const parsed = matter(raw);
 
@@ -147,6 +166,7 @@ async function readSkillFile(skillPath: string): Promise<LoadedSkill | null> {
     name,
     description,
     tools,
+    rawOverrides: data.overrides,
     requires,
     enabled: !gatingReason,
     gatingReason,
@@ -160,7 +180,7 @@ export async function loadAllSkills(): Promise<LoadedSkill[]> {
     return Array.from(cache.skills.values());
   }
 
-  const skills = new Map<string, LoadedSkill>();
+  const skills = new Map<string, UnvalidatedLoadedSkill>();
 
   if (!fs.existsSync(SKILLS_DIR)) {
     console.info(`Skills directory not found at ${SKILLS_DIR}. No skills loaded.`);
@@ -196,8 +216,43 @@ export async function loadAllSkills(): Promise<LoadedSkill[]> {
     }
   }
 
-  saveCache(skills);
-  return Array.from(skills.values());
+  const { getAvailableToolNames } = await import('@/lib/tools');
+  const overrideSchema = createSubAgentOverridesSchema({
+    knownSkillNames: Array.from(skills.values()).map(skill => skill.name),
+    knownToolNames: getAvailableToolNames(),
+  });
+
+  for (const skill of skills.values()) {
+    if (skill.rawOverrides === undefined) {
+      continue;
+    }
+
+    const overrideResult = overrideSchema.safeParse(skill.rawOverrides);
+    if (!overrideResult.success) {
+      const overrideErrors = formatSubAgentOverrideIssues(overrideResult.error.issues);
+      skill.overrideErrors = overrideErrors;
+      skill.enabled = false;
+      skill.gatingReason = mergeGatingReason(
+        skill.gatingReason,
+        `invalid overrides: ${overrideErrors.join('; ')}`,
+      );
+      console.warn(
+        `Invalid overrides for skill '${skill.name}' at ${skill.source}: ${overrideErrors.join('; ')}`,
+      );
+      continue;
+    }
+
+    skill.overrides = overrideResult.data;
+  }
+
+  const validatedSkills = new Map<string, LoadedSkill>();
+  for (const [name, skill] of skills.entries()) {
+    const { rawOverrides: _rawOverrides, ...validatedSkill } = skill;
+    validatedSkills.set(name, validatedSkill);
+  }
+
+  saveCache(validatedSkills);
+  return Array.from(validatedSkills.values());
 }
 
 export async function getSkillSummaries(agentSkillNames: string[]): Promise<SkillSummary[]> {

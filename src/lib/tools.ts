@@ -9,7 +9,9 @@ import { z } from 'zod';
 import { taskQueue } from '@/lib/services/task-queue';
 import { sessionService } from '@/lib/services/session-service';
 import { db } from '@/lib/db';
+import { auditService } from '@/lib/services/audit-service';
 import { getSkillForSubAgent } from '@/lib/services/skill-service';
+import { getOverrideFieldsApplied } from '@/lib/subagent-config';
 
 export interface ToolParameter {
   name: string;
@@ -19,7 +21,13 @@ export interface ToolParameter {
 }
 
 export function withSpawnSubagentContext<T>(context: SpawnSubagentContext, fn: () => Promise<T>): Promise<T> {
-  return spawnSubagentContext.run(context, fn);
+  return spawnSubagentContext.run(
+    {
+      ...context,
+      toolInvocationCount: context.toolInvocationCount ?? { count: 0 },
+    },
+    fn,
+  );
 }
 
 export interface ToolResult {
@@ -41,6 +49,10 @@ export interface RegisteredTool {
 export interface SpawnSubagentContext {
   agentId: string;
   parentTaskId: string;
+  allowedSkills?: string[];
+  allowedTools?: string[];
+  maxToolInvocations?: number;
+  toolInvocationCount?: { count: number };
 }
 
 // ============================================
@@ -51,7 +63,47 @@ const toolMeta: Map<string, ToolMeta> = new Map();
 const spawnSubagentContext = new AsyncLocalStorage<SpawnSubagentContext>();
 
 export function registerTool(name: string, registeredTool: CoreTool, meta: ToolMeta): void {
-  tools.set(name, registeredTool);
+  const execute = registeredTool.execute;
+  const wrappedTool = execute
+    ? {
+        ...registeredTool,
+        execute: async (input: unknown, options: unknown) => {
+          const context = spawnSubagentContext.getStore();
+          const invocationCount = context?.toolInvocationCount;
+
+          if (context?.allowedTools) {
+            const allowedTools = new Set(context.allowedTools.map(toolName => toolName.toLowerCase()));
+            if (!allowedTools.has(name.toLowerCase())) {
+              throw new Error(`Tool '${name}' is not permitted for this sub-agent`);
+            }
+          }
+
+          if (context?.maxToolInvocations !== undefined && invocationCount) {
+            if (invocationCount.count >= context.maxToolInvocations) {
+              throw new Error(
+                `Tool invocation limit of ${context.maxToolInvocations} reached for this sub-agent`,
+              );
+            }
+            invocationCount.count += 1;
+          }
+
+          if (name === 'spawn_subagent' && context?.allowedSkills) {
+            const requestedSkill = typeof (input as { skill?: unknown }).skill === 'string'
+              ? (input as { skill: string }).skill
+              : undefined;
+            const allowedSkills = new Set(context.allowedSkills.map(skillName => skillName.toLowerCase()));
+
+            if (requestedSkill && !allowedSkills.has(requestedSkill.toLowerCase())) {
+              throw new Error(`Skill '${requestedSkill}' is not permitted for this sub-agent`);
+            }
+          }
+
+          return execute(input, options as never);
+        },
+      }
+    : registeredTool;
+
+  tools.set(name, wrappedTool as CoreTool);
   toolMeta.set(name, meta);
 }
 
@@ -69,6 +121,10 @@ export function getAvailableTools(): RegisteredTool[] {
     if (!meta) return [];
     return [{ name, tool: registeredTool, meta }];
   });
+}
+
+export function getAvailableToolNames(): string[] {
+  return getAvailableTools().map(tool => tool.name);
 }
 
 function jsonSchemaToParameters(schema: JSONSchema7): ToolParameter[] {
@@ -173,10 +229,25 @@ registerTool(
         payload: {
           task,
           skill: skillResult.skill.name,
+          skillTools: skillResult.skill.tools,
+          systemPrompt: skillResult.skill.instructions,
+          overrides: skillResult.skill.overrides,
         },
         source: `subagent:${context.parentTaskId}`,
         parentTaskId: context.parentTaskId,
         skillName: skillResult.skill.name,
+      });
+
+      await auditService.log({
+        action: 'subagent_task_dispatched',
+        entityType: 'task',
+        entityId: newTask.id,
+        details: {
+          agentId: context.agentId,
+          parentTaskId: context.parentTaskId,
+          skill: skillResult.skill.name,
+          overrideFieldsApplied: getOverrideFieldsApplied(skillResult.skill.overrides),
+        },
       });
 
       const sessionScope = `subagent:${newTask.id}`;
