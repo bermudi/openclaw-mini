@@ -2,6 +2,7 @@
 
 import { afterAll, beforeAll, beforeEach, expect, mock, test } from 'bun:test';
 import fs from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 import { NextRequest } from 'next/server';
 import type { PrismaClient } from '@prisma/client';
@@ -49,6 +50,7 @@ const TEST_DB_URL = `file:${TEST_DB_PATH}`;
 const SKILLS_DIR = path.join(process.cwd(), 'skills');
 
 let db: PrismaClient;
+let workspaceService: typeof import('../src/lib/services/workspace-service');
 let agentService: typeof import('../src/lib/services/agent-service').agentService;
 let inputManager: typeof import('../src/lib/services/input-manager').inputManager;
 let taskQueue: typeof import('../src/lib/services/task-queue').taskQueue;
@@ -57,6 +59,7 @@ let skillService: typeof import('../src/lib/services/skill-service');
 let toolsModule: typeof import('../src/lib/tools');
 let channelBindingByIdRoute: typeof import('../src/app/api/channels/bindings/[id]/route');
 let inputRoute: typeof import('../src/app/api/input/route');
+let testWorkspaceDir = '';
 
 async function resetDb() {
   await db.task.deleteMany();
@@ -84,6 +87,20 @@ function writeSkill(name: string, frontmatter: string, body: string) {
     `---\n${frontmatter}\n---\n\n${body}\n`,
     'utf-8',
   );
+}
+
+function resetWorkspaceDir() {
+  if (testWorkspaceDir) {
+    fs.rmSync(testWorkspaceDir, { recursive: true, force: true });
+  }
+
+  testWorkspaceDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-agent-workspace-'));
+  process.env.OPENCLAW_WORKSPACE_DIR = testWorkspaceDir;
+  workspaceService.initializeWorkspace({ workspaceDir: testWorkspaceDir });
+}
+
+function writeWorkspaceBootstrapFile(fileName: string, content: string) {
+  fs.writeFileSync(path.join(testWorkspaceDir, fileName), content, 'utf-8');
 }
 
 async function waitForSubagentTask(parentTaskId: string) {
@@ -119,6 +136,7 @@ beforeAll(async () => {
   const dbModule = await import('../src/lib/db');
   db = dbModule.db;
 
+  workspaceService = await import('../src/lib/services/workspace-service');
   agentService = (await import('../src/lib/services/agent-service')).agentService;
   inputManager = (await import('../src/lib/services/input-manager')).inputManager;
   taskQueue = (await import('../src/lib/services/task-queue')).taskQueue;
@@ -133,6 +151,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await resetDb();
+  resetWorkspaceDir();
   skillService.clearSkillCache();
   resetSkillsDir();
   lastSystemPrompt = '';
@@ -149,6 +168,10 @@ afterAll(async () => {
   if (fs.existsSync(TEST_DB_PATH)) {
     fs.rmSync(TEST_DB_PATH, { force: true });
   }
+  if (testWorkspaceDir) {
+    fs.rmSync(testWorkspaceDir, { recursive: true, force: true });
+  }
+  delete process.env.OPENCLAW_WORKSPACE_DIR;
 });
 
 test('routing resolution covers exact, wildcard, default, missing default, and explicit override', async () => {
@@ -598,6 +621,77 @@ test('end-to-end input routes without agentId and prompt includes skill summarie
     throw new Error(`Executor failed: ${execResult.error ?? 'unknown error'}`);
   }
   expect(execResult.response).toBe('stub response');
-  expect(lastSystemPrompt).toContain('Available skills');
+  expect(lastSystemPrompt).toContain('Available Skills');
   expect(lastSystemPrompt).toContain('web-search');
+});
+
+test('message tasks use workspace persona from SOUL.md', async () => {
+  writeWorkspaceBootstrapFile(
+    'SOUL.md',
+    '# Persona & Tone\n\nYou are a pirate captain. Speak in pirate dialect.\n',
+  );
+
+  const agent = await agentService.createAgent({ name: 'Persona Agent' });
+  const task = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    priority: 3,
+    payload: {
+      channel: 'telegram',
+      channelKey: 'chat-900',
+      sender: 'tester',
+      content: 'How do you sound?',
+    },
+  });
+
+  const execResult = await agentExecutor.executeTask(task.id);
+  if (!execResult.success) {
+    throw new Error(`Executor failed: ${execResult.error ?? 'unknown error'}`);
+  }
+
+  expect(execResult.response).toBe('stub response');
+  expect(lastSystemPrompt).toContain('pirate captain');
+  expect(lastSystemPrompt).not.toContain('Heartbeat Checklist');
+});
+
+test('HEARTBEAT.md is injected for heartbeat tasks and excluded for message tasks', async () => {
+  writeWorkspaceBootstrapFile('HEARTBEAT.md', 'Review the inbox and check scheduled work.\n');
+
+  const agent = await agentService.createAgent({ name: 'Heartbeat Agent' });
+  const heartbeatTask = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'heartbeat',
+    priority: 3,
+    payload: {
+      triggerId: 'trigger-1',
+      timestamp: new Date().toISOString(),
+    },
+  });
+
+  const heartbeatResult = await agentExecutor.executeTask(heartbeatTask.id);
+  if (!heartbeatResult.success) {
+    throw new Error(`Executor failed: ${heartbeatResult.error ?? 'unknown error'}`);
+  }
+
+  expect(lastSystemPrompt).toContain('## Heartbeat Checklist');
+  expect(lastSystemPrompt).toContain('Review the inbox and check scheduled work.');
+
+  const messageTask = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    priority: 3,
+    payload: {
+      channel: 'telegram',
+      channelKey: 'chat-901',
+      sender: 'tester',
+      content: 'Normal message',
+    },
+  });
+
+  const messageResult = await agentExecutor.executeTask(messageTask.id);
+  if (!messageResult.success) {
+    throw new Error(`Executor failed: ${messageResult.error ?? 'unknown error'}`);
+  }
+
+  expect(lastSystemPrompt).not.toContain('## Heartbeat Checklist');
 });

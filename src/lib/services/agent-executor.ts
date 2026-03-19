@@ -14,6 +14,7 @@ import { ChannelType, DeliveryTarget, Task } from '@/lib/types';
 import { getLowRiskTools, getToolsByNames, getToolsForAgent, type ToolResult, withSpawnSubagentContext } from '@/lib/tools';
 import { getSkillForSubAgent, getSkillSummaries } from './skill-service';
 import { type SubAgentOverrides, resolveSubAgentConfig } from '@/lib/subagent-config';
+import { loadBootstrapContext, loadHeartbeatContext } from './workspace-service';
 
 export interface ExecutionResult {
   success: boolean;
@@ -328,14 +329,14 @@ class AgentExecutorService {
    * Get system prompt for agent
    */
   private async getSystemPrompt(
-    agent: { name: string; description?: string; skills: string[] },
+    agent: { skills: string[] },
     task: Task
   ): Promise<string> {
     const summaries = await getSkillSummaries(agent.skills);
     const summaryLines = summaries.map(skill => `- ${skill.name}: ${skill.description}`);
     let skillSection = summaryLines.length > 0
-      ? `Available skills:\n${summaryLines.join('\n')}`
-      : 'No skills are currently available.';
+      ? `## Available Skills\n${summaryLines.join('\n')}`
+      : '## Available Skills\nNo skills are currently available.';
 
     if (skillSection.length > 5000) {
       const limit = 5000;
@@ -348,42 +349,39 @@ class AgentExecutorService {
       skillSection = `${skillSection.slice(0, boundary)}...`;
     }
 
-    return `You are ${agent.name}, an AI agent in the OpenClaw runtime system.
+    const workspaceContext = loadBootstrapContext();
+    const heartbeatContext = task.type === 'heartbeat' ? loadHeartbeatContext() : '';
+    const runtimeSection = `## Runtime Context\nCurrent task type: ${task.type}\nYour Agent ID: ${task.agentId}`;
 
-${agent.description ? `Description: ${agent.description}` : ''}
-
-${skillSection}
-
-Current task type: ${task.type}
-Your Agent ID: ${task.agentId}
-
-You are an event-driven agent. You respond to inputs and perform tasks.
-Be concise, helpful, and focused on the task at hand.
-When processing messages, respond naturally.
-When handling heartbeats, report status or perform maintenance.
-When handling webhooks, process the incoming data appropriately.
-When handling cron jobs, execute the scheduled task.
-
-Always maintain awareness of your persistent memory and context.`;
+    return [workspaceContext, heartbeatContext, skillSection, runtimeSection]
+      .filter(section => section.trim().length > 0)
+      .join('\n\n');
   }
 
   /**
    * Build prompt based on task type
    */
   private buildPrompt(task: Task, context: string, sessionContext: string): string {
-    const contextPreview = context.substring(0, 2000);
-    const sessionPreview = sessionContext.substring(0, 1000);
+    const runtimeMemoryPreview = context.substring(0, 2000).trim();
+    const sessionPreview = sessionContext.substring(0, 1000).trim();
+    const contextSections: string[] = [];
 
-    const sessionSection = sessionPreview 
-      ? `\n\nCURRENT SESSION CONTEXT:\n${sessionPreview}`
+    if (runtimeMemoryPreview) {
+      contextSections.push(`RUNTIME MEMORY SNAPSHOT:\n${runtimeMemoryPreview}`);
+    }
+
+    if (sessionPreview) {
+      contextSections.push(`CURRENT SESSION CONTEXT:\n${sessionPreview}`);
+    }
+
+    const contextSection = contextSections.length > 0
+      ? `\n\n${contextSections.join('\n\n')}`
       : '';
 
     switch (task.type) {
       case 'message':
         return `You have received a new message.
-
-CONTEXT FROM MEMORY:
-${contextPreview}${sessionSection}
+${contextSection}
 
 MESSAGE DETAILS:
 Channel: ${(task.payload as { channel?: string }).channel}
@@ -394,9 +392,7 @@ Please respond appropriately to this message. Use tools if needed.`;
 
       case 'heartbeat':
         return `Heartbeat triggered at ${new Date().toISOString()}.
-
-CONTEXT FROM MEMORY:
-${contextPreview}
+${contextSection}
 
 This is a scheduled check-in. Please:
 1. Review any pending items or context
@@ -406,9 +402,7 @@ This is a scheduled check-in. Please:
 
       case 'cron':
         return `Cron job triggered.
-
-CONTEXT FROM MEMORY:
-${contextPreview}
+${contextSection}
 
 SCHEDULED TIME: ${(task.payload as { scheduledTime?: Date }).scheduledTime}
 
@@ -416,9 +410,7 @@ This is a scheduled task. Execute the appropriate action for this time.`;
 
       case 'webhook':
         return `Webhook received.
-
-CONTEXT FROM MEMORY:
-${contextPreview}
+${contextSection}
 
 SOURCE: ${(task.payload as { source?: string }).source}
 PAYLOAD: ${JSON.stringify((task.payload as { payload?: unknown }).payload, null, 2)}
@@ -427,9 +419,7 @@ Process this webhook data. Use tools to take action if needed.`;
 
       case 'hook':
         return `Internal hook triggered.
-
-CONTEXT FROM MEMORY:
-${contextPreview}
+${contextSection}
 
 EVENT: ${(task.payload as { event?: string }).event}
 DATA: ${JSON.stringify((task.payload as { data?: unknown }).data, null, 2)}
@@ -438,9 +428,7 @@ Handle this system event appropriately.`;
 
       case 'a2a':
         return `Message from another agent.
-
-CONTEXT FROM MEMORY:
-${contextPreview}
+${contextSection}
 
 FROM AGENT: ${(task.payload as { fromAgentId?: string }).fromAgentId}
 MESSAGE: ${(task.payload as { message?: string }).message}
@@ -451,9 +439,7 @@ Process this inter-agent communication. You can respond by using the send_messag
       case 'subagent': {
         const payload = task.payload as { task?: string };
         return `Sub-agent task received.
-
-CONTEXT FROM MEMORY:
-${contextPreview}${sessionSection}
+${contextSection}
 
 TASK:
 ${payload.task ?? 'No task provided.'}`;
@@ -461,9 +447,7 @@ ${payload.task ?? 'No task provided.'}`;
 
       default:
         return `Task received: ${task.type}
-
-CONTEXT FROM MEMORY:
-${contextPreview}`;
+${contextSection}`;
     }
   }
 }
