@@ -5,6 +5,7 @@ import cron from 'node-cron';
 import { PrismaClient } from '@prisma/client';
 import { initializeAdapters } from '../../src/lib/adapters';
 import { processPendingDeliveries } from '../../src/lib/services/delivery-service';
+import { memoryService } from '../../src/lib/services/memory-service';
 
 const prisma = new PrismaClient();
 
@@ -191,6 +192,34 @@ async function cleanupOldTasks() {
   }
 }
 
+async function runTaskLoop() {
+  try {
+    if (isRunning) {
+      await processPendingTasks();
+    }
+  } catch (error) {
+    console.error('[Scheduler] Error in task loop:', error);
+  } finally {
+    if (isRunning) {
+      setTimeout(runTaskLoop, POLL_INTERVAL);
+    }
+  }
+}
+
+async function runTriggerLoop() {
+  try {
+    if (isRunning) {
+      await processDueTriggers();
+    }
+  } catch (error) {
+    console.error('[Scheduler] Error in trigger loop:', error);
+  } finally {
+    if (isRunning) {
+      setTimeout(runTriggerLoop, HEARTBEAT_CHECK_INTERVAL);
+    }
+  }
+}
+
 async function runDeliveryLoop() {
   try {
     const stats = await processPendingDeliveries();
@@ -213,30 +242,30 @@ async function start() {
   initializeAdapters();
   console.log('[Scheduler] Service started');
 
+  // Initial processing
+  await processPendingTasks();
+  await processDueTriggers();
+  void runDeliveryLoop();
+
   // Task polling loop
-  setInterval(async () => {
-    if (isRunning) {
-      await processPendingTasks();
-    }
-  }, POLL_INTERVAL);
+  void runTaskLoop();
 
   // Trigger check loop
-  setInterval(async () => {
-    if (isRunning) {
-      await processDueTriggers();
-    }
-  }, HEARTBEAT_CHECK_INTERVAL);
+  void runTriggerLoop();
 
   // Daily cleanup (at 3 AM)
   cron.schedule('0 3 * * *', async () => {
     console.log('[Scheduler] Running daily cleanup');
     await cleanupOldTasks();
-  });
 
-  // Initial processing
-  await processPendingTasks();
-  await processDueTriggers();
-  void runDeliveryLoop();
+    const agents = await prisma.agent.findMany({
+      select: { id: true },
+    });
+
+    for (const agent of agents) {
+      await memoryService.cleanupHistoryArchives(agent.id);
+    }
+  });
 
   // Status logging every 5 minutes
   setInterval(() => {

@@ -6,15 +6,16 @@ import { db } from '@/lib/db';
 import { taskQueue } from './task-queue';
 import { agentService } from './agent-service';
 import { memoryService } from './memory-service';
-import { sessionService } from './session-service';
+import { sessionService, type SessionContext } from './session-service';
 import { auditService } from './audit-service';
 import { enqueueDeliveryTx } from './delivery-service';
-import { getLanguageModel, getModelConfig } from './model-provider';
+import { getContextWindowSize, getLanguageModel, getModelConfig } from './model-provider';
 import { ChannelType, DeliveryTarget, Task } from '@/lib/types';
 import { getLowRiskTools, getToolsByNames, getToolsForAgent, type ToolResult, withSpawnSubagentContext } from '@/lib/tools';
 import { getSkillForSubAgent, getSkillSummaries } from './skill-service';
 import { type SubAgentOverrides, resolveSubAgentConfig } from '@/lib/subagent-config';
 import { loadBootstrapContext, loadHeartbeatContext } from './workspace-service';
+import { countTokens } from '@/lib/utils/token-counter';
 
 export interface ExecutionResult {
   success: boolean;
@@ -63,9 +64,9 @@ class AgentExecutorService {
       const context = await memoryService.loadAgentContext(task.agentId);
 
       // Load session context if available
-      let sessionContext = '';
+      let sessionMessages: SessionContext['messages'] = [];
       if (task.sessionId) {
-        sessionContext = await sessionService.getSessionContext(task.sessionId);
+        sessionMessages = await sessionService.getSessionMessages(task.sessionId);
       }
 
       const isSubagent = task.type === 'subagent';
@@ -106,12 +107,16 @@ class AgentExecutorService {
         ? getToolsByNames(resolvedSubagentConfig?.allowedTools ?? defaultSubagentToolNames)
         : getToolsForAgent(agent.skills);
 
-      // Build prompt based on task type
-      const prompt = this.buildPrompt(task, context, sessionContext);
-
       const systemPrompt = isSubagent
         ? (resolvedSubagentConfig?.systemPrompt ?? defaultSubagentSystemPrompt)
         : await this.getSystemPrompt(agent, task);
+
+      const prompt = this.buildPrompt(task, {
+        context,
+        sessionMessages,
+        systemPrompt,
+        model: resolvedSubagentConfig?.model ?? getModelConfig().model,
+      });
 
       if (isSubagent && resolvedSubagentConfig) {
         await auditService.log({
@@ -361,23 +366,42 @@ class AgentExecutorService {
   /**
    * Build prompt based on task type
    */
-  private buildPrompt(task: Task, context: string, sessionContext: string): string {
-    const runtimeMemoryPreview = context.substring(0, 2000).trim();
-    const sessionPreview = sessionContext.substring(0, 1000).trim();
+  private buildPrompt(
+    task: Task,
+    input: {
+      context: string;
+      sessionMessages: SessionContext['messages'];
+      systemPrompt: string;
+      model: string;
+    },
+  ): string {
+    const contextWindow = getContextWindowSize(input.model);
+    const responseReserve = Math.max(Math.floor(contextWindow * 0.2), 1000);
+    const totalBudget = Math.max(contextWindow - responseReserve, 0);
+    const taskPromptWithoutContext = this.renderTaskPrompt(task, '');
+    const reservedTokens = countTokens(input.systemPrompt) + countTokens(taskPromptWithoutContext);
+    let remainingBudget = Math.max(totalBudget - reservedTokens, 0);
     const contextSections: string[] = [];
 
-    if (runtimeMemoryPreview) {
-      contextSections.push(`RUNTIME MEMORY SNAPSHOT:\n${runtimeMemoryPreview}`);
+    const sessionSection = this.buildSessionContextSection(input.sessionMessages, remainingBudget);
+    if (sessionSection) {
+      contextSections.push(sessionSection);
+      remainingBudget = Math.max(remainingBudget - countTokens(sessionSection), 0);
     }
 
-    if (sessionPreview) {
-      contextSections.push(`CURRENT SESSION CONTEXT:\n${sessionPreview}`);
+    const memorySection = this.buildBudgetedSection('RUNTIME MEMORY SNAPSHOT', input.context, remainingBudget);
+    if (memorySection) {
+      contextSections.push(memorySection);
     }
 
     const contextSection = contextSections.length > 0
       ? `\n\n${contextSections.join('\n\n')}`
       : '';
 
+    return this.renderTaskPrompt(task, contextSection);
+  }
+
+  private renderTaskPrompt(task: Task, contextSection: string): string {
     switch (task.type) {
       case 'message':
         return `You have received a new message.
@@ -449,6 +473,101 @@ ${payload.task ?? 'No task provided.'}`;
         return `Task received: ${task.type}
 ${contextSection}`;
     }
+  }
+
+  private buildBudgetedSection(label: string, content: string, budget: number): string {
+    const trimmedContent = content.trim();
+    if (!trimmedContent || budget <= 0) {
+      return '';
+    }
+
+    const sectionPrefix = `${label}:\n`;
+    const minimumTokens = countTokens(sectionPrefix);
+    if (budget <= minimumTokens) {
+      return '';
+    }
+
+    const fullSection = `${sectionPrefix}${trimmedContent}`;
+    if (countTokens(fullSection) <= budget) {
+      return fullSection;
+    }
+
+    let low = 0;
+    let high = trimmedContent.length;
+    let best = '';
+
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const candidate = trimmedContent.slice(0, mid).trimEnd();
+      const section = candidate ? `${sectionPrefix}${candidate}` : '';
+      if (section && countTokens(section) <= budget) {
+        best = section;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+
+    return best;
+  }
+
+  private buildSessionContextSection(
+    sessionMessages: SessionContext['messages'],
+    budget: number,
+  ): string {
+    if (sessionMessages.length === 0) {
+      return '';
+    }
+
+    const summaryIndexes = new Set<number>();
+    const regularIndexes: number[] = [];
+
+    sessionMessages.forEach((message, index) => {
+      if (message.role === 'system' && message.content.startsWith('[Session Summary]')) {
+        summaryIndexes.add(index);
+        return;
+      }
+      regularIndexes.push(index);
+    });
+
+    const buildSectionFromIndexes = (indexes: number[]): string => {
+      if (indexes.length === 0) {
+        return '';
+      }
+      const body = indexes
+        .map(index => this.formatSessionMessageForPrompt(sessionMessages[index]!))
+        .join('\n\n');
+      return `CURRENT SESSION CONTEXT:\n${body}`;
+    };
+
+    const summaryOnlyIndexes = [...summaryIndexes].sort((left, right) => left - right);
+    const summaryOnlySection = buildSectionFromIndexes(summaryOnlyIndexes);
+    if (summaryOnlySection && countTokens(summaryOnlySection) > budget) {
+      return summaryOnlySection;
+    }
+
+    const includedRegularIndexes = new Set<number>();
+    let currentSection = summaryOnlySection;
+
+    for (let index = regularIndexes.length - 1; index >= 0; index -= 1) {
+      const candidateIndexes = [...summaryIndexes, regularIndexes[index]!, ...includedRegularIndexes]
+        .sort((left, right) => left - right);
+      const candidateSection = buildSectionFromIndexes(candidateIndexes);
+      if (candidateSection && countTokens(candidateSection) <= budget) {
+        includedRegularIndexes.add(regularIndexes[index]!);
+        currentSection = candidateSection;
+      }
+    }
+
+    return currentSection;
+  }
+
+  private formatSessionMessageForPrompt(message: SessionContext['messages'][number]): string {
+    const sender = message.sender ? ` (${message.sender})` : '';
+    const channelTag = message.channel
+      ? ` [${message.channel}${message.channelKey ? `:${message.channelKey}` : ''}]`
+      : '';
+    return `${message.role}${sender}${channelTag}: ${message.content}`;
   }
 }
 

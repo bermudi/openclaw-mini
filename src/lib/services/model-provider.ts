@@ -3,6 +3,20 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import type { LanguageModel } from 'ai';
 import { PROVIDER_NAMES, loadCredentialRef, type ProviderName } from '@/lib/subagent-config';
 
+const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  'gpt-4.1': 1047576,
+  'gpt-4.1-mini': 1047576,
+  'gpt-4.1-nano': 1047576,
+  'gpt-4o': 128000,
+  'gpt-4o-mini': 128000,
+  'gpt-4-turbo': 128000,
+  'gpt-4': 8192,
+  'gpt-3.5-turbo': 16385,
+  'claude-3-7-sonnet-latest': 200000,
+  'claude-3-5-sonnet-latest': 200000,
+  'claude-3-5-haiku-latest': 200000,
+};
+
 export interface ProviderConfig {
   provider: ProviderName;
   model: string;
@@ -71,6 +85,10 @@ export function resolveModelConfig(overrides?: Partial<ProviderConfig>): Provide
     credentialRef,
     apiKey: overrides?.apiKey ?? (credentialRef ? loadCredentialRef(credentialRef) : undefined) ?? getDefaultApiKey(provider),
   };
+}
+
+export function getContextWindowSize(model: string): number {
+  return MODEL_CONTEXT_WINDOWS[model] ?? 8192;
 }
 
 export function getLanguageModel(overrides?: Partial<ProviderConfig>): LanguageModel {

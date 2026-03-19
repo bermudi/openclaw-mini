@@ -8,6 +8,20 @@ import * as path from 'path';
 
 const MEMORY_DIR = path.join(process.cwd(), 'data', 'memories');
 
+function getPositiveIntegerEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  const parsed = value ? Number.parseInt(value, 10) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getCurrentArchiveDate(date: Date = new Date()): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function buildHistoryValue(entry: string): string {
+  return `# History\n\n${entry}`;
+}
+
 export interface CreateMemoryInput {
   agentId: string;
   key: string;
@@ -176,12 +190,62 @@ class MemoryService {
     const timestamp = new Date().toISOString();
     const newEntry = `\n### ${timestamp}\n\n${entry}\n`;
 
+    const currentValue = memory?.value ?? '# History\n\n';
+    const nextValue = memory ? currentValue + newEntry : buildHistoryValue(newEntry);
+    const historyCapBytes = getPositiveIntegerEnv('OPENCLAW_HISTORY_CAP_BYTES', 50 * 1024);
+
+    if (Buffer.byteLength(nextValue, 'utf-8') > historyCapBytes && memory && memory.value.trim().length > 0) {
+      this.appendHistoryArchive(agentId, memory.value);
+      await this.setMemory({
+        agentId,
+        key: 'history',
+        value: buildHistoryValue(newEntry),
+        category: 'history',
+      });
+      return;
+    }
+
     await this.setMemory({
       agentId,
       key: 'history',
-      value: memory ? memory.value + newEntry : `# History\n\n${newEntry}`,
+      value: nextValue,
       category: 'history',
     });
+  }
+
+  /**
+   * Cleanup history archives
+   */
+  async cleanupHistoryArchives(agentId: string, retentionDays?: number): Promise<number> {
+    const archiveDir = this.getHistoryArchiveDir(agentId);
+    if (!fs.existsSync(archiveDir)) {
+      return 0;
+    }
+
+    const daysToKeep = retentionDays ?? getPositiveIntegerEnv('OPENCLAW_HISTORY_RETENTION_DAYS', 30);
+    const cutoff = new Date();
+    cutoff.setHours(0, 0, 0, 0);
+    cutoff.setDate(cutoff.getDate() - daysToKeep);
+
+    let deleted = 0;
+    for (const fileName of fs.readdirSync(archiveDir)) {
+      const match = /^(\d{4}-\d{2}-\d{2})\.md$/.exec(fileName);
+      if (!match) {
+        continue;
+      }
+
+      const fileDate = new Date(`${match[1]}T00:00:00.000Z`);
+      if (Number.isNaN(fileDate.getTime())) {
+        continue;
+      }
+
+      if (fileDate < cutoff) {
+        fs.unlinkSync(path.join(archiveDir, fileName));
+        deleted += 1;
+      }
+    }
+
+    return deleted;
   }
 
   /**
@@ -262,6 +326,23 @@ class MemoryService {
       updatedAt: memory.updatedAt,
     };
   }
+
+   private appendHistoryArchive(agentId: string, value: string): void {
+     const archiveDir = this.getHistoryArchiveDir(agentId);
+     if (!fs.existsSync(archiveDir)) {
+       fs.mkdirSync(archiveDir, { recursive: true });
+     }
+
+     const archivePath = path.join(archiveDir, `${getCurrentArchiveDate()}.md`);
+     const archiveContent = fs.existsSync(archivePath)
+       ? `\n\n${value}`
+       : value;
+     fs.appendFileSync(archivePath, archiveContent, 'utf-8');
+   }
+
+   private getHistoryArchiveDir(agentId: string): string {
+     return path.join(MEMORY_DIR, agentId, 'history');
+   }
 }
 
 export const memoryService = new MemoryService();

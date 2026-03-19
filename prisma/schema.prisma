@@ -43,10 +43,27 @@ model Session {
   updatedAt   DateTime @updatedAt
   
   agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  messages    SessionMessage[]
   tasks       Task[]
   
   @@unique([agentId, sessionScope])
   @@map("sessions")
+}
+
+model SessionMessage {
+  id         String   @id @default(cuid())
+  sessionId  String
+  role       String
+  content    String
+  sender     String?
+  channel    String?
+  channelKey String?
+  createdAt  DateTime @default(now())
+
+  session    Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("session_messages")
 }
 
 // ChannelBinding - Bind a channel to an agent

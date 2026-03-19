@@ -348,7 +348,6 @@ class InputManagerService {
           channel,
           channelKey,
           sessionScope,
-          context: JSON.stringify({ messages: [], metadata: {} }),
         },
       });
     }
