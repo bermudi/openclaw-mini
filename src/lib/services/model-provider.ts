@@ -2,20 +2,19 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import type { LanguageModel } from 'ai';
 import { PROVIDER_NAMES, loadCredentialRef, type ProviderName } from '@/lib/subagent-config';
+import { modelCatalog } from './model-catalog';
+import { createPoeLanguageModel } from './poe-client';
 
-const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
-  'gpt-4.1': 1047576,
-  'gpt-4.1-mini': 1047576,
-  'gpt-4.1-nano': 1047576,
-  'gpt-4o': 128000,
-  'gpt-4o-mini': 128000,
-  'gpt-4-turbo': 128000,
-  'gpt-4': 8192,
-  'gpt-3.5-turbo': 16385,
-  'claude-3-7-sonnet-latest': 200000,
-  'claude-3-5-sonnet-latest': 200000,
-  'claude-3-5-haiku-latest': 200000,
-};
+const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503]);
+const NON_RETRYABLE_STATUS_CODES = new Set([400, 401, 403]);
+const RETRYABLE_NETWORK_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EAI_AGAIN',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+]);
 
 export interface ProviderConfig {
   provider: ProviderName;
@@ -23,6 +22,11 @@ export interface ProviderConfig {
   apiKey?: string;
   baseURL?: string;
   credentialRef?: string;
+  fallbackModel?: string;
+}
+
+interface ResolveModelConfigOptions {
+  ignoreEnvFallback?: boolean;
 }
 
 function parseProviderName(value: string | undefined): ProviderName {
@@ -33,6 +37,120 @@ function parseProviderName(value: string | undefined): ProviderName {
   return 'openai';
 }
 
+function parseFallbackModelReference(value: string | undefined): Pick<ProviderConfig, 'provider' | 'model'> | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const [providerValue, ...modelParts] = value.split('/');
+  const normalizedProvider = providerValue?.trim().toLowerCase();
+  const model = modelParts.join('/').trim();
+
+  if (!normalizedProvider || model.length === 0) {
+    throw new Error('AI_FALLBACK_MODEL must use provider/model format');
+  }
+
+  if (!PROVIDER_NAMES.includes(normalizedProvider as ProviderName)) {
+    throw new Error(`AI_FALLBACK_MODEL provider '${providerValue}' is not supported`);
+  }
+
+  return {
+    provider: normalizedProvider as ProviderName,
+    model,
+  };
+}
+
+function extractStatusCode(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') {
+    return undefined;
+  }
+
+  const candidate = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    response?: { status?: unknown };
+    cause?: unknown;
+  };
+
+  const directStatus = typeof candidate.status === 'number'
+    ? candidate.status
+    : typeof candidate.statusCode === 'number'
+      ? candidate.statusCode
+      : typeof candidate.response?.status === 'number'
+        ? candidate.response.status
+        : undefined;
+
+  if (typeof directStatus === 'number') {
+    return directStatus;
+  }
+
+  return extractStatusCode(candidate.cause);
+}
+
+function extractErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') {
+    return undefined;
+  }
+
+  const candidate = error as { code?: unknown; cause?: unknown };
+
+  if (typeof candidate.code === 'string') {
+    return candidate.code;
+  }
+
+  return extractErrorCode(candidate.cause);
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  return 'Unknown provider error';
+}
+
+function resolveFallbackModelConfig(config: ProviderConfig): ProviderConfig | undefined {
+  const fallbackReference = parseFallbackModelReference(config.fallbackModel);
+
+  if (!fallbackReference) {
+    return undefined;
+  }
+
+  return resolveModelConfig(
+    {
+      provider: fallbackReference.provider,
+      model: fallbackReference.model,
+      fallbackModel: undefined,
+    },
+    { ignoreEnvFallback: true },
+  );
+}
+
+export function isRetryableModelError(error: unknown): boolean {
+  const statusCode = extractStatusCode(error);
+
+  if (typeof statusCode === 'number') {
+    if (NON_RETRYABLE_STATUS_CODES.has(statusCode)) {
+      return false;
+    }
+
+    if (RETRYABLE_STATUS_CODES.has(statusCode)) {
+      return true;
+    }
+  }
+
+  const errorCode = extractErrorCode(error);
+  if (errorCode && RETRYABLE_NETWORK_CODES.has(errorCode.toUpperCase())) {
+    return true;
+  }
+
+  return false;
+}
+
 function getDefaultBaseUrl(provider: ProviderName): string | undefined {
   if (provider === 'ollama') {
     return 'http://localhost:11434/v1';
@@ -40,6 +158,10 @@ function getDefaultBaseUrl(provider: ProviderName): string | undefined {
 
   if (provider === 'openrouter') {
     return 'https://openrouter.ai/api/v1';
+  }
+
+  if (provider === 'poe') {
+    return 'https://api.poe.com';
   }
 
   return undefined;
@@ -55,10 +177,12 @@ function getDefaultApiKey(provider: ProviderName): string | undefined {
       return process.env.OPENROUTER_API_KEY;
     case 'ollama':
       return 'ollama';
+    case 'poe':
+      return process.env.POE_API_KEY;
   }
 }
 
-export function getModelConfig(): ProviderConfig {
+export function getModelConfig(options: ResolveModelConfigOptions = {}): ProviderConfig {
   const provider = parseProviderName(process.env.AI_PROVIDER);
   const model = process.env.AI_MODEL || 'gpt-4.1-mini';
   const baseURL = process.env.AI_BASE_URL;
@@ -67,11 +191,15 @@ export function getModelConfig(): ProviderConfig {
     model,
     baseURL: baseURL || getDefaultBaseUrl(provider),
     apiKey: getDefaultApiKey(provider),
+    fallbackModel: options.ignoreEnvFallback ? undefined : process.env.AI_FALLBACK_MODEL,
   };
 }
 
-export function resolveModelConfig(overrides?: Partial<ProviderConfig>): ProviderConfig {
-  const baseConfig = getModelConfig();
+export function resolveModelConfig(
+  overrides?: Partial<ProviderConfig>,
+  options: ResolveModelConfigOptions = {},
+): ProviderConfig {
+  const baseConfig = getModelConfig(options);
   const provider = overrides?.provider ?? baseConfig.provider;
   const credentialRef = overrides?.credentialRef;
   const baseURL = overrides?.baseURL
@@ -84,11 +212,12 @@ export function resolveModelConfig(overrides?: Partial<ProviderConfig>): Provide
     baseURL,
     credentialRef,
     apiKey: overrides?.apiKey ?? (credentialRef ? loadCredentialRef(credentialRef) : undefined) ?? getDefaultApiKey(provider),
+    fallbackModel: overrides?.fallbackModel ?? baseConfig.fallbackModel,
   };
 }
 
 export function getContextWindowSize(model: string): number {
-  return MODEL_CONTEXT_WINDOWS[model] ?? 8192;
+  return modelCatalog.getContextWindowSize(model);
 }
 
 export function getLanguageModel(overrides?: Partial<ProviderConfig>): LanguageModel {
@@ -116,6 +245,47 @@ export function getLanguageModel(overrides?: Partial<ProviderConfig>): LanguageM
         baseURL: config.baseURL || getDefaultBaseUrl('openrouter'),
       });
       return openai(config.model);
+    }
+    case 'poe': {
+      return createPoeLanguageModel({
+        model: config.model,
+        apiKey: config.apiKey,
+        baseURL: config.baseURL,
+      });
+    }
+  }
+}
+
+export async function runWithModelFallback<T>(
+  operation: (input: { model: LanguageModel; config: ProviderConfig; isFallback: boolean }) => Promise<T>,
+  overrides?: Partial<ProviderConfig>,
+): Promise<T> {
+  const primaryConfig = resolveModelConfig(overrides);
+
+  try {
+    return await operation({
+      model: getLanguageModel(primaryConfig),
+      config: primaryConfig,
+      isFallback: false,
+    });
+  } catch (error) {
+    const fallbackConfig = resolveFallbackModelConfig(primaryConfig);
+
+    if (!fallbackConfig || !isRetryableModelError(error)) {
+      throw error;
+    }
+
+    try {
+      return await operation({
+        model: getLanguageModel(fallbackConfig),
+        config: fallbackConfig,
+        isFallback: true,
+      });
+    } catch (fallbackError) {
+      throw new AggregateError(
+        [error, fallbackError],
+        `Primary model ${primaryConfig.provider}/${primaryConfig.model} failed: ${getErrorMessage(error)}. Fallback model ${fallbackConfig.provider}/${fallbackConfig.model} also failed: ${getErrorMessage(fallbackError)}`,
+      );
     }
   }
 }

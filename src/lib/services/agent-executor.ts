@@ -9,7 +9,7 @@ import { memoryService } from './memory-service';
 import { sessionService, type SessionContext } from './session-service';
 import { auditService } from './audit-service';
 import { enqueueDeliveryTx } from './delivery-service';
-import { getContextWindowSize, getLanguageModel, getModelConfig } from './model-provider';
+import { getContextWindowSize, getModelConfig, runWithModelFallback } from './model-provider';
 import { ChannelType, DeliveryTarget, Task } from '@/lib/types';
 import { getLowRiskTools, getToolsByNames, getToolsForAgent, type ToolResult, withSpawnSubagentContext } from '@/lib/tools';
 import { getSkillForSubAgent, getSkillSummaries } from './skill-service';
@@ -133,23 +133,25 @@ class AgentExecutorService {
 
       // Execute with AI SDK
       const executeGeneration = () =>
-        generateText({
-          model: getLanguageModel(
-            resolvedSubagentConfig
-              ? {
-                  provider: resolvedSubagentConfig.provider,
-                  model: resolvedSubagentConfig.model,
-                  baseURL: resolvedSubagentConfig.baseURL,
-                  apiKey: resolvedSubagentConfig.apiKey,
-                  credentialRef: resolvedSubagentConfig.credentialRef,
-                }
-              : undefined,
-          ),
-          system: systemPrompt,
-          prompt,
-          tools,
-          stopWhen: stepCountIs(resolvedSubagentConfig?.maxIterations ?? 5),
-        });
+        runWithModelFallback(
+          ({ model }) =>
+            generateText({
+              model,
+              system: systemPrompt,
+              prompt,
+              tools,
+              stopWhen: stepCountIs(resolvedSubagentConfig?.maxIterations ?? 5),
+            }),
+          resolvedSubagentConfig
+            ? {
+                provider: resolvedSubagentConfig.provider,
+                model: resolvedSubagentConfig.model,
+                baseURL: resolvedSubagentConfig.baseURL,
+                apiKey: resolvedSubagentConfig.apiKey,
+                credentialRef: resolvedSubagentConfig.credentialRef,
+              }
+            : undefined,
+        );
 
       const result = await withSpawnSubagentContext(
         {

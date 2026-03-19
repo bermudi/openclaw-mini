@@ -48,6 +48,7 @@ mock.module('ai', () => ({
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
 const SKILLS_DIR = path.join(process.cwd(), 'skills');
+const MEMORY_ROOT = path.join(process.cwd(), 'data', 'memories');
 
 let db: PrismaClient;
 let workspaceService: typeof import('../src/lib/services/workspace-service');
@@ -60,6 +61,7 @@ let toolsModule: typeof import('../src/lib/tools');
 let channelBindingByIdRoute: typeof import('../src/app/api/channels/bindings/[id]/route');
 let inputRoute: typeof import('../src/app/api/input/route');
 let testWorkspaceDir = '';
+let initialMemoryDirs = new Set<string>();
 
 async function resetDb() {
   await db.task.deleteMany();
@@ -103,6 +105,27 @@ function writeWorkspaceBootstrapFile(fileName: string, content: string) {
   fs.writeFileSync(path.join(testWorkspaceDir, fileName), content, 'utf-8');
 }
 
+function captureInitialMemoryDirs() {
+  if (!fs.existsSync(MEMORY_ROOT)) {
+    initialMemoryDirs = new Set();
+    return;
+  }
+
+  initialMemoryDirs = new Set(fs.readdirSync(MEMORY_ROOT));
+}
+
+function cleanupMemoryDirs() {
+  if (!fs.existsSync(MEMORY_ROOT)) {
+    return;
+  }
+
+  for (const entry of fs.readdirSync(MEMORY_ROOT)) {
+    if (!initialMemoryDirs.has(entry)) {
+      fs.rmSync(path.join(MEMORY_ROOT, entry), { recursive: true, force: true });
+    }
+  }
+}
+
 async function waitForSubagentTask(parentTaskId: string) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const tasks = await db.task.findMany({
@@ -121,6 +144,7 @@ beforeAll(async () => {
   process.env.AI_PROVIDER = process.env.AI_PROVIDER ?? 'openai';
   process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? 'test-key';
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
+  captureInitialMemoryDirs();
 
   const dbPush = Bun.spawnSync({
     cmd: ['bunx', 'prisma', 'db', 'push'],
@@ -162,6 +186,7 @@ beforeEach(async () => {
 afterAll(async () => {
   await resetDb();
   await db.$disconnect();
+  cleanupMemoryDirs();
   if (fs.existsSync(SKILLS_DIR)) {
     fs.rmSync(SKILLS_DIR, { recursive: true, force: true });
   }

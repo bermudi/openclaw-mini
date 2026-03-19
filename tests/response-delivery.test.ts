@@ -24,6 +24,7 @@ type AdapterIndexModule = typeof import('../src/lib/adapters');
 
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'response-delivery.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
+const MEMORY_ROOT = path.join(process.cwd(), 'data', 'memories');
 
 let db: PrismaClient;
 type DeliveryRecord = {
@@ -55,9 +56,10 @@ let telegramAdapterModule: TelegramAdapterModule;
 let taskQueueModule: TaskQueueModule;
 let agentServiceModule: AgentServiceModule;
 let inputManagerModule: InputManagerModule;
-let agentExecutorModule: AgentExecutorModule;
+let agentExecutorModule: typeof import('../src/lib/services/agent-executor');
 let telegramWebhookRoute: TelegramWebhookRouteModule;
 let adapterIndexModule: AdapterIndexModule;
+let initialMemoryDirs = new Set<string>();
 
 const originalFetch = global.fetch;
 
@@ -97,11 +99,33 @@ async function createPendingTask(agentId: string, overrides?: Partial<{ type: st
   });
 }
 
+function captureInitialMemoryDirs() {
+  if (!fs.existsSync(MEMORY_ROOT)) {
+    initialMemoryDirs = new Set();
+    return;
+  }
+
+  initialMemoryDirs = new Set(fs.readdirSync(MEMORY_ROOT));
+}
+
+function cleanupMemoryDirs() {
+  if (!fs.existsSync(MEMORY_ROOT)) {
+    return;
+  }
+
+  for (const entry of fs.readdirSync(MEMORY_ROOT)) {
+    if (!initialMemoryDirs.has(entry)) {
+      fs.rmSync(path.join(MEMORY_ROOT, entry), { recursive: true, force: true });
+    }
+  }
+}
+
 beforeAll(async () => {
   process.env.DATABASE_URL = TEST_DB_URL;
   process.env.AI_PROVIDER = process.env.AI_PROVIDER ?? 'openai';
   process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? 'test-key';
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
+  captureInitialMemoryDirs();
 
   const dbPush = Bun.spawnSync({
     cmd: ['bunx', 'prisma', 'db', 'push'],
@@ -141,6 +165,7 @@ afterAll(async () => {
   global.fetch = originalFetch;
   await resetDb();
   await db.$disconnect();
+  cleanupMemoryDirs();
   if (fs.existsSync(TEST_DB_PATH)) {
     fs.rmSync(TEST_DB_PATH, { force: true });
   }

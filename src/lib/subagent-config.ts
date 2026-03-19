@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const PROVIDER_NAMES = ['openai', 'anthropic', 'ollama', 'openrouter'] as const;
+export const PROVIDER_NAMES = ['openai', 'anthropic', 'ollama', 'openrouter', 'poe'] as const;
 export type ProviderName = typeof PROVIDER_NAMES[number];
 
 export const SUB_AGENT_OVERRIDE_FIELDS = [

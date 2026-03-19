@@ -5,7 +5,7 @@ import { generateText } from 'ai';
 import { db } from '@/lib/db';
 import { ChannelType } from '@/lib/types';
 import { memoryService } from './memory-service';
-import { getLanguageModel } from './model-provider';
+import { runWithModelFallback } from './model-provider';
 
 export interface SessionContext {
   messages: Array<{
@@ -338,11 +338,12 @@ class SessionService {
       .map(message => this.formatMessage(this.mapSessionMessage(message), true))
       .join('\n\n');
 
-    const summary = await generateText({
-      model: getLanguageModel(),
-      system: 'Summarize the earlier conversation faithfully. Preserve requests, decisions, commitments, unresolved items, and important facts. Respond with concise plain text.',
-      prompt: historyDump,
-    });
+    const summary = await runWithModelFallback(({ model }) =>
+      generateText({
+        model,
+        system: 'Summarize the earlier conversation faithfully. Preserve requests, decisions, commitments, unresolved items, and important facts. Respond with concise plain text.',
+        prompt: historyDump,
+      }));
 
     const summaryText = summary.text.trim();
     const summaryContent = summaryText.length > 0

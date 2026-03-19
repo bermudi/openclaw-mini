@@ -208,4 +208,23 @@ Security notes:
 Create a `.env` file if needed:
 ```
 DATABASE_URL="file:./db/custom.db"
+AI_PROVIDER="poe"
+AI_MODEL="gpt-5-pro"
+POE_API_KEY="your-poe-api-key"
+AI_FALLBACK_MODEL="openai/gpt-4.1-mini"
+```
+
+Provider notes:
+
+- `POE_API_KEY` authenticates requests when `AI_PROVIDER=poe`.
+- `AI_FALLBACK_MODEL` is optional and must use `provider/model` format, for example `openai/gpt-4.1-mini` or `poe/claude-opus-4.6`.
+- Poe routes `claude-*` models through Poe's Anthropic-compatible endpoint, `gpt-*`/`o3`/`o4-*` through Poe's Responses endpoint, and other models through Poe's chat-completions endpoint.
+
+Example Poe configuration:
+```
+DATABASE_URL="file:./db/custom.db"
+AI_PROVIDER="poe"
+AI_MODEL="claude-opus-4.6"
+POE_API_KEY="your-poe-api-key"
+AI_FALLBACK_MODEL="openai/gpt-4.1-mini"
 ```
