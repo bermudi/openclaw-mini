@@ -1,15 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
-import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
@@ -25,24 +22,16 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from '@/components/ui/dialog';
 import {
   Bot,
-  Plus,
   Play,
-  Pause,
-  Trash2,
   Clock,
   Zap,
   MessageSquare,
-  Webhook,
-  Heart,
-  Calendar,
   RefreshCw,
   Activity,
   Send,
-  Settings,
   FileText,
   AlertCircle,
   CheckCircle2,
@@ -51,7 +40,18 @@ import {
   Wrench,
   Radio,
   Terminal,
+  Brain,
 } from 'lucide-react';
+
+import { AgentList } from '@/components/dashboard/agent-card';
+import { TaskList } from '@/components/dashboard/task-list';
+import { TriggerPanel } from '@/components/dashboard/trigger-panel';
+import { AuditLog } from '@/components/dashboard/audit-log';
+import { EventStream } from '@/components/dashboard/event-stream';
+import { SessionInspector } from '@/components/dashboard/session-inspector';
+import { WorkspaceEditor } from '@/components/dashboard/workspace-editor';
+import { MemoryBrowser } from '@/components/dashboard/memory-browser';
+import { useOpenClawEvents, ConnectionStatus } from '@/hooks/use-openclaw-events';
 
 // Types
 interface Agent {
@@ -107,7 +107,7 @@ interface Stats {
   total: number;
 }
 
-interface AuditLog {
+interface AuditLogEntry {
   id: string;
   action: string;
   entityType: string;
@@ -130,89 +130,40 @@ interface WSEvent {
   timestamp: string;
 }
 
-// Status badge component
-function StatusBadge({ status }: { status: string }) {
-  const variants: Record<string, { color: string; icon: React.ReactNode }> = {
-    idle: { color: 'bg-gray-500', icon: <Pause className="w-3 h-3" /> },
-    busy: { color: 'bg-blue-500', icon: <Loader2 className="w-3 h-3 animate-spin" /> },
-    error: { color: 'bg-red-500', icon: <AlertCircle className="w-3 h-3" /> },
-    disabled: { color: 'bg-gray-400', icon: <Pause className="w-3 h-3" /> },
-    pending: { color: 'bg-yellow-500', icon: <Clock className="w-3 h-3" /> },
-    processing: { color: 'bg-blue-500', icon: <Loader2 className="w-3 h-3 animate-spin" /> },
-    completed: { color: 'bg-green-500', icon: <CheckCircle2 className="w-3 h-3" /> },
-    failed: { color: 'bg-red-500', icon: <AlertCircle className="w-3 h-3" /> },
+function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
+  const config = {
+    connected: { color: 'bg-emerald-400 shadow-emerald-400/50 shadow-sm', label: 'connected', animate: '' },
+    disconnected: { color: 'bg-red-500', label: 'disconnected', animate: '' },
+    reconnecting: { color: 'bg-amber-400 shadow-amber-400/50 shadow-sm', label: 'reconnecting', animate: 'animate-pulse' },
   };
-
-  const variant = variants[status] || variants.idle;
+  const c = config[status];
 
   return (
-    <Badge variant="secondary" className={`${variant.color} text-white gap-1`}>
-      {variant.icon}
-      <span className="capitalize">{status}</span>
-    </Badge>
+    <div className="flex items-center gap-2">
+      <div className={`w-2 h-2 rounded-full ${c.color} ${c.animate}`} />
+      <span className="text-xs text-zinc-500 font-mono">{c.label}</span>
+    </div>
   );
-}
-
-// Severity badge component
-function SeverityBadge({ severity }: { severity: string }) {
-  const colors: Record<string, string> = {
-    info: 'bg-blue-500',
-    warning: 'bg-yellow-500',
-    error: 'bg-red-500',
-    critical: 'bg-red-700',
-  };
-
-  return (
-    <Badge variant="secondary" className={`${colors[severity] || 'bg-gray-500'} text-white`}>
-      {severity}
-    </Badge>
-  );
-}
-
-// Task type icon
-function TaskTypeIcon({ type }: { type: string }) {
-  const icons: Record<string, React.ReactNode> = {
-    message: <MessageSquare className="w-4 h-4" />,
-    heartbeat: <Heart className="w-4 h-4" />,
-    cron: <Calendar className="w-4 h-4" />,
-    webhook: <Webhook className="w-4 h-4" />,
-    hook: <Zap className="w-4 h-4" />,
-    a2a: <Bot className="w-4 h-4" />,
-  };
-
-  return <>{icons[type] || <Activity className="w-4 h-4" />}</>;
 }
 
 export default function OpenClawDashboard() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [triggers, setTriggers] = useState<Trigger[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [tools, setTools] = useState<Tool[]>([]);
   const [stats, setStats] = useState<Stats>({ pending: 0, processing: 0, completed: 0, failed: 0, total: 0 });
   const [loading, setLoading] = useState(true);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [activeTab, setActiveTab] = useState('agents');
   const [wsEvents, setWsEvents] = useState<WSEvent[]>([]);
-  const [wsConnected, setWsConnected] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
 
   // Dialog states
-  const [createAgentOpen, setCreateAgentOpen] = useState(false);
-  const [createTriggerOpen, setCreateTriggerOpen] = useState(false);
   const [sendMessageOpen, setSendMessageOpen] = useState(false);
   const [testToolOpen, setTestToolOpen] = useState(false);
   const [selectedTool, setSelectedTool] = useState<Tool | null>(null);
 
   // Form states
-  const [newAgentName, setNewAgentName] = useState('');
-  const [newAgentDescription, setNewAgentDescription] = useState('');
-  const [newAgentSkills, setNewAgentSkills] = useState('');
-  const [newTriggerName, setNewTriggerName] = useState('');
-  const [newTriggerType, setNewTriggerType] = useState<'heartbeat' | 'cron' | 'webhook' | 'hook'>('heartbeat');
-  const [newTriggerInterval, setNewTriggerInterval] = useState('30');
-  const [newTriggerCron, setNewTriggerCron] = useState('0 9 * * *');
-  const [newTriggerSecret, setNewTriggerSecret] = useState('');
   const [messageContent, setMessageContent] = useState('');
   const [messageChannel, setMessageChannel] = useState('slack');
   const [toolParams, setToolParams] = useState('{}');
@@ -250,102 +201,86 @@ export default function OpenClawDashboard() {
     }
   }, []);
 
-  // WebSocket connection
-  useEffect(() => {
-    const connectWS = () => {
-      try {
-        const ws = new WebSocket('ws://localhost:3003/socket.io/?EIO=4&transport=websocket');
-        
-        ws.onopen = () => {
-          setWsConnected(true);
-          // Subscribe to all events
-          ws.send(JSON.stringify({ type: 'subscribe:all' }));
-        };
-        
-        ws.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (data.type && data.data) {
-              setWsEvents(prev => [data, ...prev].slice(0, 100));
-              // Refresh data on relevant events
-              if (['task:created', 'task:completed', 'task:failed', 'agent:status'].includes(data.type)) {
-                fetchData();
-              }
-            }
-          } catch {
-            // Ignore parse errors
-          }
-        };
-        
-        ws.onclose = () => {
-          setWsConnected(false);
-          // Reconnect after 5 seconds
-          setTimeout(connectWS, 5000);
-        };
-        
-        ws.onerror = () => {
-          setWsConnected(false);
-        };
-        
-        wsRef.current = ws;
-      } catch {
-        setWsConnected(false);
-      }
-    };
-
-    connectWS();
-
-    return () => {
-      wsRef.current?.close();
-    };
-  }, [fetchData]);
+  // Real-time WebSocket events via socket.io
+  const { connected: wsConnected, connectionStatus } = useOpenClawEvents({
+    onTaskCreated: (data) => {
+      setTasks(prev => [data as unknown as Task, ...prev]);
+      setStats(prev => ({ ...prev, pending: prev.pending + 1, total: prev.total + 1 }));
+      setWsEvents(prev => [{ type: 'task:created', data, timestamp: new Date().toISOString() }, ...prev].slice(0, 100));
+    },
+    onTaskStarted: (data) => {
+      const taskId = data.taskId as string;
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'processing' as const } : t));
+      setStats(prev => ({ ...prev, pending: Math.max(0, prev.pending - 1), processing: prev.processing + 1 }));
+      setWsEvents(prev => [{ type: 'task:started', data, timestamp: new Date().toISOString() }, ...prev].slice(0, 100));
+    },
+    onTaskCompleted: (data) => {
+      const taskId = data.taskId as string;
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'completed' as const, result: data.result as Record<string, unknown> } : t));
+      setStats(prev => ({ ...prev, processing: Math.max(0, prev.processing - 1), completed: prev.completed + 1 }));
+      setWsEvents(prev => [{ type: 'task:completed', data, timestamp: new Date().toISOString() }, ...prev].slice(0, 100));
+    },
+    onTaskFailed: (data) => {
+      const taskId = data.taskId as string;
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed' as const, error: data.error as string } : t));
+      setStats(prev => ({ ...prev, processing: Math.max(0, prev.processing - 1), failed: prev.failed + 1 }));
+      setWsEvents(prev => [{ type: 'task:failed', data, timestamp: new Date().toISOString() }, ...prev].slice(0, 100));
+    },
+    onAgentStatus: (data) => {
+      const agentId = data.agentId as string;
+      const status = data.status as Agent['status'];
+      setAgents(prev => prev.map(a => a.id === agentId ? { ...a, status } : a));
+      setWsEvents(prev => [{ type: 'agent:status', data, timestamp: new Date().toISOString() }, ...prev].slice(0, 100));
+    },
+    onTriggerFired: (data) => {
+      const triggerId = data.triggerId as string;
+      setTriggers(prev => prev.map(t => t.id === triggerId ? { ...t, lastTriggered: new Date().toISOString() } : t));
+      setWsEvents(prev => [{ type: 'trigger:fired', data, timestamp: new Date().toISOString() }, ...prev].slice(0, 100));
+    },
+    onStatsUpdate: (data) => {
+      setStats(data as unknown as Stats);
+      setWsEvents(prev => [{ type: 'stats:update', data, timestamp: new Date().toISOString() }, ...prev].slice(0, 100));
+    },
+    onReconnect: () => {
+      fetchData();
+    },
+  });
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 10000);
+    const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
-  // Create agent
-  const handleCreateAgent = async () => {
-    if (!newAgentName.trim()) return;
-
+  // Action handlers
+  const handleCreateAgent = async (name: string, description: string, skills: string) => {
     try {
       const res = await fetch('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: newAgentName,
-          description: newAgentDescription,
-          skills: newAgentSkills.split(',').map(s => s.trim()).filter(Boolean),
+          name,
+          description,
+          skills: skills.split(',').map(s => s.trim()).filter(Boolean),
         }),
       });
-
-      if (res.ok) {
-        setNewAgentName('');
-        setNewAgentDescription('');
-        setNewAgentSkills('');
-        setCreateAgentOpen(false);
-        fetchData();
-      }
+      if (res.ok) fetchData();
     } catch (error) {
       console.error('Failed to create agent:', error);
     }
   };
 
-  // Delete agent
   const handleDeleteAgent = async (agentId: string) => {
     if (!confirm('Are you sure you want to delete this agent?')) return;
-
     try {
       await fetch(`/api/agents/${agentId}`, { method: 'DELETE' });
+      if (selectedAgent?.id === agentId) setSelectedAgent(null);
       fetchData();
     } catch (error) {
       console.error('Failed to delete agent:', error);
     }
   };
 
-  // Toggle agent status
   const handleToggleAgent = async (agent: Agent) => {
     const newStatus = agent.status === 'disabled' ? 'idle' : 'disabled';
     try {
@@ -360,45 +295,19 @@ export default function OpenClawDashboard() {
     }
   };
 
-  // Create trigger
-  const handleCreateTrigger = async () => {
-    if (!selectedAgent || !newTriggerName.trim()) return;
-
+  const handleCreateTrigger = async (agentId: string, name: string, type: string, config: Record<string, unknown>) => {
     try {
-      const config: Record<string, unknown> = {};
-      if (newTriggerType === 'heartbeat') {
-        config.interval = parseInt(newTriggerInterval);
-      } else if (newTriggerType === 'cron') {
-        config.cronExpression = newTriggerCron;
-      } else if (newTriggerType === 'webhook') {
-        config.secret = newTriggerSecret;
-      }
-
       const res = await fetch('/api/triggers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          agentId: selectedAgent.id,
-          name: newTriggerName,
-          type: newTriggerType,
-          config,
-        }),
+        body: JSON.stringify({ agentId, name, type, config }),
       });
-
-      if (res.ok) {
-        setNewTriggerName('');
-        setNewTriggerInterval('30');
-        setNewTriggerCron('0 9 * * *');
-        setNewTriggerSecret('');
-        setCreateTriggerOpen(false);
-        fetchData();
-      }
+      if (res.ok) fetchData();
     } catch (error) {
       console.error('Failed to create trigger:', error);
     }
   };
 
-  // Delete trigger
   const handleDeleteTrigger = async (triggerId: string) => {
     try {
       await fetch(`/api/triggers/${triggerId}`, { method: 'DELETE' });
@@ -408,7 +317,6 @@ export default function OpenClawDashboard() {
     }
   };
 
-  // Toggle trigger
   const handleToggleTrigger = async (trigger: Trigger) => {
     try {
       await fetch(`/api/triggers/${trigger.id}`, {
@@ -422,10 +330,8 @@ export default function OpenClawDashboard() {
     }
   };
 
-  // Send message to agent
   const handleSendMessage = async () => {
     if (!selectedAgent || !messageContent.trim()) return;
-
     try {
       const res = await fetch('/api/input', {
         method: 'POST',
@@ -441,7 +347,6 @@ export default function OpenClawDashboard() {
           },
         }),
       });
-
       if (res.ok) {
         setMessageContent('');
         setSendMessageOpen(false);
@@ -452,7 +357,6 @@ export default function OpenClawDashboard() {
     }
   };
 
-  // Execute task
   const handleExecuteTask = async (taskId: string) => {
     try {
       await fetch(`/api/tasks/${taskId}/execute`, { method: 'POST' });
@@ -462,23 +366,17 @@ export default function OpenClawDashboard() {
     }
   };
 
-  // Test tool
   const handleTestTool = async () => {
     if (!selectedTool) return;
     setToolResult(null);
-
     try {
       let params = {};
-      if (toolParams.trim()) {
-        params = JSON.parse(toolParams);
-      }
-
+      if (toolParams.trim()) params = JSON.parse(toolParams);
       const res = await fetch('/api/tools', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tool: selectedTool.name, params }),
       });
-
       const data = await res.json();
       setToolResult(JSON.stringify(data, null, 2));
     } catch (error) {
@@ -488,8 +386,13 @@ export default function OpenClawDashboard() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/20 animate-pulse">
+            <Bot className="w-7 h-7 text-white" />
+          </div>
+          <Loader2 className="w-5 h-5 animate-spin text-emerald-400" />
+        </div>
       </div>
     );
   }
@@ -497,28 +400,23 @@ export default function OpenClawDashboard() {
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="border-b bg-card">
-        <div className="container mx-auto px-4 py-4">
+      <header className="border-b border-border/50 bg-card/80 backdrop-blur-xl sticky top-0 z-50">
+        <div className="container mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center">
-                <Bot className="w-6 h-6 text-white" />
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                <Bot className="w-5 h-5 text-white" />
               </div>
               <div>
-                <h1 className="text-xl font-bold">OpenClaw Agent Runtime</h1>
-                <p className="text-sm text-muted-foreground">Event-driven AI agent orchestration</p>
+                <h1 className="text-base font-bold tracking-tight">OpenClaw</h1>
+                <p className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest">agent runtime</p>
               </div>
             </div>
             <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`} />
-                <span className="text-xs text-muted-foreground">
-                  {wsConnected ? 'WS Connected' : 'WS Disconnected'}
-                </span>
-              </div>
-              <Button variant="outline" size="sm" onClick={fetchData}>
-                <RefreshCw className="w-4 h-4 mr-2" />
-                Refresh
+              <ConnectionIndicator status={connectionStatus} />
+              <Separator orientation="vertical" className="h-4 bg-border/30" />
+              <Button variant="ghost" size="sm" onClick={fetchData} className="text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800">
+                <RefreshCw className="w-3.5 h-3.5" />
               </Button>
             </div>
           </div>
@@ -526,34 +424,39 @@ export default function OpenClawDashboard() {
       </header>
 
       {/* Stats Bar */}
-      <div className="border-b bg-muted/30">
-        <div className="container mx-auto px-4 py-3">
-          <div className="flex items-center gap-6 text-sm">
-            <div className="flex items-center gap-2">
-              <Clock className="w-4 h-4 text-yellow-500" />
-              <span className="font-medium">{stats.pending}</span>
-              <span className="text-muted-foreground">Pending</span>
+      <div className="border-b border-border/30 bg-card/30">
+        <div className="container mx-auto px-4 py-2.5">
+          <div className="flex items-center gap-6 text-xs">
+            <div className="flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5 text-amber-400" />
+              <span className="font-mono font-bold text-amber-400">{stats.pending}</span>
+              <span className="text-zinc-500">pending</span>
             </div>
-            <div className="flex items-center gap-2">
-              <Loader2 className="w-4 h-4 text-blue-500" />
-              <span className="font-medium">{stats.processing}</span>
-              <span className="text-muted-foreground">Processing</span>
+            <div className="flex items-center gap-1.5">
+              <Loader2 className="w-3.5 h-3.5 text-sky-400" />
+              <span className="font-mono font-bold text-sky-400">{stats.processing}</span>
+              <span className="text-zinc-500">processing</span>
             </div>
-            <div className="flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-green-500" />
-              <span className="font-medium">{stats.completed}</span>
-              <span className="text-muted-foreground">Completed</span>
+            <div className="flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="font-mono font-bold text-emerald-400">{stats.completed}</span>
+              <span className="text-zinc-500">completed</span>
             </div>
-            <div className="flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 text-red-500" />
-              <span className="font-medium">{stats.failed}</span>
-              <span className="text-muted-foreground">Failed</span>
+            <div className="flex items-center gap-1.5">
+              <AlertCircle className="w-3.5 h-3.5 text-red-400" />
+              <span className="font-mono font-bold text-red-400">{stats.failed}</span>
+              <span className="text-zinc-500">failed</span>
             </div>
-            <Separator orientation="vertical" className="h-4" />
-            <div className="flex items-center gap-2">
-              <Wrench className="w-4 h-4 text-purple-500" />
-              <span className="font-medium">{tools.length}</span>
-              <span className="text-muted-foreground">Tools</span>
+            <Separator orientation="vertical" className="h-3 bg-border/30" />
+            <div className="flex items-center gap-1.5">
+              <Wrench className="w-3.5 h-3.5 text-violet-400" />
+              <span className="font-mono font-bold text-violet-400">{tools.length}</span>
+              <span className="text-zinc-500">tools</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Bot className="w-3.5 h-3.5 text-teal-400" />
+              <span className="font-mono font-bold text-teal-400">{agents.length}</span>
+              <span className="text-zinc-500">agents</span>
             </div>
           </div>
         </div>
@@ -562,493 +465,142 @@ export default function OpenClawDashboard() {
       {/* Main Content */}
       <main className="container mx-auto px-4 py-6">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="mb-6">
-            <TabsTrigger value="agents" className="gap-2">
-              <Bot className="w-4 h-4" />
+          <TabsList className="mb-6 bg-zinc-900/50 border border-border/30 p-1">
+            <TabsTrigger value="agents" className="gap-1.5 data-[state=active]:bg-zinc-800 data-[state=active]:text-emerald-400 text-xs">
+              <Bot className="w-3.5 h-3.5" />
               Agents
             </TabsTrigger>
-            <TabsTrigger value="tasks" className="gap-2">
-              <Activity className="w-4 h-4" />
-              Task Queue
+            <TabsTrigger value="tasks" className="gap-1.5 data-[state=active]:bg-zinc-800 data-[state=active]:text-sky-400 text-xs">
+              <Activity className="w-3.5 h-3.5" />
+              Tasks
             </TabsTrigger>
-            <TabsTrigger value="triggers" className="gap-2">
-              <Zap className="w-4 h-4" />
+            <TabsTrigger value="triggers" className="gap-1.5 data-[state=active]:bg-zinc-800 data-[state=active]:text-amber-400 text-xs">
+              <Zap className="w-3.5 h-3.5" />
               Triggers
             </TabsTrigger>
-            <TabsTrigger value="tools" className="gap-2">
-              <Wrench className="w-4 h-4" />
+            <TabsTrigger value="sessions" className="gap-1.5 data-[state=active]:bg-zinc-800 data-[state=active]:text-pink-400 text-xs">
+              <MessageSquare className="w-3.5 h-3.5" />
+              Sessions
+            </TabsTrigger>
+            <TabsTrigger value="workspace" className="gap-1.5 data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-400 text-xs">
+              <FileText className="w-3.5 h-3.5" />
+              Workspace
+            </TabsTrigger>
+            <TabsTrigger value="memory" className="gap-1.5 data-[state=active]:bg-zinc-800 data-[state=active]:text-violet-400 text-xs">
+              <Brain className="w-3.5 h-3.5" />
+              Memory
+            </TabsTrigger>
+            <TabsTrigger value="tools" className="gap-1.5 data-[state=active]:bg-zinc-800 data-[state=active]:text-indigo-400 text-xs">
+              <Wrench className="w-3.5 h-3.5" />
               Tools
             </TabsTrigger>
-            <TabsTrigger value="audit" className="gap-2">
-              <Shield className="w-4 h-4" />
-              Audit Log
+            <TabsTrigger value="audit" className="gap-1.5 data-[state=active]:bg-zinc-800 data-[state=active]:text-orange-400 text-xs">
+              <Shield className="w-3.5 h-3.5" />
+              Audit
             </TabsTrigger>
-            <TabsTrigger value="events" className="gap-2">
-              <Radio className="w-4 h-4" />
-              Live Events
+            <TabsTrigger value="events" className="gap-1.5 data-[state=active]:bg-zinc-800 data-[state=active]:text-emerald-400 text-xs">
+              <Radio className="w-3.5 h-3.5" />
+              Live
             </TabsTrigger>
           </TabsList>
 
           {/* Agents Tab */}
           <TabsContent value="agents">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Agents</h2>
-              <Dialog open={createAgentOpen} onOpenChange={setCreateAgentOpen}>
-                <DialogTrigger asChild>
-                  <Button size="sm">
-                    <Plus className="w-4 h-4 mr-2" />
-                    Create Agent
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Create New Agent</DialogTitle>
-                    <DialogDescription>
-                      Create a new AI agent with specific skills and capabilities.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="grid gap-4 py-4">
-                    <div className="grid gap-2">
-                      <Label htmlFor="name">Agent Name</Label>
-                      <Input
-                        id="name"
-                        value={newAgentName}
-                        onChange={(e) => setNewAgentName(e.target.value)}
-                        placeholder="e.g., Assistant, Researcher, Writer"
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="description">Description</Label>
-                      <Textarea
-                        id="description"
-                        value={newAgentDescription}
-                        onChange={(e) => setNewAgentDescription(e.target.value)}
-                        placeholder="What does this agent do?"
-                        rows={3}
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="skills">Skills (SKILL.md names)</Label>
-                      <Input
-                        id="skills"
-                        value={newAgentSkills}
-                        onChange={(e) => setNewAgentSkills(e.target.value)}
-                        placeholder="e.g., web-search, pdf-gen"
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Leave blank to allow all enabled skills discovered in /skills.
-                      </p>
-                    </div>
-                  </div>
-                  <DialogFooter>
-                    <Button variant="outline" onClick={() => setCreateAgentOpen(false)}>
-                      Cancel
-                    </Button>
-                    <Button onClick={handleCreateAgent} disabled={!newAgentName.trim()}>
-                      Create Agent
-                    </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
-            </div>
-
-            {agents.length === 0 ? (
-              <Card className="border-dashed">
-                <CardContent className="py-12 text-center">
-                  <Bot className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                  <h3 className="text-lg font-medium mb-2">No agents yet</h3>
-                  <p className="text-muted-foreground mb-4">
-                    Create your first AI agent to get started.
-                  </p>
-                  <Button onClick={() => setCreateAgentOpen(true)}>
-                    <Plus className="w-4 h-4 mr-2" />
-                    Create Agent
-                  </Button>
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {agents.map((agent) => (
-                  <Card key={agent.id} className="overflow-hidden">
-                    <CardHeader className="pb-3">
-                      <div className="flex items-start justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center">
-                            <Bot className="w-5 h-5 text-white" />
-                          </div>
-                          <div>
-                            <CardTitle className="text-lg">{agent.name}</CardTitle>
-                            {agent.isDefault && (
-                              <Badge variant="outline" className="mt-1 text-xs">
-                                Default
-                              </Badge>
-                            )}
-                            <StatusBadge status={agent.status} />
-                          </div>
-                        </div>
-                      </div>
-                    </CardHeader>
-                    <CardContent className="pb-4">
-                      {agent.description && (
-                        <p className="text-sm text-muted-foreground mb-3 line-clamp-2">
-                          {agent.description}
-                        </p>
-                      )}
-                      {agent.skills.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mb-3">
-                          {agent.skills.map((skill) => (
-                            <Badge key={skill} variant="secondary" className="text-xs">
-                              {skill}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
-                      <Separator className="my-3" />
-                      <div className="flex gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="flex-1"
-                          onClick={() => {
-                            setSelectedAgent(agent);
-                            setSendMessageOpen(true);
-                          }}
-                          disabled={agent.status === 'disabled'}
-                        >
-                          <Send className="w-4 h-4 mr-1" />
-                          Message
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleToggleAgent(agent)}
-                        >
-                          {agent.status === 'disabled' ? (
-                            <Play className="w-4 h-4" />
-                          ) : (
-                            <Pause className="w-4 h-4" />
-                          )}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleDeleteAgent(agent.id)}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            )}
+            <AgentList
+              agents={agents}
+              onCreateAgent={handleCreateAgent}
+              onDeleteAgent={handleDeleteAgent}
+              onToggleAgent={handleToggleAgent}
+              onSendMessage={(agent) => { setSelectedAgent(agent); setSendMessageOpen(true); }}
+            />
           </TabsContent>
 
           {/* Tasks Tab */}
           <TabsContent value="tasks">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Task Queue</h2>
-              <div className="text-sm text-muted-foreground">
-                {stats.total} total tasks
-              </div>
-            </div>
-
-            {tasks.length === 0 ? (
-              <Card className="border-dashed">
-                <CardContent className="py-12 text-center">
-                  <Activity className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                  <h3 className="text-lg font-medium mb-2">No tasks in queue</h3>
-                  <p className="text-muted-foreground">
-                    Tasks will appear here when agents receive inputs.
-                  </p>
-                </CardContent>
-              </Card>
-            ) : (
-              <Card>
-                <ScrollArea className="h-[600px]">
-                  <div className="divide-y">
-                    {tasks.map((task) => {
-                      const agent = agents.find((a) => a.id === task.agentId);
-                      return (
-                        <div key={task.id} className="p-4 hover:bg-muted/50">
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="flex items-start gap-3">
-                              <div className="mt-0.5">
-                                <TaskTypeIcon type={task.type} />
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <span className="font-medium capitalize">{task.type}</span>
-                                  <StatusBadge status={task.status} />
-                                  <Badge variant="outline" className="text-xs">
-                                    P{task.priority}
-                                  </Badge>
-                                </div>
-                                <p className="text-sm text-muted-foreground line-clamp-1">
-                                  {task.source || `Agent: ${agent?.name || 'Unknown'}`}
-                                </p>
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  {new Date(task.createdAt).toLocaleString()}
-                                </p>
-                                {task.error && (
-                                  <p className="text-xs text-red-500 mt-1">{task.error}</p>
-                                )}
-                                {typeof task.result?.response === 'string' && (
-                                  <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                                    Result: {task.result.response.substring(0, 200)}...
-                                  </p>
-                                )}
-                                {Array.isArray(task.result?.toolCalls) && (
-                                  <p className="text-xs text-purple-500 mt-1">
-                                    Tools: {(task.result.toolCalls as Array<{ tool: string }>).map(t => t.tool).join(', ')}
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                            {task.status === 'pending' && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => handleExecuteTask(task.id)}
-                              >
-                                <Play className="w-4 h-4 mr-1" />
-                                Execute
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </ScrollArea>
-              </Card>
-            )}
+            <TaskList tasks={tasks} stats={stats} agents={agents} onExecuteTask={handleExecuteTask} />
           </TabsContent>
 
           {/* Triggers Tab */}
           <TabsContent value="triggers">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Triggers</h2>
-              <Dialog open={createTriggerOpen} onOpenChange={setCreateTriggerOpen}>
-                <DialogTrigger asChild>
-                  <Button size="sm" disabled={agents.length === 0}>
-                    <Plus className="w-4 h-4 mr-2" />
-                    Create Trigger
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Create New Trigger</DialogTitle>
-                    <DialogDescription>
-                      Create a trigger to automatically invoke agents.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="grid gap-4 py-4">
-                    <div className="grid gap-2">
-                      <Label>Agent</Label>
-                      <Select
-                        value={selectedAgent?.id}
-                        onValueChange={(val) => {
-                          const agent = agents.find((a) => a.id === val);
-                          setSelectedAgent(agent || null);
-                        }}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select an agent" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {agents.map((agent) => (
-                            <SelectItem key={agent.id} value={agent.id}>
-                              {agent.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="trigger-name">Trigger Name</Label>
-                      <Input
-                        id="trigger-name"
-                        value={newTriggerName}
-                        onChange={(e) => setNewTriggerName(e.target.value)}
-                        placeholder="e.g., Daily Report"
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label>Trigger Type</Label>
-                      <Select
-                        value={newTriggerType}
-                        onValueChange={(val) => setNewTriggerType(val as typeof newTriggerType)}
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="heartbeat">
-                            <div className="flex items-center gap-2">
-                              <Heart className="w-4 h-4" />
-                              Heartbeat (Interval)
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="cron">
-                            <div className="flex items-center gap-2">
-                              <Calendar className="w-4 h-4" />
-                              Cron (Scheduled)
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="webhook">
-                            <div className="flex items-center gap-2">
-                              <Webhook className="w-4 h-4" />
-                              Webhook
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="hook">
-                            <div className="flex items-center gap-2">
-                              <Zap className="w-4 h-4" />
-                              Internal Hook
-                            </div>
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    {newTriggerType === 'heartbeat' && (
-                      <div className="grid gap-2">
-                        <Label htmlFor="interval">Interval (minutes)</Label>
-                        <Input
-                          id="interval"
-                          type="number"
-                          value={newTriggerInterval}
-                          onChange={(e) => setNewTriggerInterval(e.target.value)}
-                          placeholder="30"
-                        />
-                      </div>
-                    )}
-                    {newTriggerType === 'cron' && (
-                      <div className="grid gap-2">
-                        <Label htmlFor="cron">Cron Expression</Label>
-                        <Input
-                          id="cron"
-                          value={newTriggerCron}
-                          onChange={(e) => setNewTriggerCron(e.target.value)}
-                          placeholder="0 9 * * *"
-                        />
-                        <p className="text-xs text-muted-foreground">
-                          Example: "0 9 * * *" = Every day at 9:00 AM
-                        </p>
-                      </div>
-                    )}
-                    {newTriggerType === 'webhook' && (
-                      <div className="grid gap-2">
-                        <Label htmlFor="secret">Webhook Secret (optional)</Label>
-                        <Input
-                          id="secret"
-                          type="password"
-                          value={newTriggerSecret}
-                          onChange={(e) => setNewTriggerSecret(e.target.value)}
-                          placeholder="Secret for signature verification"
-                        />
-                      </div>
-                    )}
-                  </div>
-                  <DialogFooter>
-                    <Button variant="outline" onClick={() => setCreateTriggerOpen(false)}>
-                      Cancel
-                    </Button>
-                    <Button onClick={handleCreateTrigger} disabled={!selectedAgent || !newTriggerName.trim()}>
-                      Create Trigger
-                    </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
-            </div>
+            <TriggerPanel
+              triggers={triggers}
+              agents={agents}
+              selectedAgent={selectedAgent}
+              onCreateTrigger={handleCreateTrigger}
+              onDeleteTrigger={handleDeleteTrigger}
+              onToggleTrigger={handleToggleTrigger}
+            />
+          </TabsContent>
 
-            {triggers.length === 0 ? (
-              <Card className="border-dashed">
-                <CardContent className="py-12 text-center">
-                  <Zap className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                  <h3 className="text-lg font-medium mb-2">No triggers configured</h3>
-                  <p className="text-muted-foreground mb-4">
-                    Create triggers to enable proactive agent behavior.
-                  </p>
-                  <Button onClick={() => setCreateTriggerOpen(true)} disabled={agents.length === 0}>
-                    <Plus className="w-4 h-4 mr-2" />
-                    Create Trigger
-                  </Button>
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="grid gap-4">
-                {triggers.map((trigger) => {
-                  const agent = agents.find((a) => a.id === trigger.agentId);
-                  return (
-                    <Card key={trigger.id}>
-                      <CardContent className="py-4">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center">
-                              {trigger.type === 'heartbeat' && <Heart className="w-5 h-5" />}
-                              {trigger.type === 'cron' && <Calendar className="w-5 h-5" />}
-                              {trigger.type === 'webhook' && <Webhook className="w-5 h-5" />}
-                              {trigger.type === 'hook' && <Zap className="w-5 h-5" />}
-                            </div>
-                            <div>
-                              <h3 className="font-medium">{trigger.name}</h3>
-                              <p className="text-sm text-muted-foreground">
-                                {agent?.name} • {trigger.type}
-                                {trigger.type === 'heartbeat' && trigger.config.interval && (
-                                  <> • Every {trigger.config.interval} min</>
-                                )}
-                                {trigger.type === 'cron' && trigger.config.cronExpression && (
-                                  <> • {trigger.config.cronExpression}</>
-                                )}
-                              </p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-4">
-                            {trigger.nextTrigger && (
-                              <div className="text-sm text-muted-foreground">
-                                Next: {new Date(trigger.nextTrigger).toLocaleString()}
-                              </div>
-                            )}
-                            <Switch
-                              checked={trigger.enabled}
-                              onCheckedChange={() => handleToggleTrigger(trigger)}
-                            />
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => handleDeleteTrigger(trigger.id)}
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  );
-                })}
-              </div>
-            )}
+          {/* Sessions Tab */}
+          <TabsContent value="sessions">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Sessions</h2>
+              {agents.length > 0 && (
+                <Select value={selectedAgent?.id || ''} onValueChange={(val) => setSelectedAgent(agents.find(a => a.id === val) || null)}>
+                  <SelectTrigger className="w-48 bg-zinc-900/50 border-border/30 text-sm">
+                    <SelectValue placeholder="Select agent" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {agents.map(a => (
+                      <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+            <SessionInspector selectedAgent={selectedAgent} />
+          </TabsContent>
+
+          {/* Workspace Tab */}
+          <TabsContent value="workspace">
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold">Workspace</h2>
+            </div>
+            <WorkspaceEditor />
+          </TabsContent>
+
+          {/* Memory Tab */}
+          <TabsContent value="memory">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Memory</h2>
+              {agents.length > 0 && (
+                <Select value={selectedAgent?.id || ''} onValueChange={(val) => setSelectedAgent(agents.find(a => a.id === val) || null)}>
+                  <SelectTrigger className="w-48 bg-zinc-900/50 border-border/30 text-sm">
+                    <SelectValue placeholder="Select agent" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {agents.map(a => (
+                      <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+            <MemoryBrowser selectedAgent={selectedAgent} />
           </TabsContent>
 
           {/* Tools Tab */}
           <TabsContent value="tools">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold">Available Tools</h2>
-              <p className="text-sm text-muted-foreground">
-                Tools that agents can use to perform actions
-              </p>
+              <span className="text-xs text-zinc-500 font-mono">{tools.length} registered</span>
             </div>
-
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               {tools.map((tool) => (
-                <Card key={tool.name}>
+                <Card key={tool.name} className="bg-card/50 backdrop-blur-sm border-border/50 hover:border-border transition-all">
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between">
-                      <CardTitle className="text-sm font-mono">{tool.name}</CardTitle>
-                      <Badge 
-                        variant={tool.riskLevel === 'high' ? 'destructive' : tool.riskLevel === 'medium' ? 'secondary' : 'outline'}
-                        className="text-xs"
+                      <CardTitle className="text-sm font-mono text-zinc-200">{tool.name}</CardTitle>
+                      <Badge
+                        variant="outline"
+                        className={`text-[10px] ${
+                          tool.riskLevel === 'high'
+                            ? 'border-red-500/30 text-red-400'
+                            : tool.riskLevel === 'medium'
+                              ? 'border-amber-500/30 text-amber-400'
+                              : 'border-zinc-700 text-zinc-400'
+                        }`}
                       >
                         {tool.riskLevel}
                       </Badge>
@@ -1057,22 +609,21 @@ export default function OpenClawDashboard() {
                   </CardHeader>
                   <CardContent className="pb-3">
                     {tool.parameters.length > 0 && (
-                      <div className="space-y-1">
-                        <p className="text-xs font-medium">Parameters:</p>
+                      <div className="space-y-1 mb-3">
                         {tool.parameters.map((param) => (
-                          <div key={param.name} className="text-xs text-muted-foreground">
-                            <span className="font-mono">{param.name}</span>
-                            {param.required && <span className="text-red-500">*</span>}
-                            <span className="ml-1">({param.type})</span>
+                          <div key={param.name} className="text-xs text-zinc-500">
+                            <span className="font-mono text-zinc-400">{param.name}</span>
+                            {param.required && <span className="text-red-400">*</span>}
+                            <span className="ml-1 text-zinc-600">({param.type})</span>
                           </div>
                         ))}
                       </div>
                     )}
-                    <Separator className="my-3" />
+                    <Separator className="my-3 bg-border/30" />
                     <Button
                       variant="outline"
                       size="sm"
-                      className="w-full"
+                      className="w-full bg-transparent border-border/50 hover:bg-indigo-500/10 hover:border-indigo-500/30 hover:text-indigo-400"
                       onClick={() => {
                         setSelectedTool(tool);
                         setToolParams('{}');
@@ -1080,7 +631,7 @@ export default function OpenClawDashboard() {
                         setTestToolOpen(true);
                       }}
                     >
-                      <Terminal className="w-4 h-4 mr-2" />
+                      <Terminal className="w-3.5 h-3.5 mr-2" />
                       Test Tool
                     </Button>
                   </CardContent>
@@ -1091,119 +642,28 @@ export default function OpenClawDashboard() {
 
           {/* Audit Log Tab */}
           <TabsContent value="audit">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Audit Log</h2>
-              <Badge variant="outline">{auditLogs.length} events</Badge>
-            </div>
-
-            {auditLogs.length === 0 ? (
-              <Card className="border-dashed">
-                <CardContent className="py-12 text-center">
-                  <Shield className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                  <h3 className="text-lg font-medium mb-2">No audit events</h3>
-                  <p className="text-muted-foreground">
-                    Events will be logged here as agents perform actions.
-                  </p>
-                </CardContent>
-              </Card>
-            ) : (
-              <Card>
-                <ScrollArea className="h-[600px]">
-                  <div className="divide-y">
-                    {auditLogs.map((log) => (
-                      <div key={log.id} className="p-4 hover:bg-muted/50">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="font-medium">{log.action}</span>
-                              <SeverityBadge severity={log.severity} />
-                            </div>
-                            <p className="text-sm text-muted-foreground">
-                              {log.entityType}: {log.entityId}
-                            </p>
-                            <p className="text-xs text-muted-foreground mt-1">
-                              {new Date(log.createdAt).toLocaleString()}
-                            </p>
-                            {Object.keys(log.details).length > 0 && (
-                              <pre className="text-xs text-muted-foreground mt-2 bg-muted p-2 rounded overflow-x-auto">
-                                {JSON.stringify(log.details, null, 2)}
-                              </pre>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              </Card>
-            )}
+            <AuditLog auditLogs={auditLogs} />
           </TabsContent>
 
           {/* Live Events Tab */}
           <TabsContent value="events">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Live Events</h2>
-              <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-                <span className="text-sm text-muted-foreground">
-                  {wsConnected ? 'Connected' : 'Disconnected'}
-                </span>
-              </div>
-            </div>
-
-            {wsEvents.length === 0 ? (
-              <Card className="border-dashed">
-                <CardContent className="py-12 text-center">
-                  <Radio className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                  <h3 className="text-lg font-medium mb-2">No events yet</h3>
-                  <p className="text-muted-foreground">
-                    Real-time events will appear here as they occur.
-                  </p>
-                </CardContent>
-              </Card>
-            ) : (
-              <Card>
-                <ScrollArea className="h-[600px]">
-                  <div className="divide-y">
-                    {wsEvents.map((event, index) => (
-                      <div key={index} className="p-4 hover:bg-muted/50">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-1">
-                              <Badge variant="secondary">{event.type}</Badge>
-                            </div>
-                            <pre className="text-xs text-muted-foreground bg-muted p-2 rounded overflow-x-auto">
-                              {JSON.stringify(event.data, null, 2)}
-                            </pre>
-                            <p className="text-xs text-muted-foreground mt-1">
-                              {new Date(event.timestamp).toLocaleString()}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              </Card>
-            )}
+            <EventStream wsEvents={wsEvents} wsConnected={wsConnected} />
           </TabsContent>
         </Tabs>
       </main>
 
       {/* Send Message Dialog */}
       <Dialog open={sendMessageOpen} onOpenChange={setSendMessageOpen}>
-        <DialogContent>
+        <DialogContent className="bg-card border-border/50">
           <DialogHeader>
             <DialogTitle>Send Message to {selectedAgent?.name}</DialogTitle>
-            <DialogDescription>
-              Send a test message to this agent.
-            </DialogDescription>
+            <DialogDescription>Send a test message to this agent.</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
               <Label>Channel</Label>
               <Select value={messageChannel} onValueChange={setMessageChannel}>
-                <SelectTrigger>
+                <SelectTrigger className="bg-background/50 border-border/50">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1220,18 +680,17 @@ export default function OpenClawDashboard() {
                 id="message"
                 value={messageContent}
                 onChange={(e) => setMessageContent(e.target.value)}
-                placeholder="Type your message... (try: What time is it?)"
+                placeholder="Type your message..."
                 rows={4}
+                className="bg-background/50 border-border/50"
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setSendMessageOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleSendMessage} disabled={!messageContent.trim()}>
+            <Button variant="outline" onClick={() => setSendMessageOpen(false)}>Cancel</Button>
+            <Button onClick={handleSendMessage} disabled={!messageContent.trim()} className="bg-emerald-600 hover:bg-emerald-700">
               <Send className="w-4 h-4 mr-2" />
-              Send Message
+              Send
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1239,12 +698,10 @@ export default function OpenClawDashboard() {
 
       {/* Test Tool Dialog */}
       <Dialog open={testToolOpen} onOpenChange={setTestToolOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-2xl bg-card border-border/50">
           <DialogHeader>
-            <DialogTitle>Test Tool: {selectedTool?.name}</DialogTitle>
-            <DialogDescription>
-              {selectedTool?.description}
-            </DialogDescription>
+            <DialogTitle className="font-mono">{selectedTool?.name}</DialogTitle>
+            <DialogDescription>{selectedTool?.description}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
@@ -1254,23 +711,21 @@ export default function OpenClawDashboard() {
                 onChange={(e) => setToolParams(e.target.value)}
                 placeholder='{"param1": "value1"}'
                 rows={4}
-                className="font-mono text-sm"
+                className="font-mono text-sm bg-zinc-900/50 border-border/30"
               />
             </div>
             {toolResult && (
               <div className="grid gap-2">
                 <Label>Result</Label>
-                <pre className="text-xs bg-muted p-3 rounded overflow-x-auto max-h-64">
+                <pre className="text-xs bg-zinc-900/50 p-3 rounded-lg overflow-x-auto max-h-64 font-mono text-zinc-400">
                   {toolResult}
                 </pre>
               </div>
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setTestToolOpen(false)}>
-              Close
-            </Button>
-            <Button onClick={handleTestTool}>
+            <Button variant="outline" onClick={() => setTestToolOpen(false)}>Close</Button>
+            <Button onClick={handleTestTool} className="bg-indigo-600 hover:bg-indigo-700">
               <Play className="w-4 h-4 mr-2" />
               Execute
             </Button>
