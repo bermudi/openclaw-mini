@@ -51,4 +51,4 @@
 - [x] 8.3 Write tests for executor integration: message task creates delivery, non-message task does not, empty response does not create delivery, dedupeKey prevents duplicates
 - [x] 8.4 Write tests for Telegram adapter: sendText success, missing chatId error, long message splitting at 4096 chars, error classification (retryable vs permanent)
 - [x] 8.5 Write tests for Telegram webhook route: processes text message, ignores non-message updates, rejects invalid secret token, accepts when no secret configured
-- [ ] 8.6 Manual verification: set up a Telegram bot, configure webhook, send a message, confirm round-trip (message in → agent processes → response delivered back to Telegram)
+- [x] 8.6 Manual verification: set up a Telegram bot, configure webhook, send a message, confirm round-trip (message in → agent processes → response delivered back to Telegram)
