@@ -282,6 +282,68 @@ describe('model fallback', () => {
   });
 });
 
+describe('agent context resolution helpers', () => {
+  test('resolveAgentContextWindow prefers override, then agent model, then global model, then 128000 default', async () => {
+    if (!runtimeConfigFixture) {
+      throw new Error('Expected runtime config fixture to exist');
+    }
+
+    const { resolveAgentContextWindow } = await import('../src/lib/services/model-provider');
+
+    const withOverride = await resolveAgentContextWindow({
+      contextWindowOverride: 32000,
+      model: 'gpt-4o',
+    });
+    expect(withOverride).toBe(32000);
+
+    const withAgentModel = await resolveAgentContextWindow({
+      contextWindowOverride: null,
+      model: 'gpt-4o',
+    });
+    expect(withAgentModel).toBe(128000);
+
+    writeRuntimeConfig(runtimeConfigFixture.configPath, {
+      agent: {
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
+      },
+    });
+    const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+    resetProviderRegistryForTests();
+
+    const withGlobalModel = await resolveAgentContextWindow({
+      contextWindowOverride: null,
+      model: null,
+    });
+    expect(withGlobalModel).toBe(1047576);
+
+    writeRuntimeConfig(runtimeConfigFixture.configPath, {
+      agent: {
+        provider: 'openai',
+        model: 'totally-unknown-model-id',
+      },
+    });
+    resetProviderRegistryForTests();
+
+    const withFallbackDefault = await resolveAgentContextWindow({
+      contextWindowOverride: null,
+      model: null,
+    });
+    expect(withFallbackDefault).toBe(128000);
+  });
+
+  test('resolveCompactionThreshold prefers agent override, then env, then 0.5 default', async () => {
+    const { resolveCompactionThreshold } = await import('../src/lib/services/model-provider');
+
+    process.env.OPENCLAW_SESSION_TOKEN_THRESHOLD = '0.4';
+    expect(resolveCompactionThreshold({ compactionThreshold: 0.7 })).toBe(0.7);
+    expect(resolveCompactionThreshold({ compactionThreshold: null })).toBe(0.4);
+
+    delete process.env.OPENCLAW_SESSION_TOKEN_THRESHOLD;
+    expect(resolveCompactionThreshold({ compactionThreshold: null })).toBe(0.5);
+  });
+});
+
 describe('poe provider integration', () => {
   const poeTest = HAS_REAL_POE_API_KEY ? test : test.skip;
 

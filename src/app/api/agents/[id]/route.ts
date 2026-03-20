@@ -3,6 +3,17 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { agentService } from '@/lib/services/agent-service';
+import { z } from 'zod';
+
+const updateAgentSchema = z.object({
+  name: z.string().min(1, 'Agent name must not be empty').optional(),
+  description: z.string().nullable().optional(),
+  model: z.string().min(1, 'Model must not be empty').nullable().optional(),
+  contextWindowOverride: z.number().int('Context window override must be an integer').min(1000, 'Context window override must be at least 1000').nullable().optional(),
+  compactionThreshold: z.number().min(0.1, 'Compaction threshold must be between 0.1 and 0.9').max(0.9, 'Compaction threshold must be between 0.1 and 0.9').nullable().optional(),
+  status: z.enum(['idle', 'busy', 'error', 'disabled']).optional(),
+  skills: z.array(z.string().min(1)).optional(),
+});
 
 // GET /api/agents/[id] - Get agent by ID with stats
 export async function GET(
@@ -41,8 +52,19 @@ export async function PUT(
   try {
     const { id } = await params;
     const body = await request.json();
+    const parsed = updateAgentSchema.safeParse(body);
+
+    if (!parsed.success) {
+      const { formErrors, fieldErrors } = parsed.error.flatten();
+      const fieldMessages = Object.values(fieldErrors).flat().filter(Boolean);
+      const message = [...formErrors, ...fieldMessages].join(', ') || 'Invalid request payload';
+      return NextResponse.json(
+        { success: false, error: message },
+        { status: 400 }
+      );
+    }
     
-    const agent = await agentService.updateAgent(id, body);
+    const agent = await agentService.updateAgent(id, parsed.data);
     
     if (!agent) {
       return NextResponse.json(

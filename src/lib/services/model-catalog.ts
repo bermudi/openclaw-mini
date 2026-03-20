@@ -15,7 +15,7 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 };
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_CONTEXT_WINDOW_SIZE = 8192;
+const DEFAULT_CONTEXT_WINDOW_SIZE = 128000;
 const POE_MODELS_URL = 'https://api.poe.com/v1/models';
 
 const RawPoeModelSchema = z.object({

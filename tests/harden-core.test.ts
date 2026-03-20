@@ -12,9 +12,11 @@ let sessionService: typeof import('../src/lib/services/session-service').session
 let memoryService: typeof import('../src/lib/services/memory-service').memoryService;
 let agentService: typeof import('../src/lib/services/agent-service').agentService;
 let agentExecutor: typeof import('../src/lib/services/agent-executor').agentExecutor;
+let agentByIdRoute: typeof import('../src/app/api/agents/[id]/route');
 let compactSessionRoute: typeof import('../src/app/api/sessions/[id]/compact/route');
 let migrateSessionContextToMessages: typeof import('../src/lib/services/session-context-migration').migrateSessionContextToMessages;
 let setCountTokensImplementationForTests: typeof import('../src/lib/utils/token-counter').setCountTokensImplementationForTests;
+let setCountTokensThrowOnErrorForTests: typeof import('../src/lib/utils/token-counter').setCountTokensThrowOnErrorForTests;
 
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'harden-core.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
@@ -91,9 +93,12 @@ beforeAll(async () => {
   memoryService = (await import('../src/lib/services/memory-service')).memoryService;
   agentService = (await import('../src/lib/services/agent-service')).agentService;
   agentExecutor = (await import('../src/lib/services/agent-executor')).agentExecutor;
+  agentByIdRoute = await import('../src/app/api/agents/[id]/route');
   compactSessionRoute = await import('../src/app/api/sessions/[id]/compact/route');
   migrateSessionContextToMessages = (await import('../src/lib/services/session-context-migration')).migrateSessionContextToMessages;
-  setCountTokensImplementationForTests = (await import('../src/lib/utils/token-counter')).setCountTokensImplementationForTests;
+  const tokenCounterModule = await import('../src/lib/utils/token-counter');
+  setCountTokensImplementationForTests = tokenCounterModule.setCountTokensImplementationForTests;
+  setCountTokensThrowOnErrorForTests = tokenCounterModule.setCountTokensThrowOnErrorForTests;
 
   await resetDb();
 });
@@ -108,10 +113,12 @@ beforeEach(async () => {
   process.env.OPENCLAW_HISTORY_CAP_BYTES = '51200';
   process.env.OPENCLAW_HISTORY_RETENTION_DAYS = '30';
   setCountTokensImplementationForTests(null);
+  setCountTokensThrowOnErrorForTests(false);
 });
 
 afterEach(() => {
   setCountTokensImplementationForTests(null);
+  setCountTokensThrowOnErrorForTests(false);
 });
 
 afterAll(async () => {
@@ -261,6 +268,211 @@ test('appendToContext auto-compacts above threshold and manual compact endpoint 
   expect(body.remaining).toBe(2);
 });
 
+test('agent update API validates compactionThreshold and contextWindowOverride bounds', async () => {
+  const agent = await createAgent('Validation Agent');
+
+  const badThresholdResponse = await agentByIdRoute.PUT(
+    new NextRequest(`http://localhost/api/agents/${agent.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ compactionThreshold: 0.05 }),
+    }),
+    { params: Promise.resolve({ id: agent.id }) },
+  );
+  const badThresholdBody = await badThresholdResponse.json() as { error?: string };
+  expect(badThresholdResponse.status).toBe(400);
+  expect(badThresholdBody.error).toContain('between 0.1 and 0.9');
+
+  const badContextWindowResponse = await agentByIdRoute.PUT(
+    new NextRequest(`http://localhost/api/agents/${agent.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ contextWindowOverride: 999 }),
+    }),
+    { params: Promise.resolve({ id: agent.id }) },
+  );
+  const badContextWindowBody = await badContextWindowResponse.json() as { error?: string };
+  expect(badContextWindowResponse.status).toBe(400);
+  expect(badContextWindowBody.error).toContain('at least 1000');
+
+  const validResponse = await agentByIdRoute.PUT(
+    new NextRequest(`http://localhost/api/agents/${agent.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ compactionThreshold: 0.6, contextWindowOverride: 1000 }),
+    }),
+    { params: Promise.resolve({ id: agent.id }) },
+  );
+  expect(validResponse.status).toBe(200);
+});
+
+test('token-based compaction triggers when session tokens exceed threshold and does not trigger below threshold', async () => {
+  process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '999';
+  process.env.OPENCLAW_SESSION_RETAIN_COUNT = '2';
+
+  setCountTokensImplementationForTests((text) => text.length);
+
+  const agent = await createAgent('Token Threshold Agent');
+  await agentService.updateAgent(agent.id, {
+    contextWindowOverride: 1000,
+    compactionThreshold: 0.2,
+  });
+
+  const highSession = await sessionService.getOrCreateSession(agent.id, 'token-high', 'telegram', 'token-high');
+  await sessionService.appendToContext(highSession.id, { role: 'user', content: 'a'.repeat(120) });
+  await sessionService.appendToContext(highSession.id, { role: 'user', content: 'b'.repeat(120) });
+  await sessionService.appendToContext(highSession.id, { role: 'user', content: 'c'.repeat(120) });
+
+  const highRows = await db.sessionMessage.findMany({
+    where: { sessionId: highSession.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  expect(highRows[0]?.role).toBe('system');
+  expect(highRows[0]?.content.startsWith('[Session Summary]')).toBe(true);
+
+  const lowSession = await sessionService.getOrCreateSession(agent.id, 'token-low', 'telegram', 'token-low');
+  await sessionService.appendToContext(lowSession.id, { role: 'user', content: 'x'.repeat(30) });
+  await sessionService.appendToContext(lowSession.id, { role: 'user', content: 'y'.repeat(30) });
+  await sessionService.appendToContext(lowSession.id, { role: 'user', content: 'z'.repeat(30) });
+
+  const lowRows = await db.sessionMessage.findMany({
+    where: { sessionId: lowSession.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  expect(lowRows.some(row => row.role === 'system' && row.content.startsWith('[Session Summary]'))).toBe(false);
+});
+
+test('message-count threshold remains a secondary compaction trigger when token usage is low', async () => {
+  process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '40';
+  process.env.OPENCLAW_SESSION_RETAIN_COUNT = '10';
+  process.env.OPENCLAW_SESSION_TOKEN_THRESHOLD = '0.9';
+
+  setCountTokensImplementationForTests((text) => Math.ceil(text.length / 100));
+
+  const agent = await createAgent('Message Fallback Agent');
+  await agentService.updateAgent(agent.id, {
+    contextWindowOverride: 200000,
+    compactionThreshold: 0.9,
+  });
+
+  const session = await sessionService.getOrCreateSession(agent.id, 'message-fallback', 'telegram', 'message-fallback');
+  for (let i = 0; i < 41; i += 1) {
+    await sessionService.appendToContext(session.id, {
+      role: 'user',
+      content: `m-${i}`,
+    });
+  }
+
+  const rows = await db.sessionMessage.findMany({
+    where: { sessionId: session.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  expect(rows[0]?.role).toBe('system');
+  expect(rows[0]?.content.startsWith('[Session Summary]')).toBe(true);
+});
+
+test('compaction is deferred on assistant turn and triggers on next user turn', async () => {
+  process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '999';
+  process.env.OPENCLAW_SESSION_RETAIN_COUNT = '2';
+
+  setCountTokensImplementationForTests((text) => text.length);
+
+  const agent = await createAgent('User Turn Boundary Agent');
+  await agentService.updateAgent(agent.id, {
+    contextWindowOverride: 200,
+    compactionThreshold: 0.4,
+  });
+
+  const session = await sessionService.getOrCreateSession(agent.id, 'user-boundary', 'telegram', 'user-boundary');
+  await sessionService.appendToContext(session.id, { role: 'user', content: 'u'.repeat(20) });
+  await sessionService.appendToContext(session.id, { role: 'assistant', content: 'a'.repeat(100) });
+
+  const rowsAfterAssistant = await db.sessionMessage.findMany({
+    where: { sessionId: session.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  expect(rowsAfterAssistant.some(row => row.role === 'system' && row.content.startsWith('[Session Summary]'))).toBe(false);
+
+  await sessionService.appendToContext(session.id, { role: 'user', content: 'follow-up' });
+
+  const rowsAfterUser = await db.sessionMessage.findMany({
+    where: { sessionId: session.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  expect(rowsAfterUser.some(row => row.role === 'system' && row.content.startsWith('[Session Summary]'))).toBe(true);
+});
+
+test('tokenizer failure falls back to message-count compaction check', async () => {
+  process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '4';
+  process.env.OPENCLAW_SESSION_RETAIN_COUNT = '2';
+
+  setCountTokensImplementationForTests(() => {
+    throw new Error('tokenizer failure');
+  });
+  setCountTokensThrowOnErrorForTests(true);
+
+  const agent = await createAgent('Tokenizer Failure Agent');
+  const session = await sessionService.getOrCreateSession(agent.id, 'tokenizer-fail', 'telegram', 'tokenizer-fail');
+
+  for (const content of ['m1', 'm2', 'm3', 'm4', 'm5']) {
+    await sessionService.appendToContext(session.id, { role: 'user', content });
+  }
+
+  const rows = await db.sessionMessage.findMany({
+    where: { sessionId: session.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  expect(rows[0]?.role).toBe('system');
+  expect(rows[0]?.content.startsWith('[Session Summary]')).toBe(true);
+});
+
+test('agents with different compaction thresholds compact at different points', async () => {
+  process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '999';
+  process.env.OPENCLAW_SESSION_RETAIN_COUNT = '2';
+
+  setCountTokensImplementationForTests((text) => text.length);
+
+  const lowThresholdAgent = await createAgent('Low Threshold Agent');
+  await agentService.updateAgent(lowThresholdAgent.id, {
+    contextWindowOverride: 200,
+    compactionThreshold: 0.2,
+  });
+
+  const highThresholdAgent = await createAgent('High Threshold Agent');
+  await agentService.updateAgent(highThresholdAgent.id, {
+    contextWindowOverride: 200,
+    compactionThreshold: 0.8,
+  });
+
+  const lowSession = await sessionService.getOrCreateSession(lowThresholdAgent.id, 'threshold-low', 'telegram', 'threshold-low');
+  const highSession = await sessionService.getOrCreateSession(highThresholdAgent.id, 'threshold-high', 'telegram', 'threshold-high');
+
+  for (const content of ['x'.repeat(50), 'y'.repeat(50), 'z'.repeat(50)]) {
+    await sessionService.appendToContext(lowSession.id, { role: 'user', content });
+    await sessionService.appendToContext(highSession.id, { role: 'user', content });
+  }
+
+  const lowRowsAfterThree = await db.sessionMessage.findMany({
+    where: { sessionId: lowSession.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  const highRowsAfterThree = await db.sessionMessage.findMany({
+    where: { sessionId: highSession.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+
+  expect(lowRowsAfterThree.some(row => row.role === 'system' && row.content.startsWith('[Session Summary]'))).toBe(true);
+  expect(highRowsAfterThree.some(row => row.role === 'system' && row.content.startsWith('[Session Summary]'))).toBe(false);
+
+  await sessionService.appendToContext(highSession.id, { role: 'user', content: 'w'.repeat(30) });
+
+  const highRowsAfterFour = await db.sessionMessage.findMany({
+    where: { sessionId: highSession.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  expect(highRowsAfterFour.some(row => row.role === 'system' && row.content.startsWith('[Session Summary]'))).toBe(true);
+});
+
 test('appendHistory rotates oversized history into dated archives and cleanup removes expired files', async () => {
   process.env.OPENCLAW_HISTORY_CAP_BYTES = '120';
   process.env.OPENCLAW_HISTORY_RETENTION_DAYS = '30';
@@ -311,21 +523,27 @@ test('token budgeting preserves summaries, drops oldest regular messages first, 
           timestamp: string;
         }>;
         systemPrompt: string;
-        model: string;
+        agent: {
+          model: string | null;
+          contextWindowOverride: number | null;
+        };
       },
-    ) => string;
+    ) => Promise<string>;
   };
 
   setCountTokensImplementationForTests((text) => text.length);
 
-  const prompt = executor.buildPrompt(
+  const prompt = await executor.buildPrompt(
     {
       type: 'message',
       payload: { channel: 'telegram', sender: 'bermudi', content: 'hello' },
     },
     {
       systemPrompt: 'S'.repeat(100),
-      model: 'gpt-4',
+      agent: {
+        model: 'gpt-4',
+        contextWindowOverride: null,
+      },
       context: 'MEMORY'.repeat(600),
       sessionMessages: [
         {

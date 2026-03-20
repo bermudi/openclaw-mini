@@ -4,8 +4,9 @@
 import { generateText } from 'ai';
 import { db } from '@/lib/db';
 import { ChannelType } from '@/lib/types';
+import { countTokens } from '@/lib/utils/token-counter';
 import { memoryService } from './memory-service';
-import { runWithModelFallback } from './model-provider';
+import { resolveAgentContextWindow, resolveCompactionThreshold, runWithModelFallback } from './model-provider';
 
 export interface SessionContext {
   messages: Array<{
@@ -33,6 +34,30 @@ type StoredSessionMessage = {
   channelKey: string | null;
   createdAt: Date;
 };
+
+type SessionAgentConfig = {
+  id: string;
+  model: string | null;
+  contextWindowOverride: number | null;
+  compactionThreshold: number | null;
+};
+
+function normalizeSessionAgentConfig(agent: { id: string } & Record<string, unknown>): SessionAgentConfig {
+  const model = typeof agent.model === 'string' ? agent.model : null;
+  const contextWindowOverride = typeof agent.contextWindowOverride === 'number'
+    ? agent.contextWindowOverride
+    : null;
+  const compactionThreshold = typeof agent.compactionThreshold === 'number'
+    ? agent.compactionThreshold
+    : null;
+
+  return {
+    id: agent.id,
+    model,
+    contextWindowOverride,
+    compactionThreshold,
+  };
+}
 
 function getPositiveIntegerEnv(name: string, fallback: number): number {
   const value = process.env[name];
@@ -136,9 +161,19 @@ class SessionService {
   ): Promise<void> {
     const session = await db.session.findUnique({
       where: { id: sessionId },
-      select: { id: true },
+      select: {
+        id: true,
+        agentId: true,
+      },
     });
     if (!session) return;
+
+    const rawAgent = await db.agent.findUnique({
+      where: { id: session.agentId },
+    });
+    if (!rawAgent) return;
+
+    const agentConfig = normalizeSessionAgentConfig(rawAgent as { id: string } & Record<string, unknown>);
 
     const createdAt = new Date();
 
@@ -161,11 +196,10 @@ class SessionService {
       });
     });
 
-    const threshold = getPositiveIntegerEnv('OPENCLAW_SESSION_COMPACTION_THRESHOLD', 40);
-    const messageCount = await db.sessionMessage.count({ where: { sessionId } });
-    if (messageCount > threshold) {
+    const shouldCompact = await this.shouldCompact(sessionId, agentConfig, message.role);
+    if (shouldCompact) {
       try {
-        await this.compactSession(sessionId);
+        await this.compactSession(sessionId, { force: true });
       } catch (error) {
         console.error(`[SessionService] Failed to compact session ${sessionId}:`, error);
       }
@@ -376,6 +410,43 @@ class SessionService {
       summarized: messagesToSummarize.length,
       remaining,
     };
+  }
+
+  private async shouldCompact(
+    sessionId: string,
+    agent: SessionAgentConfig,
+    appendedRole: 'user' | 'assistant' | 'system',
+  ): Promise<boolean> {
+    if (appendedRole !== 'user') {
+      return false;
+    }
+
+    const messageCountThreshold = getPositiveIntegerEnv('OPENCLAW_SESSION_COMPACTION_THRESHOLD', 40);
+    const messageCount = await db.sessionMessage.count({ where: { sessionId } });
+
+    try {
+      const snapshot = await db.sessionMessage.findMany({
+        where: { sessionId },
+        select: { content: true },
+        orderBy: [
+          { createdAt: 'asc' },
+          { id: 'asc' },
+        ],
+      });
+      const sessionText = snapshot.map(message => message.content).join('\n\n');
+      const sessionTokens = countTokens(sessionText);
+      const contextWindow = await resolveAgentContextWindow(agent);
+      const compactionThreshold = resolveCompactionThreshold(agent);
+
+      if (sessionTokens > contextWindow * compactionThreshold) {
+        return true;
+      }
+
+      return messageCount > messageCountThreshold;
+    } catch (error) {
+      console.warn(`[SessionService] Token-based compaction evaluation failed for session ${sessionId}; falling back to message-count threshold.`, error);
+      return messageCount > messageCountThreshold;
+    }
   }
 
   private mapSessionMessage(message: StoredSessionMessage): SessionContext['messages'][number] {

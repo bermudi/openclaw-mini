@@ -28,6 +28,18 @@ interface ResolveModelConfigOptions {
   ignoreEnvFallback?: boolean;
 }
 
+interface AgentContextWindowInput {
+  model?: string | null;
+  contextWindowOverride?: number | null;
+}
+
+interface AgentCompactionThresholdInput {
+  compactionThreshold?: number | null;
+}
+
+const DEFAULT_CONTEXT_WINDOW_SIZE = 128000;
+const DEFAULT_COMPACTION_THRESHOLD = 0.5;
+
 function extractStatusCode(error: unknown): number | undefined {
   if (!error || typeof error !== 'object') {
     return undefined;
@@ -174,6 +186,53 @@ export function resolveModelConfig(
 
 export function getContextWindowSize(model: string): number {
   return modelCatalog.getContextWindowSize(model);
+}
+
+export async function resolveAgentContextWindow(
+  agent: AgentContextWindowInput,
+): Promise<number> {
+  if (
+    typeof agent.contextWindowOverride === 'number'
+    && Number.isInteger(agent.contextWindowOverride)
+    && agent.contextWindowOverride > 0
+  ) {
+    return agent.contextWindowOverride;
+  }
+
+  if (agent.model) {
+    const agentModelWindow = modelCatalog.getContextWindowSize(agent.model);
+    if (agentModelWindow > 0) {
+      return agentModelWindow;
+    }
+  }
+
+  try {
+    const globalModel = getModelConfig().model;
+    const globalModelWindow = modelCatalog.getContextWindowSize(globalModel);
+
+    if (globalModelWindow > 0) {
+      return globalModelWindow;
+    }
+  } catch {
+  }
+
+  return DEFAULT_CONTEXT_WINDOW_SIZE;
+}
+
+export function resolveCompactionThreshold(
+  agent: AgentCompactionThresholdInput,
+): number {
+  if (typeof agent.compactionThreshold === 'number') {
+    return agent.compactionThreshold;
+  }
+
+  const rawEnvThreshold = process.env.OPENCLAW_SESSION_TOKEN_THRESHOLD;
+  const envThreshold = rawEnvThreshold ? Number.parseFloat(rawEnvThreshold) : Number.NaN;
+  if (Number.isFinite(envThreshold)) {
+    return envThreshold;
+  }
+
+  return DEFAULT_COMPACTION_THRESHOLD;
 }
 
 export function getLanguageModel(overrides?: Partial<ProviderConfig>): LanguageModel {

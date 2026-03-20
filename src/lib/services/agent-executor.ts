@@ -9,7 +9,7 @@ import { memoryService } from './memory-service';
 import { sessionService, type SessionContext } from './session-service';
 import { auditService } from './audit-service';
 import { enqueueDeliveryTx } from './delivery-service';
-import { getContextWindowSize, getModelConfig, runWithModelFallback } from './model-provider';
+import { getModelConfig, resolveAgentContextWindow, runWithModelFallback } from './model-provider';
 import { ChannelType, DeliveryTarget, Task } from '@/lib/types';
 import { getLowRiskTools, getToolsByNames, getToolsForAgent, type ToolResult, withSpawnSubagentContext } from '@/lib/tools';
 import { getSkillForSubAgent, getSkillSummaries } from './skill-service';
@@ -111,11 +111,14 @@ class AgentExecutorService {
         ? (resolvedSubagentConfig?.systemPrompt ?? defaultSubagentSystemPrompt)
         : await this.getSystemPrompt(agent, task);
 
-      const prompt = this.buildPrompt(task, {
+      const prompt = await this.buildPrompt(task, {
         context,
         sessionMessages,
         systemPrompt,
-        model: resolvedSubagentConfig?.model ?? getModelConfig().model,
+        agent: {
+          model: resolvedSubagentConfig?.model ?? agent.model ?? null,
+          contextWindowOverride: agent.contextWindowOverride ?? null,
+        },
       });
 
       if (isSubagent && resolvedSubagentConfig) {
@@ -368,16 +371,19 @@ class AgentExecutorService {
   /**
    * Build prompt based on task type
    */
-  private buildPrompt(
+  private async buildPrompt(
     task: Task,
     input: {
       context: string;
       sessionMessages: SessionContext['messages'];
       systemPrompt: string;
-      model: string;
+      agent: {
+        model: string | null;
+        contextWindowOverride: number | null;
+      };
     },
-  ): string {
-    const contextWindow = getContextWindowSize(input.model);
+  ): Promise<string> {
+    const contextWindow = await resolveAgentContextWindow(input.agent);
     const responseReserve = Math.max(Math.floor(contextWindow * 0.2), 1000);
     const totalBudget = Math.max(contextWindow - responseReserve, 0);
     const taskPromptWithoutContext = this.renderTaskPrompt(task, '');

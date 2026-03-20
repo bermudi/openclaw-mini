@@ -7,6 +7,9 @@ export interface Agent {
   id: string;
   name: string;
   description?: string;
+  model?: string;
+  contextWindowOverride?: number;
+  compactionThreshold?: number;
   status: AgentStatus;
   skills: string[];
   isDefault: boolean;

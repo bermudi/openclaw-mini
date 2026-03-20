@@ -13,7 +13,10 @@ export interface CreateAgentInput {
 
 export interface UpdateAgentInput {
   name?: string;
-  description?: string;
+  description?: string | null;
+  model?: string | null;
+  contextWindowOverride?: number | null;
+  compactionThreshold?: number | null;
   status?: AgentStatus;
   skills?: string[];
 }
@@ -120,6 +123,9 @@ class AgentService {
       data: {
         ...(input.name && { name: input.name }),
         ...(input.description !== undefined && { description: input.description }),
+        ...(input.model !== undefined && { model: input.model }),
+        ...(input.contextWindowOverride !== undefined && { contextWindowOverride: input.contextWindowOverride }),
+        ...(input.compactionThreshold !== undefined && { compactionThreshold: input.compactionThreshold }),
         ...(input.status && { status: input.status }),
         ...(input.skills && { skills: JSON.stringify(input.skills) }),
       },
@@ -215,10 +221,19 @@ class AgentService {
    * Map database agent to interface
    */
   private mapAgent(agent: DbAgent): Agent {
+    const configuredAgent = agent as DbAgent & {
+      model?: string | null;
+      contextWindowOverride?: number | null;
+      compactionThreshold?: number | null;
+    };
+
     return {
       id: agent.id,
       name: agent.name,
       description: agent.description ?? undefined,
+      model: configuredAgent.model ?? undefined,
+      contextWindowOverride: configuredAgent.contextWindowOverride ?? undefined,
+      compactionThreshold: configuredAgent.compactionThreshold ?? undefined,
       status: agent.status as AgentStatus,
       skills: JSON.parse(agent.skills),
       isDefault: Boolean(agent.isDefault),

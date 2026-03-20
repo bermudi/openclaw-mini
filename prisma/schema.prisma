@@ -15,6 +15,9 @@ model Agent {
   id          String   @id @default(cuid())
   name        String
   description String?
+  model       String?
+  contextWindowOverride Int?
+  compactionThreshold Float?
   status      String   @default("idle") // idle, busy, error, disabled
   skills      String   @default("[]") // JSON array of skill names
   isDefault   Boolean  @default(false)
