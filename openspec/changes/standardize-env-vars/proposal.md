@@ -22,10 +22,12 @@ None - this is a cleanup/simplification change.
 ### Modified Capabilities
 
 - `config-file`: Env var fallback removed; config file is now required for non-secret configuration. Loader throws helpful error if file missing.
-- `provider-registry`: `init()` no longer has env var fallback path; fails if config file doesn't exist. `source` field removed from state (always 'config-file').
+- `model-fallback`: Deprecated `AI_FALLBACK_MODEL` compatibility removed; fallback configuration now lives only in `openclaw.json`.
 
 ## Impact
 
 - **Breaking**: Users must create `openclaw.json` with at minimum `provider` and `model` fields
+- **Breaking**: Users must move any `AI_FALLBACK_MODEL` usage to `agent.fallbackProvider` and `agent.fallbackModel` in `openclaw.json`
 - **Simpler loader**: Remove `generateConfigFromEnvVars()`, deprecation warnings, fallback logic
+- **Simpler provider registry**: Initialization and state now assume a config-file-only runtime
 - **Documentation**: Update README/docs to clarify env vars = secrets only

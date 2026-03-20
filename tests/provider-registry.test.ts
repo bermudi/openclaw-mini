@@ -63,7 +63,9 @@ beforeEach(() => {
 
 afterEach(async () => {
   const { stopWatchingConfig } = await import('../src/lib/config/watcher');
+  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   stopWatchingConfig();
+  resetProviderRegistryForTests();
   restoreEnv();
 
   for (const dir of createdDirs) {
@@ -94,28 +96,19 @@ describe('loadConfig', () => {
     const { loadConfig } = await import('../src/lib/config/loader');
     const result = loadConfig({ configPath });
 
-    expect(result.source).toBe('config-file');
     expect(result.config.agent.provider).toBe('openai');
     expect(result.config.providers.openai?.apiKey).toBe('openai-test-key');
   });
 
-  test('falls back to environment variables when the config file is missing', async () => {
-    process.env.AI_PROVIDER = 'poe';
-    process.env.AI_MODEL = 'gpt-5-pro';
-    process.env.AI_FALLBACK_MODEL = 'openai/gpt-4.1-mini';
-
+  test('throws a helpful error when the config file is missing', async () => {
+    const missingConfigPath = path.join(createTempDir(), 'missing-openclaw.json');
     const { loadConfig } = await import('../src/lib/config/loader');
-    const result = loadConfig({ configPath: path.join(createTempDir(), 'missing-openclaw.json') });
 
-    expect(result.source).toBe('env');
-    expect(result.config.agent.provider).toBe('poe');
-    expect(result.config.agent.model).toBe('gpt-5-pro');
-    expect(result.config.agent.fallbackProvider).toBe('openai');
-    expect(result.config.agent.fallbackModel).toBe('gpt-4.1-mini');
-    expect(result.config.providers.openrouter?.baseURL).toBe('https://openrouter.ai/api/v1');
+    expect(() => loadConfig({ configPath: missingConfigPath })).toThrow(`[provider-config] Missing runtime config file: ${missingConfigPath}`);
+    expect(() => loadConfig({ configPath: missingConfigPath })).toThrow('Create openclaw.json with providers and agent sections. Example:');
   });
 
-  test('rejects invalid config files unless startup fallback is enabled', async () => {
+  test('rejects invalid config files', async () => {
     const configPath = path.join(createTempDir(), 'openclaw.json');
     writeConfig(configPath, `{
       providers: {
@@ -129,20 +122,10 @@ describe('loadConfig', () => {
         model: 'gpt-4.1-mini',
       },
     }`);
-    process.env.AI_PROVIDER = 'openai';
-    process.env.AI_MODEL = 'gpt-4.1-mini';
 
     const { loadConfig } = await import('../src/lib/config/loader');
 
     expect(() => loadConfig({ configPath })).toThrow("agent provider 'missing' is not defined in providers");
-
-    const fallbackResult = loadConfig({
-      configPath,
-      fallbackToEnvOnFileError: true,
-    });
-
-    expect(fallbackResult.source).toBe('env');
-    expect(fallbackResult.config.agent.provider).toBe('openai');
   });
 });
 

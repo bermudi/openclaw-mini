@@ -1,6 +1,7 @@
 /// <reference types="bun-types" />
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, writeRuntimeConfig, type RuntimeConfigFixture } from './runtime-config-fixture';
 
 mock.module('@ai-sdk/openai', () => ({
   createOpenAI: ({ baseURL, apiKey }: { baseURL?: string; apiKey?: string }) => {
@@ -23,6 +24,7 @@ mock.module('@ai-sdk/anthropic', () => ({
 
 const ORIGINAL_ENV = { ...process.env };
 const HAS_REAL_POE_API_KEY = Boolean(ORIGINAL_ENV.POE_API_KEY);
+let runtimeConfigFixture: RuntimeConfigFixture | null = null;
 
 function restoreEnv(): void {
   for (const key of Object.keys(process.env)) {
@@ -36,18 +38,28 @@ function restoreEnv(): void {
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   restoreEnv();
   process.env.OPENAI_API_KEY = 'openai-test-key';
   process.env.ANTHROPIC_API_KEY = 'anthropic-test-key';
+  process.env.OPENROUTER_API_KEY = 'openrouter-test-key';
   process.env.POE_API_KEY = 'poe-test-key';
-  process.env.AI_PROVIDER = 'openai';
-  process.env.AI_MODEL = 'gpt-4.1-mini';
-  delete process.env.AI_BASE_URL;
-  delete process.env.AI_FALLBACK_MODEL;
+  runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-model-provider-');
+  process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
+
+  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
+
+  if (runtimeConfigFixture) {
+    cleanupRuntimeConfigFixture(runtimeConfigFixture.dir);
+    runtimeConfigFixture = null;
+  }
+
   restoreEnv();
 });
 
@@ -187,9 +199,18 @@ describe('model fallback', () => {
   });
 
   test('retries with the configured fallback on retryable failures', async () => {
-    process.env.AI_PROVIDER = 'poe';
-    process.env.AI_MODEL = 'gpt-5-pro';
-    process.env.AI_FALLBACK_MODEL = 'openai/gpt-4.1-mini';
+    if (!runtimeConfigFixture) {
+      throw new Error('Expected runtime config fixture to exist');
+    }
+
+    writeRuntimeConfig(runtimeConfigFixture.configPath, {
+      agent: {
+        provider: 'poe',
+        model: 'gpt-5-pro',
+        fallbackProvider: 'openai',
+        fallbackModel: 'gpt-4.1-mini',
+      },
+    });
 
     const { runWithModelFallback } = await import('../src/lib/services/model-provider');
     const attemptedModels: string[] = [];
@@ -211,7 +232,18 @@ describe('model fallback', () => {
   });
 
   test('does not retry on non-retryable failures', async () => {
-    process.env.AI_FALLBACK_MODEL = 'poe/claude-opus-4.6';
+    if (!runtimeConfigFixture) {
+      throw new Error('Expected runtime config fixture to exist');
+    }
+
+    writeRuntimeConfig(runtimeConfigFixture.configPath, {
+      agent: {
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
+        fallbackProvider: 'poe',
+        fallbackModel: 'claude-opus-4.6',
+      },
+    });
 
     const { runWithModelFallback } = await import('../src/lib/services/model-provider');
     const attemptedModels: string[] = [];
@@ -227,7 +259,18 @@ describe('model fallback', () => {
   });
 
   test('surfaces both errors when primary and fallback fail', async () => {
-    process.env.AI_FALLBACK_MODEL = 'anthropic/claude-haiku-4.5';
+    if (!runtimeConfigFixture) {
+      throw new Error('Expected runtime config fixture to exist');
+    }
+
+    writeRuntimeConfig(runtimeConfigFixture.configPath, {
+      agent: {
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
+        fallbackProvider: 'anthropic',
+        fallbackModel: 'claude-haiku-4.5',
+      },
+    });
 
     const { runWithModelFallback } = await import('../src/lib/services/model-provider');
 

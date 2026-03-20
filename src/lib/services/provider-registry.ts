@@ -1,7 +1,7 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import type { LanguageModel } from 'ai';
-import { loadConfig, type LoadConfigResult, type RuntimeConfigSource, generateConfigFromEnvVars } from '@/lib/config/loader';
+import { loadConfig, type LoadConfigResult } from '@/lib/config/loader';
 import { providerApiTypeSchema, type ProviderDefinition, type RuntimeConfig } from '@/lib/config/schema';
 import { createPoeLanguageModel } from '@/lib/services/poe-client';
 
@@ -18,7 +18,6 @@ interface AnthropicModelFactory {
 export interface ProviderRegistryState {
   config: RuntimeConfig;
   configPath: string;
-  source: RuntimeConfigSource;
 }
 
 function createOpenAIProvider(definition: ProviderDefinition): OpenAIModelFactory {
@@ -67,7 +66,6 @@ export class ProviderRegistry {
   private readonly modelCache = new Map<string, LanguageModel>();
   private runtimeConfig: RuntimeConfig | null = null;
   private configPath = '';
-  private source: RuntimeConfigSource = 'env';
 
   register(definition: ProviderDefinition): void {
     providerApiTypeSchema.parse(definition.apiType);
@@ -105,16 +103,10 @@ export class ProviderRegistry {
 
   setState(state: ProviderRegistryState): void {
     this.configPath = state.configPath;
-    this.source = state.source;
     this.reload(state.config);
   }
 
   getState(): ProviderRegistryState {
-    if (!this.runtimeConfig) {
-      const config = generateConfigFromEnvVars();
-      this.reload(config);
-    }
-
     if (!this.runtimeConfig) {
       throw new Error('Provider registry failed to initialize runtime config');
     }
@@ -122,7 +114,6 @@ export class ProviderRegistry {
     return {
       config: this.runtimeConfig,
       configPath: this.configPath,
-      source: this.source,
     };
   }
 
@@ -159,6 +150,13 @@ export class ProviderRegistry {
     this.modelCache.set(cacheKey, languageModel);
     return languageModel;
   }
+
+  reset(): void {
+    this.providers.clear();
+    this.modelCache.clear();
+    this.runtimeConfig = null;
+    this.configPath = '';
+  }
 }
 
 export const providerRegistry = new ProviderRegistry();
@@ -169,14 +167,13 @@ function applyLoadedConfig(result: LoadConfigResult): LoadConfigResult {
   providerRegistry.setState({
     config: result.config,
     configPath: result.configPath,
-    source: result.source,
   });
   initialized = true;
   return result;
 }
 
 export function initializeProviderRegistry(): LoadConfigResult {
-  return applyLoadedConfig(loadConfig({ fallbackToEnvOnFileError: true }));
+  return applyLoadedConfig(loadConfig());
 }
 
 export function ensureProviderRegistryInitialized(): ProviderRegistryState {
@@ -187,4 +184,7 @@ export function ensureProviderRegistryInitialized(): ProviderRegistryState {
   return providerRegistry.getState();
 }
 
-export { generateConfigFromEnvVars };
+export function resetProviderRegistryForTests(): void {
+  providerRegistry.reset();
+  initialized = false;
+}

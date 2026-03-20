@@ -169,7 +169,7 @@ Supported override fields:
 
 Precedence is resolved in this order:
 
-1. Gateway runtime config from `openclaw.json` (or deprecated `AI_*` env fallback when no config file exists)
+1. Gateway runtime config from `openclaw.json`
 2. Parent agent runtime context (for example the agent's allowed skills)
 3. Sub-agent skill defaults from `SKILL.md` (`tools` and the skill body instructions)
 4. `overrides` from the same `SKILL.md`
@@ -256,23 +256,6 @@ Notes:
 
 - `apiKey` supports `${ENV_VAR}` substitution.
 - `fallbackProvider` and `fallbackModel` replace the old combined fallback env format.
+- `openclaw.json` is required; the runtime throws a helpful startup error if the file is missing.
 - Changes to `openclaw.json` are watched and reload the provider registry without restarting the app.
 - `examples/openclaw.json` contains a copy-pasteable starting point.
-
-## Deprecated environment compatibility
-
-If `openclaw.json` does not exist, the runtime still falls back to the older environment variables:
-
-```
-DATABASE_URL="file:./db/custom.db"
-AI_PROVIDER="poe"
-AI_MODEL="gpt-5-pro"
-POE_API_KEY="your-poe-api-key"
-AI_FALLBACK_MODEL="openai/gpt-4.1-mini"
-```
-
-Notes:
-
-- `AI_PROVIDER`, `AI_MODEL`, `AI_BASE_URL`, and `AI_FALLBACK_MODEL` now log deprecation warnings.
-- `AI_FALLBACK_MODEL` must still use `provider/model` format.
-- Poe routes `claude-*` models through Poe's Anthropic-compatible endpoint, `gpt-*`/`o3`/`o4-*` through Poe's Responses endpoint, and other models through Poe's chat-completions endpoint.

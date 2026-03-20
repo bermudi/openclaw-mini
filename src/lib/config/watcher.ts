@@ -49,13 +49,11 @@ function reloadFromConfigPath(configPath: string): void {
   try {
     const result = loadConfig({
       configPath,
-      fallbackToEnvOnFileError: false,
     });
 
     providerRegistry.setState({
       config: result.config,
       configPath: result.configPath,
-      source: result.source,
     });
 
     console.info(

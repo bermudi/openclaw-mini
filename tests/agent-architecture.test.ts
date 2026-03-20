@@ -6,6 +6,7 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { NextRequest } from 'next/server';
 import type { PrismaClient } from '@prisma/client';
+import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture } from './runtime-config-fixture';
 
 let lastSystemPrompt = '';
 let lastToolNames: string[] = [];
@@ -62,6 +63,7 @@ let channelBindingByIdRoute: typeof import('../src/app/api/channels/bindings/[id
 let inputRoute: typeof import('../src/app/api/input/route');
 let testWorkspaceDir = '';
 let initialMemoryDirs = new Set<string>();
+let runtimeConfigFixture: RuntimeConfigFixture | null = null;
 
 async function resetDb() {
   await db.task.deleteMany();
@@ -141,8 +143,14 @@ async function waitForSubagentTask(parentTaskId: string) {
 
 beforeAll(async () => {
   process.env.DATABASE_URL = TEST_DB_URL;
-  process.env.AI_PROVIDER = process.env.AI_PROVIDER ?? 'openai';
   process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? 'test-key';
+  process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? 'test-key';
+  process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? 'test-key';
+  process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
+  runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-agent-architecture-');
+  process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
+  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
   captureInitialMemoryDirs();
 
@@ -174,6 +182,8 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
   await resetDb();
   resetWorkspaceDir();
   skillService.clearSkillCache();
@@ -184,9 +194,15 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
   await resetDb();
   await db.$disconnect();
   cleanupMemoryDirs();
+  if (runtimeConfigFixture) {
+    cleanupRuntimeConfigFixture(runtimeConfigFixture.dir);
+    runtimeConfigFixture = null;
+  }
   if (fs.existsSync(SKILLS_DIR)) {
     fs.rmSync(SKILLS_DIR, { recursive: true, force: true });
   }

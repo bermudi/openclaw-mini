@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { NextRequest } from 'next/server';
 import type { PrismaClient } from '@prisma/client';
+import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture } from './runtime-config-fixture';
 
 let mockResponseText = 'stub response';
 
@@ -60,6 +61,7 @@ let agentExecutorModule: typeof import('../src/lib/services/agent-executor');
 let telegramWebhookRoute: TelegramWebhookRouteModule;
 let adapterIndexModule: AdapterIndexModule;
 let initialMemoryDirs = new Set<string>();
+let runtimeConfigFixture: RuntimeConfigFixture | null = null;
 
 const originalFetch = global.fetch;
 
@@ -122,8 +124,14 @@ function cleanupMemoryDirs() {
 
 beforeAll(async () => {
   process.env.DATABASE_URL = TEST_DB_URL;
-  process.env.AI_PROVIDER = process.env.AI_PROVIDER ?? 'openai';
   process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? 'test-key';
+  process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? 'test-key';
+  process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? 'test-key';
+  process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
+  runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-response-delivery-');
+  process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
+  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
   captureInitialMemoryDirs();
 
@@ -152,6 +160,8 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
   mockResponseText = 'stub response';
   global.fetch = originalFetch;
   delete process.env.TELEGRAM_WEBHOOK_SECRET;
@@ -166,6 +176,10 @@ afterAll(async () => {
   await resetDb();
   await db.$disconnect();
   cleanupMemoryDirs();
+  if (runtimeConfigFixture) {
+    cleanupRuntimeConfigFixture(runtimeConfigFixture.dir);
+    runtimeConfigFixture = null;
+  }
   if (fs.existsSync(TEST_DB_PATH)) {
     fs.rmSync(TEST_DB_PATH, { force: true });
   }

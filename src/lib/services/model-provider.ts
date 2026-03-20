@@ -1,7 +1,7 @@
 import type { LanguageModel } from 'ai';
 import { loadCredentialRef } from '@/lib/credentials';
 import { modelCatalog } from './model-catalog';
-import { ensureProviderRegistryInitialized, initializeProviderRegistry, providerRegistry } from './provider-registry';
+import { ensureProviderRegistryInitialized, providerRegistry } from './provider-registry';
 
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503]);
 const NON_RETRYABLE_STATUS_CODES = new Set([400, 401, 403]);
@@ -82,12 +82,7 @@ function getErrorMessage(error: unknown): string {
 }
 
 function getRuntimeState() {
-  const state = ensureProviderRegistryInitialized();
-  if (state.source === 'env') {
-    return initializeProviderRegistry();
-  }
-
-  return state;
+  return ensureProviderRegistryInitialized();
 }
 
 function resolveFallbackModelConfig(config: ProviderConfig): ProviderConfig | undefined {

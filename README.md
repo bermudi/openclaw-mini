@@ -29,21 +29,23 @@ Provider and model configuration now lives in `openclaw.json`.
 - Format: JSON5-compatible `openclaw.json` with `providers` and `agent` sections
 - Secrets: use `${ENV_VAR}` in provider `apiKey` fields instead of hardcoding keys
 - Reloads: config changes are watched and the provider registry reloads without restarting the app
+- Required: the runtime fails fast with a helpful example if `openclaw.json` does not exist
 
-A complete example is available at `examples/openclaw.json`.
-
-## Deprecated environment fallback
-
-If `openclaw.json` does not exist, OpenClaw Mini still falls back to the legacy environment-variable model configuration.
-
-Deprecated compatibility variables:
-
-- `AI_PROVIDER`
-- `AI_MODEL`
-- `AI_BASE_URL`
-- `AI_FALLBACK_MODEL`
-
-These still work, but they now log deprecation warnings and should be replaced with `openclaw.json`.
+A complete example is available at `examples/openclaw.json`:
+```json
+{
+  "providers": {
+    "openai": {
+      "apiType": "openai-chat",
+      "apiKey": "${OPENAI_API_KEY}"
+    }
+  },
+  "agent": {
+    "provider": "openai",
+    "model": "gpt-4.1-mini"
+  }
+}
+```
 
 ## More setup details
 

@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { NextRequest } from 'next/server';
 import type { PrismaClient } from '@prisma/client';
+import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture } from './runtime-config-fixture';
 
 let db: PrismaClient;
 let sessionService: typeof import('../src/lib/services/session-service').sessionService;
@@ -25,6 +26,7 @@ const originalEnv = {
   historyCap: process.env.OPENCLAW_HISTORY_CAP_BYTES,
   historyRetention: process.env.OPENCLAW_HISTORY_RETENTION_DAYS,
 };
+let runtimeConfigFixture: RuntimeConfigFixture | null = null;
 
 mock.module('ai', () => ({
   generateText: async ({ system }: { system?: string }) => ({
@@ -63,8 +65,14 @@ function cleanupAgentMemoryDirs() {
 
 beforeAll(async () => {
   process.env.DATABASE_URL = TEST_DB_URL;
-  process.env.AI_PROVIDER = process.env.AI_PROVIDER ?? 'openai';
   process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? 'test-key';
+  process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? 'test-key';
+  process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? 'test-key';
+  process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
+  runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-harden-core-');
+  process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
+  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
 
   const dbPush = Bun.spawnSync({
@@ -91,6 +99,8 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
   await resetDb();
   cleanupAgentMemoryDirs();
   process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '40';
@@ -105,6 +115,8 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
   process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = originalEnv.threshold;
   process.env.OPENCLAW_SESSION_RETAIN_COUNT = originalEnv.retain;
   process.env.OPENCLAW_HISTORY_CAP_BYTES = originalEnv.historyCap;
@@ -112,6 +124,10 @@ afterAll(async () => {
   cleanupAgentMemoryDirs();
   await resetDb();
   await db.$disconnect();
+  if (runtimeConfigFixture) {
+    cleanupRuntimeConfigFixture(runtimeConfigFixture.dir);
+    runtimeConfigFixture = null;
+  }
   if (fs.existsSync(TEST_DB_PATH)) {
     fs.rmSync(TEST_DB_PATH, { force: true });
   }
