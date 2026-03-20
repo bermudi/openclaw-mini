@@ -35,6 +35,8 @@ The system SHALL automatically trigger session compaction when the session's tok
 - **WHEN** compaction triggers again
 - **THEN** the prior summary message SHALL be included in the content sent to the model for re-summarization, ensuring cumulative context is not lost
 
+## ADDED Requirements
+
 ### Requirement: Per-agent context window and threshold resolution
 The compaction trigger SHALL resolve the context window and compaction threshold using the agent's per-agent configuration (see `agent-context-config` spec). The context window resolution follows: `agent.contextWindowOverride` → `ModelCatalog(agent.model)` → `ModelCatalog(globalModel)` → 128,000. The threshold resolution follows: `agent.compactionThreshold` → `OPENCLAW_SESSION_TOKEN_THRESHOLD` → 0.5.
 

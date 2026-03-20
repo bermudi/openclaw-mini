@@ -2,9 +2,7 @@
 
 ## Purpose
 Token-aware context assembly that respects model context window limits when building prompts from session, memory, and workspace sources, replacing hard character caps.
-
 ## Requirements
-
 ### Requirement: Token-aware prompt assembly
 The `AgentExecutor.buildPrompt` method SHALL assemble the prompt within a token budget derived from the active model's context window size. Token counting SHALL use the `gpt-tokenizer` library. The total budget SHALL be the model's context window minus a configurable response reserve (default: 20% of context window, minimum 1,000 tokens).
 
@@ -67,3 +65,12 @@ When session context must be truncated to fit the budget, truncation SHALL remov
 - **GIVEN** session context contains a summary message and 15 regular messages, and only 8 messages fit in the budget
 - **WHEN** truncation is applied
 - **THEN** the summary message and the 7 most recent regular messages SHALL be included; the 8 oldest regular messages SHALL be dropped
+
+### Requirement: Token counting utility available to compaction
+The `countTokens()` function in `token-counter.ts` SHALL be usable by the session compaction service to count tokens across an array of session messages. No changes to the function signature are required — this requirement documents that `countTokens` is now consumed by both the prompt assembly (AgentExecutor) and the compaction trigger (SessionService).
+
+#### Scenario: Compaction uses countTokens
+- **GIVEN** a session has 35 messages
+- **WHEN** the compaction trigger evaluates whether to compact
+- **THEN** it SHALL call `countTokens()` on the concatenated message content to determine total token usage
+
