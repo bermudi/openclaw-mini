@@ -26,8 +26,9 @@ export function useOpenClawEvents(handlers: OpenClawEventHandlers) {
   const socketRef = useRef<Socket | null>(null);
   const handlersRef = useRef(handlers);
 
-  // Keep handlers ref fresh without re-connecting
-  handlersRef.current = handlers;
+  useEffect(() => {
+    handlersRef.current = handlers;
+  }, [handlers]);
 
   const dispatch = useCallback((eventType: string, data: Record<string, unknown>) => {
     const h = handlersRef.current;

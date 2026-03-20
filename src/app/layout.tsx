@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
+import { watchConfig } from '@/lib/config/watcher';
+import { initializeProviderRegistry } from '@/lib/services/provider-registry';
 import { initializeWorkspace } from '@/lib/services/workspace-service';
 
 const geistSans = Geist({
@@ -36,12 +38,29 @@ export const metadata: Metadata = {
   },
 };
 
+let runtimeInitialized = false;
+
+function initializeRuntime(): void {
+  if (runtimeInitialized) {
+    return;
+  }
+
+  initializeWorkspace();
+  const runtimeState = initializeProviderRegistry();
+
+  if (runtimeState.source === 'config-file') {
+    watchConfig({ configPath: runtimeState.configPath });
+  }
+
+  runtimeInitialized = true;
+}
+
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  initializeWorkspace();
+  initializeRuntime();
 
   return (
     <html lang="en" className="dark" suppressHydrationWarning>

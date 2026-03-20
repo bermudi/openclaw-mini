@@ -12,12 +12,17 @@
    bun run db:push
    ```
 
-3. **Start the development server:**
+3. **Create the runtime config file:**
+   - Copy `examples/openclaw.json` to `~/.openclaw/openclaw.json`, or set `OPENCLAW_CONFIG_PATH` to a custom location.
+   - The runtime accepts JSON5, so comments are allowed in your real `openclaw.json`.
+   - Keep API keys in environment variables and reference them from the config with `${ENV_VAR}`.
+
+4. **Start the development server:**
    ```bash
    bun run dev
    ```
 
-4. **Start the background services** (in separate terminals):
+5. **Start the background services** (in separate terminals):
    ```bash
    # Terminal 1: WebSocket service
    cd mini-services/openclaw-ws && bun install && bun run dev
@@ -26,7 +31,7 @@
    cd mini-services/scheduler && bun install && bun run dev
    ```
 
-5. **Open the dashboard:**
+6. **Open the dashboard:**
    Navigate to http://localhost:3000
 
 ## Architecture
@@ -164,7 +169,7 @@ Supported override fields:
 
 Precedence is resolved in this order:
 
-1. Gateway defaults from the environment (`AI_PROVIDER`, `AI_MODEL`, `AI_BASE_URL`)
+1. Gateway runtime config from `openclaw.json` (or deprecated `AI_*` env fallback when no config file exists)
 2. Parent agent runtime context (for example the agent's allowed skills)
 3. Sub-agent skill defaults from `SKILL.md` (`tools` and the skill body instructions)
 4. `overrides` from the same `SKILL.md`
@@ -203,9 +208,61 @@ Security notes:
 - Audit logs record `overrideFieldsApplied`, but never the secret value itself.
 - Invalid overrides disable the skill and surface the validation error through skill loading and the `/api/skills` endpoint.
 
-## Environment Variables
+## Runtime model configuration
 
-Create a `.env` file if needed:
+The runtime now loads model/provider settings from `openclaw.json`.
+
+Default path:
+
+- `~/.openclaw/openclaw.json`
+
+Override path:
+
+- `OPENCLAW_CONFIG_PATH=/absolute/path/to/openclaw.json`
+
+Example config:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "apiType": "openai-chat",
+      "apiKey": "${OPENAI_API_KEY}"
+    },
+    "openrouter": {
+      "apiType": "openai-chat",
+      "baseURL": "https://openrouter.ai/api/v1",
+      "apiKey": "${OPENROUTER_API_KEY}"
+    },
+    "anthropic": {
+      "apiType": "anthropic",
+      "apiKey": "${ANTHROPIC_API_KEY}"
+    },
+    "poe": {
+      "apiType": "poe",
+      "apiKey": "${POE_API_KEY}"
+    }
+  },
+  "agent": {
+    "provider": "openrouter",
+    "model": "openai/gpt-4.1-mini",
+    "fallbackProvider": "openai",
+    "fallbackModel": "gpt-4.1-mini"
+  }
+}
+```
+
+Notes:
+
+- `apiKey` supports `${ENV_VAR}` substitution.
+- `fallbackProvider` and `fallbackModel` replace the old combined fallback env format.
+- Changes to `openclaw.json` are watched and reload the provider registry without restarting the app.
+- `examples/openclaw.json` contains a copy-pasteable starting point.
+
+## Deprecated environment compatibility
+
+If `openclaw.json` does not exist, the runtime still falls back to the older environment variables:
+
 ```
 DATABASE_URL="file:./db/custom.db"
 AI_PROVIDER="poe"
@@ -214,17 +271,8 @@ POE_API_KEY="your-poe-api-key"
 AI_FALLBACK_MODEL="openai/gpt-4.1-mini"
 ```
 
-Provider notes:
+Notes:
 
-- `POE_API_KEY` authenticates requests when `AI_PROVIDER=poe`.
-- `AI_FALLBACK_MODEL` is optional and must use `provider/model` format, for example `openai/gpt-4.1-mini` or `poe/claude-opus-4.6`.
+- `AI_PROVIDER`, `AI_MODEL`, `AI_BASE_URL`, and `AI_FALLBACK_MODEL` now log deprecation warnings.
+- `AI_FALLBACK_MODEL` must still use `provider/model` format.
 - Poe routes `claude-*` models through Poe's Anthropic-compatible endpoint, `gpt-*`/`o3`/`o4-*` through Poe's Responses endpoint, and other models through Poe's chat-completions endpoint.
-
-Example Poe configuration:
-```
-DATABASE_URL="file:./db/custom.db"
-AI_PROVIDER="poe"
-AI_MODEL="claude-opus-4.6"
-POE_API_KEY="your-poe-api-key"
-AI_FALLBACK_MODEL="openai/gpt-4.1-mini"
-```

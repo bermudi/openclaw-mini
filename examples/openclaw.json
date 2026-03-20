@@ -1,0 +1,27 @@
+{
+  "providers": {
+    "openai": {
+      "apiType": "openai-chat",
+      "apiKey": "${OPENAI_API_KEY}"
+    },
+    "openrouter": {
+      "apiType": "openai-chat",
+      "baseURL": "https://openrouter.ai/api/v1",
+      "apiKey": "${OPENROUTER_API_KEY}"
+    },
+    "anthropic": {
+      "apiType": "anthropic",
+      "apiKey": "${ANTHROPIC_API_KEY}"
+    },
+    "poe": {
+      "apiType": "poe",
+      "apiKey": "${POE_API_KEY}"
+    }
+  },
+  "agent": {
+    "provider": "openrouter",
+    "model": "openai/gpt-4.1-mini",
+    "fallbackProvider": "openai",
+    "fallbackModel": "gpt-4.1-mini"
+  }
+}

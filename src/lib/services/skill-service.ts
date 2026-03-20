@@ -11,6 +11,7 @@ import {
   createSubAgentOverridesSchema,
   formatSubAgentOverrideIssues,
 } from '@/lib/subagent-config';
+import { initializeProviderRegistry, providerRegistry } from '@/lib/services/provider-registry';
 
 const SKILLS_DIR = path.join(process.cwd(), 'skills');
 const DEFAULT_CACHE_TTL_MS = 60_000;
@@ -217,9 +218,11 @@ export async function loadAllSkills(): Promise<LoadedSkill[]> {
   }
 
   const { getAvailableToolNames } = await import('@/lib/tools');
+  initializeProviderRegistry();
   const overrideSchema = createSubAgentOverridesSchema({
     knownSkillNames: Array.from(skills.values()).map(skill => skill.name),
     knownToolNames: getAvailableToolNames(),
+    knownProviderNames: providerRegistry.list().map(provider => provider.id),
   });
 
   for (const skill of skills.values()) {

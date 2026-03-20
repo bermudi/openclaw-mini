@@ -1,7 +1,5 @@
 import { z } from 'zod';
-
-export const PROVIDER_NAMES = ['openai', 'anthropic', 'ollama', 'openrouter', 'poe'] as const;
-export type ProviderName = typeof PROVIDER_NAMES[number];
+import { resolveModelConfig } from '@/lib/services/model-provider';
 
 export const SUB_AGENT_OVERRIDE_FIELDS = [
   'model',
@@ -18,7 +16,7 @@ export type SubAgentOverrideField = typeof SUB_AGENT_OVERRIDE_FIELDS[number];
 
 export interface SubAgentOverrides {
   model?: string;
-  provider?: ProviderName;
+  provider?: string;
   credentialRef?: string;
   systemPrompt?: string;
   maxIterations?: number;
@@ -28,7 +26,7 @@ export interface SubAgentOverrides {
 }
 
 export interface SubAgentBaseConfig {
-  provider: ProviderName;
+  provider: string;
   model: string;
   baseURL?: string;
   apiKey?: string;
@@ -40,7 +38,7 @@ export interface SubAgentBaseConfig {
 }
 
 export interface ResolvedSubAgentConfig {
-  provider: ProviderName;
+  provider: string;
   model: string;
   baseURL?: string;
   apiKey?: string;
@@ -56,6 +54,7 @@ export interface ResolvedSubAgentConfig {
 export interface SubAgentOverrideSchemaOptions {
   knownSkillNames: string[];
   knownToolNames: string[];
+  knownProviderNames: string[];
 }
 
 export const DEFAULT_MAX_ITERATIONS = 5;
@@ -81,7 +80,7 @@ export function createSubAgentOverridesSchema(
 ): z.ZodType<SubAgentOverrides> {
   const knownSkillNames = buildKnownNameSet(options.knownSkillNames);
   const knownToolNames = buildKnownNameSet(options.knownToolNames);
-  const knownProviders = buildKnownNameSet([...PROVIDER_NAMES]);
+  const knownProviders = buildKnownNameSet(options.knownProviderNames);
 
   return z.object({
     model: z.string().trim().min(1).optional(),
@@ -132,7 +131,7 @@ export function createSubAgentOverridesSchema(
     }
   }).transform(value => ({
     ...value,
-    provider: value.provider as ProviderName | undefined,
+    provider: value.provider,
     allowedSkills: normalizeNames(value.allowedSkills),
     allowedTools: normalizeNames(value.allowedTools),
   }));
@@ -161,13 +160,22 @@ export function resolveSubAgentConfig(input: {
   overrides?: SubAgentOverrides;
 }): ResolvedSubAgentConfig {
   const { baseConfig, overrides } = input;
+  const provider = overrides?.provider ?? baseConfig.provider;
+  const providerChanged = provider !== baseConfig.provider;
+  const resolvedModelConfig = resolveModelConfig({
+    provider,
+    model: overrides?.model ?? baseConfig.model,
+    credentialRef: overrides?.credentialRef,
+    baseURL: providerChanged ? undefined : baseConfig.baseURL,
+    apiKey: providerChanged || overrides?.credentialRef ? undefined : baseConfig.apiKey,
+  });
 
   const resolved: ResolvedSubAgentConfig = {
-    provider: baseConfig.provider,
-    model: baseConfig.model,
-    baseURL: baseConfig.baseURL,
-    apiKey: baseConfig.apiKey,
-    credentialRef: undefined,
+    provider: resolvedModelConfig.provider,
+    model: resolvedModelConfig.model,
+    baseURL: resolvedModelConfig.baseURL,
+    apiKey: resolvedModelConfig.apiKey,
+    credentialRef: resolvedModelConfig.credentialRef,
     systemPrompt: baseConfig.defaultSystemPrompt,
     maxIterations: baseConfig.defaultMaxIterations ?? DEFAULT_MAX_ITERATIONS,
     allowedSkills: normalizeNames(baseConfig.agentSkills),
@@ -178,18 +186,6 @@ export function resolveSubAgentConfig(input: {
 
   if (!overrides) {
     return resolved;
-  }
-
-  if (overrides.provider) {
-    resolved.provider = overrides.provider;
-  }
-
-  if (overrides.model) {
-    resolved.model = overrides.model;
-  }
-
-  if (overrides.credentialRef) {
-    resolved.credentialRef = overrides.credentialRef;
   }
 
   if (overrides.systemPrompt) {
@@ -213,30 +209,4 @@ export function resolveSubAgentConfig(input: {
   }
 
   return resolved;
-}
-
-export function credentialRefToEnvVarName(credentialRef: string): string {
-  const normalized = credentialRef
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-
-  return `OPENCLAW_CREDENTIAL_${normalized}`;
-}
-
-export function loadCredentialRef(credentialRef: string): string {
-  const envKey = credentialRef.startsWith('env:')
-    ? credentialRef.slice(4).trim()
-    : credentialRefToEnvVarName(credentialRef);
-
-  const value = process.env[envKey];
-
-  if (!value) {
-    throw new Error(
-      `Credential reference '${credentialRef}' could not be resolved via environment variable '${envKey}'`,
-    );
-  }
-
-  return value;
 }
