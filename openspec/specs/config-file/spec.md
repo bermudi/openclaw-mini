@@ -10,10 +10,6 @@ The system SHALL load configuration from `openclaw.json` in the config directory
 - **WHEN** `openclaw.json` exists at startup
 - **THEN** the system SHALL parse and validate it as JSON5
 
-#### Scenario: Config file does not exist
-- **WHEN** `openclaw.json` does not exist
-- **THEN** the system SHALL fall back to environment variables
-
 ### Requirement: Config file format
 The config file SHALL use JSON5 format and SHALL contain a `providers` object and an `agent` object.
 
@@ -52,25 +48,4 @@ The system SHALL support `${ENV_VAR}` syntax in `apiKey` fields.
 #### Scenario: Env var substitution
 - **WHEN** provider `apiKey` is `"${OPENAI_API_KEY}"`
 - **THEN** the system SHALL replace it with the value of `process.env.OPENAI_API_KEY`
-
-### Requirement: Backwards compatibility with env vars
-The system SHALL fall back to environment variables when no config file exists.
-
-#### Scenario: Env vars used when no config
-- **WHEN** `openclaw.json` does not exist and env vars are set
-- **THEN** the system SHALL use env vars for configuration
-
-### Requirement: Deprecation warnings
-The system SHALL emit warnings when using environment variables for provider configuration.
-
-#### Scenario: Env var deprecation warning
-- **WHEN** `AI_PROVIDER` is used
-- **THEN** a deprecation warning SHALL be logged suggesting use of config file
-
-### Requirement: Config migration
-The system SHALL offer to generate an initial config file from current environment variables.
-
-#### Scenario: Migration prompt
-- **WHEN** env vars are set but no config file exists
-- **THEN** the system MAY prompt to generate `openclaw.json` from env vars
 
