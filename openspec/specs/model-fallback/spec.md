@@ -4,25 +4,25 @@
 TBD - created by archiving change add-poe-provider. Update Purpose after archive.
 ## Requirements
 ### Requirement: Fallback model configuration
-The system SHALL support configuring a fallback model via `AI_FALLBACK_MODEL` environment variable in `provider/model` format.
+The system SHALL support configuring a fallback model via the `agent.fallbackProvider` and `agent.fallbackModel` fields in the config file.
 
-#### Scenario: Fallback model configured
-- **WHEN** `AI_FALLBACK_MODEL` is set to `openai/gpt-4.1-mini`
-- **THEN** the system SHALL use `openai` with model `gpt-4.1-mini` as the fallback
+#### Scenario: Fallback from config file
+- **WHEN** config file specifies `fallbackProvider: "openai"` and `fallbackModel: "gpt-4.1-mini"`
+- **THEN** the system SHALL use OpenAI with model `gpt-4.1-mini` as the fallback
 
 ### Requirement: Fallback resolution
-The system SHALL resolve fallback models using the same `resolveModelConfig()` path as primary models.
+The system SHALL resolve fallback models using the same provider registry as primary models.
 
-#### Scenario: Fallback uses same resolution path
-- **WHEN** fallback model is `anthropic/claude-haiku-4.5`
-- **THEN** the system SHALL resolve credentials and base URL using the Anthropic provider defaults
+#### Scenario: Fallback uses registry
+- **WHEN** fallback model is configured
+- **THEN** the system SHALL look up the fallback provider in the registry and use its credentials
 
 ### Requirement: Primary model tried first
 The system SHALL always attempt the primary model before falling back to the fallback model.
 
 #### Scenario: Primary model attempted first
-- **WHEN** a request is made with primary `poe/gpt-5-pro` and fallback `openai/gpt-4.1-mini`
-- **THEN** the system SHALL first attempt `poe/gpt-5-pro`
+- **WHEN** a request is made with primary from config and fallback configured
+- **THEN** the system SHALL first attempt the primary model
 
 ### Requirement: Fallback on provider error
 The system SHALL attempt the fallback model when the primary provider fails with a retryable error:
@@ -59,13 +59,17 @@ The system SHALL propagate the original error if the fallback model also fails.
 - **THEN** the system SHALL throw an error indicating the fallback also failed, including details of both failures
 
 ### Requirement: Cross-provider fallback
-The system SHALL support fallback from Poe to non-Poe providers and vice versa.
+The system SHALL support fallback between any two providers in the registry.
 
-#### Scenario: Poe to OpenAI fallback
-- **WHEN** primary is `poe/gpt-5-pro` and fallback is `openai/gpt-4.1-mini`
-- **THEN** the system SHALL attempt OpenAI when Poe fails
+#### Scenario: OpenRouter to OpenAI fallback
+- **WHEN** primary is `openrouter` with model `openai/gpt-5.4-mini` and fallback is `openai`
+- **THEN** the system SHALL attempt OpenAI when OpenRouter fails
 
-#### Scenario: OpenAI to Poe fallback
-- **WHEN** primary is `openai/gpt-4.1` and fallback is `poe/claude-opus-4.6`
-- **THEN** the system SHALL attempt Poe when OpenAI fails
+### Requirement: Deprecated fallback environment variable compatibility
+The system SHALL continue to support configuring fallback via `AI_FALLBACK_MODEL` environment variable in `provider/model` format for backwards compatibility.
+
+#### Scenario: Fallback from env var (deprecated)
+- **WHEN** `AI_FALLBACK_MODEL` is set to `openai/gpt-4.1-mini`
+- **THEN** the system SHALL use `openai` with model `gpt-4.1-mini` as the fallback
+- **AND** a deprecation warning SHALL be logged
 

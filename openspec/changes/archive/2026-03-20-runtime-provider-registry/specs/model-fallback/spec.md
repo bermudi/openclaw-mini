@@ -9,14 +9,6 @@ The system SHALL support configuring a fallback model via the `agent.fallbackPro
 - **WHEN** config file specifies `fallbackProvider: "openai"` and `fallbackModel: "gpt-4.1-mini"`
 - **THEN** the system SHALL use OpenAI with model `gpt-4.1-mini` as the fallback
 
-### Requirement: Fallback model configuration (deprecated)
-The system SHALL support configuring fallback via `AI_FALLBACK_MODEL` environment variable in `provider/model` format for backwards compatibility.
-
-#### Scenario: Fallback from env var (deprecated)
-- **WHEN** `AI_FALLBACK_MODEL` is set to `openai/gpt-4.1-mini`
-- **THEN** the system SHALL use `openai` with model `gpt-4.1-mini` as the fallback
-- **AND** a deprecation warning SHALL be logged
-
 ### Requirement: Fallback resolution
 The system SHALL resolve fallback models using the same provider registry as primary models.
 
@@ -71,3 +63,13 @@ The system SHALL support fallback between any two providers in the registry.
 #### Scenario: OpenRouter to OpenAI fallback
 - **WHEN** primary is `openrouter` with model `openai/gpt-5.4-mini` and fallback is `openai`
 - **THEN** the system SHALL attempt OpenAI when OpenRouter fails
+
+## ADDED Requirements
+
+### Requirement: Deprecated fallback environment variable compatibility
+The system SHALL continue to support configuring fallback via `AI_FALLBACK_MODEL` environment variable in `provider/model` format for backwards compatibility.
+
+#### Scenario: Fallback from env var (deprecated)
+- **WHEN** `AI_FALLBACK_MODEL` is set to `openai/gpt-4.1-mini`
+- **THEN** the system SHALL use `openai` with model `gpt-4.1-mini` as the fallback
+- **AND** a deprecation warning SHALL be logged
