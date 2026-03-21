@@ -28,7 +28,7 @@ The `SpawnSubagentContext` SHALL include a `spawnDepth` field (integer). When cr
 - **WHEN** `spawn_subagent` is called from a top-level task (no `spawnDepth` in context, defaults to 0)
 - **THEN** the child task SHALL be created with `spawnDepth: 1`
 
-### Requirement: Sub-agent task metadata
+### Requirement: Sub-agent spawn depth tracking
 The Task model SHALL include a `spawnDepth` integer field (default 0) for recursion depth tracking.
 
 #### Scenario: Sub-agent task stores depth
