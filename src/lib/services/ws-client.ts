@@ -1,7 +1,7 @@
 // OpenClaw Agent Runtime - WebSocket Client
 // Client to broadcast events to the WebSocket service
 
-const WS_SERVICE_URL = 'http://localhost:3003';
+const WS_SERVICE_URL = process.env.OPENCLAW_WS_URL || 'http://localhost:3003';
 
 type WSEventType = 
   | 'task:created'

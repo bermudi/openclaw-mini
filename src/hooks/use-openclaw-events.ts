@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 
-const WS_URL = 'http://localhost:3003';
+const WS_URL = process.env.NEXT_PUBLIC_OPENCLAW_WS_URL || 'http://localhost:3003';
 
 export interface OpenClawEventHandlers {
   onTaskCreated?: (data: Record<string, unknown>) => void;

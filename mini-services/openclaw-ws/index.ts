@@ -4,7 +4,7 @@
 import { Server } from 'socket.io';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 
-const PORT = 3003;
+const PORT = parseInt(process.env.OPENCLAW_WS_PORT || '3003', 10);
 
 // Event types for type safety
 type WSEventType = 
