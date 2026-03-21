@@ -10,6 +10,8 @@ import { sessionService, type SessionContext } from './session-service';
 import { auditService } from './audit-service';
 import { enqueueDeliveryTx } from './delivery-service';
 import { getModelConfig, resolveAgentContextWindow, runWithModelFallback } from './model-provider';
+import { parseCommand, type ParsedCommand } from './command-parser';
+import { sessionProviderState } from './session-provider-state';
 import { ChannelType, DeliveryTarget, Task } from '@/lib/types';
 import { getLowRiskTools, getToolsByNames, getToolsForAgent, type ToolResult, withSpawnSubagentContext } from '@/lib/tools';
 import { getSkillForSubAgent, getSkillSummaries } from './skill-service';
@@ -71,6 +73,22 @@ class AgentExecutorService {
       }
 
       const isSubagent = task.type === 'subagent';
+
+      // Handle inline slash commands for message tasks before AI execution
+      if (!isSubagent && task.type === 'message' && task.sessionId) {
+        const msgPayload = task.payload as {
+          content?: string;
+          sender?: string;
+          channel?: ChannelType;
+          channelKey?: string;
+          deliveryTarget?: DeliveryTarget;
+        };
+        const command = parseCommand(msgPayload.content ?? '');
+        if (command.type !== 'not-command') {
+          return await this.executeCommand(taskId, task, command, msgPayload);
+        }
+      }
+
       const subagentPayload = task.payload as {
         skill?: string;
         skillTools?: string[];
@@ -136,6 +154,10 @@ class AgentExecutorService {
       }
 
       // Execute with AI SDK
+      const sessionProviderOverrides = (!isSubagent && task.sessionId)
+        ? sessionProviderState.getOrInit(task.sessionId)
+        : undefined;
+
       const executeGeneration = () =>
         runWithModelFallback(
           ({ model }) =>
@@ -154,7 +176,12 @@ class AgentExecutorService {
                 apiKey: resolvedSubagentConfig.apiKey,
                 credentialRef: resolvedSubagentConfig.credentialRef,
               }
-            : undefined,
+            : sessionProviderOverrides
+              ? {
+                  provider: sessionProviderOverrides.activeProvider,
+                  model: sessionProviderOverrides.activeModel,
+                }
+              : undefined,
         );
 
       const result = await withSpawnSubagentContext(
@@ -284,6 +311,93 @@ class AgentExecutorService {
         success: false,
         error: errorMessage,
       };
+    }
+  }
+
+  private async executeCommand(
+    taskId: string,
+    task: Task,
+    command: ParsedCommand,
+    payload: {
+      content?: string;
+      sender?: string;
+      channel?: ChannelType;
+      channelKey?: string;
+      deliveryTarget?: DeliveryTarget;
+    },
+  ): Promise<ExecutionResult> {
+    const sessionId = task.sessionId!;
+    const commandResponse = this.buildCommandResponse(command, sessionId);
+
+    if (task.sessionId) {
+      await sessionService.appendToContext(task.sessionId, {
+        role: 'user',
+        content: payload.content ?? '',
+        sender: payload.sender,
+        channel: payload.channel,
+        channelKey: payload.channelKey,
+      });
+      await sessionService.appendToContext(task.sessionId, {
+        role: 'assistant',
+        content: commandResponse,
+        channel: payload.channel,
+        channelKey: payload.channelKey,
+      });
+    }
+
+    const taskResult = {
+      response: commandResponse,
+      taskType: task.type,
+      toolCalls: [] as { tool: string; success: boolean }[],
+    };
+    const deliveryTarget = payload.deliveryTarget ?? this.buildFallbackDeliveryTarget(payload);
+    const shouldAutoDeliver = commandResponse.trim().length > 0 && !!deliveryTarget;
+
+    if (shouldAutoDeliver && deliveryTarget) {
+      await db.$transaction(async (tx) => {
+        await taskQueue.completeTaskTx(tx, taskId, taskResult);
+        await enqueueDeliveryTx(
+          tx,
+          taskId,
+          deliveryTarget.channel,
+          deliveryTarget.channelKey,
+          JSON.stringify(deliveryTarget),
+          commandResponse,
+          `task:${taskId}`,
+        );
+      });
+      taskQueue.completeTaskSideEffects(task.agentId, taskId, task.type, taskResult);
+    } else {
+      await taskQueue.completeTask(taskId, taskResult);
+    }
+
+    await this.runPostCommitSideEffects(task.agentId, taskId, task, commandResponse, []);
+
+    return { success: true, response: commandResponse, actions: [], toolCalls: [] };
+  }
+
+  private buildCommandResponse(command: ParsedCommand, sessionId: string): string {
+    switch (command.type) {
+      case 'list-providers': {
+        const providers = sessionProviderState.listProviders();
+        return `Available providers: ${providers.join(', ')}`;
+      }
+      case 'switch-provider': {
+        const result = sessionProviderState.switchProvider(sessionId, command.providerName);
+        if (!result.success) {
+          return `${result.error}\nAvailable providers: ${result.available.join(', ')}`;
+        }
+        return `Switched to provider: ${command.providerName}`;
+      }
+      case 'switch-model': {
+        sessionProviderState.switchModel(sessionId, command.modelName);
+        return `Switched to model: ${command.modelName}`;
+      }
+      case 'invalid-command': {
+        return command.error;
+      }
+      default:
+        return 'Unknown command';
     }
   }
 
