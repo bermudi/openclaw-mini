@@ -16,6 +16,7 @@ import { getSkillForSubAgent, getSkillSummaries } from './skill-service';
 import { type SubAgentOverrides, resolveSubAgentConfig } from '@/lib/subagent-config';
 import { loadBootstrapContext, loadHeartbeatContext } from './workspace-service';
 import { countTokens } from '@/lib/utils/token-counter';
+import { eventBus } from './event-bus';
 
 export interface ExecutionResult {
   success: boolean;
@@ -239,7 +240,7 @@ class AgentExecutorService {
             `task:${taskId}`,
           );
         });
-        taskQueue.completeTaskSideEffects(task.agentId, taskId, taskResult);
+        taskQueue.completeTaskSideEffects(task.agentId, taskId, task.type, taskResult);
       } else {
         await taskQueue.completeTask(taskId, taskResult);
       }
@@ -259,6 +260,16 @@ class AgentExecutorService {
       await taskQueue.failTask(taskId, errorMessage);
       await taskQueue.failChildTasks(taskId, 'Parent task failed');
       await agentService.setAgentStatus(task.agentId, 'error');
+
+      if (task.type === 'subagent' && task.parentTaskId) {
+        eventBus.emit('subagent:failed', {
+          taskId,
+          parentTaskId: task.parentTaskId,
+          skillName: task.skillName ?? 'unknown',
+          agentId: task.agentId,
+          error: errorMessage,
+        });
+      }
 
       // Log audit event
       await auditService.log({
@@ -298,6 +309,15 @@ class AgentExecutorService {
     response: string,
     executionToolCalls: NonNullable<ExecutionResult['toolCalls']>,
   ): Promise<void> {
+    if (task.type === 'subagent' && task.parentTaskId) {
+      eventBus.emit('subagent:completed', {
+        taskId,
+        parentTaskId: task.parentTaskId,
+        skillName: task.skillName ?? 'unknown',
+        agentId,
+      });
+    }
+
     try {
       await memoryService.appendHistory(
         agentId,

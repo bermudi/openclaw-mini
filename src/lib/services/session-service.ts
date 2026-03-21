@@ -7,6 +7,7 @@ import { ChannelType } from '@/lib/types';
 import { countTokens } from '@/lib/utils/token-counter';
 import { memoryService } from './memory-service';
 import { reflectOnContent } from './memory-reflector';
+import { eventBus } from './event-bus';
 import { resolveAgentContextWindow, resolveCompactionThreshold, runWithModelFallback } from './model-provider';
 
 export interface SessionContext {
@@ -96,6 +97,7 @@ class SessionService {
           sessionScope,
         },
       });
+      eventBus.emit('session:created', { sessionId: session.id, agentId, channel, channelKey });
     }
 
     const messages = await this.getSessionMessages(session.id);

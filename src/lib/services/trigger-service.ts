@@ -3,6 +3,7 @@
 
 import { db } from '@/lib/db';
 import { Trigger, TriggerType, TriggerConfig } from '@/lib/types';
+import { hookSubscriptionManager } from './hook-subscription-manager';
 
 export interface CreateTriggerInput {
   agentId: string;
@@ -33,6 +34,12 @@ class TriggerService {
         nextTrigger: this.calculateNextTrigger(input.type, input.config),
       },
     });
+
+    if (input.type === 'hook' && (input.enabled ?? true)) {
+      hookSubscriptionManager.subscribeHookTrigger(trigger.id).catch((error: unknown) => {
+        console.error(`[TriggerService] Failed to subscribe hook trigger ${trigger.id}:`, error);
+      });
+    }
 
     return this.mapTrigger(trigger);
   }
@@ -111,6 +118,15 @@ class TriggerService {
       },
     });
 
+    if (trigger.type === 'hook') {
+      hookSubscriptionManager.unsubscribeHookTrigger(triggerId);
+      if (updated.enabled) {
+        hookSubscriptionManager.subscribeHookTrigger(triggerId).catch((error: unknown) => {
+          console.error(`[TriggerService] Failed to re-subscribe hook trigger ${triggerId}:`, error);
+        });
+      }
+    }
+
     return this.mapTrigger(updated);
   }
 
@@ -124,6 +140,10 @@ class TriggerService {
 
     if (!trigger) {
       return false;
+    }
+
+    if (trigger.type === 'hook') {
+      hookSubscriptionManager.unsubscribeHookTrigger(triggerId);
     }
 
     await db.trigger.delete({
@@ -149,6 +169,16 @@ class TriggerService {
       where: { id: triggerId },
       data: { enabled },
     });
+
+    if (trigger.type === 'hook') {
+      if (enabled) {
+        hookSubscriptionManager.subscribeHookTrigger(triggerId).catch((error: unknown) => {
+          console.error(`[TriggerService] Failed to subscribe hook trigger ${triggerId}:`, error);
+        });
+      } else {
+        hookSubscriptionManager.unsubscribeHookTrigger(triggerId);
+      }
+    }
 
     return this.mapTrigger(updated);
   }

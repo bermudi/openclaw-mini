@@ -4,6 +4,7 @@
 import { db } from '@/lib/db';
 import { Memory, MemoryCategory } from '@/lib/types';
 import { MemoryGit, type GitCommit } from '@/lib/services/memory-git';
+import { eventBus } from '@/lib/services/event-bus';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -121,6 +122,8 @@ class MemoryService {
     // Also save to file for persistence
     const action = input._commitAction ?? (existing ? 'Update' : 'Create');
     await this.saveToFile(input.agentId, input.key, input.value, action);
+
+    eventBus.emit('memory:updated', { agentId: input.agentId, key: input.key });
 
     return this.mapMemory(memory);
   }

@@ -6,6 +6,7 @@ import { db } from '@/lib/db';
 import { Task, TaskStatus, TaskType } from '@/lib/types';
 import { broadcastTaskCreated, broadcastTaskStarted, broadcastTaskCompleted, broadcastTaskFailed } from './ws-client';
 import { auditService } from './audit-service';
+import { eventBus } from './event-bus';
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
 
@@ -63,6 +64,8 @@ class TaskQueueService {
       entityId: task.id,
       details: { agentId: input.agentId, type: input.type, priority: input.priority ?? 5 },
     });
+
+    eventBus.emit('task:created', { taskId: task.id, agentId: input.agentId, taskType: input.type, priority: input.priority ?? 5 });
 
     return mappedTask;
   }
@@ -147,7 +150,7 @@ class TaskQueueService {
       return null;
     }
 
-    this.completeTaskSideEffects(updated.agentId, taskId, result);
+    this.completeTaskSideEffects(updated.agentId, taskId, updated.type, result);
 
     return updated;
   }
@@ -182,7 +185,7 @@ class TaskQueueService {
       return null;
     }
 
-    this.failTaskSideEffects(updated.agentId, taskId, error);
+    this.failTaskSideEffects(updated.agentId, taskId, updated.type, error);
 
     return updated;
   }
@@ -232,14 +235,16 @@ class TaskQueueService {
     }
   }
 
-  completeTaskSideEffects(agentId: string, taskId: string, result?: Record<string, unknown>): void {
+  completeTaskSideEffects(agentId: string, taskId: string, taskType: string, result?: Record<string, unknown>): void {
     this.processing.delete(agentId);
     broadcastTaskCompleted(agentId, taskId, result);
+    eventBus.emit('task:completed', { taskId, agentId, taskType, result });
   }
 
-  failTaskSideEffects(agentId: string, taskId: string, error: string): void {
+  failTaskSideEffects(agentId: string, taskId: string, taskType: string, error: string): void {
     this.processing.delete(agentId);
     broadcastTaskFailed(agentId, taskId, error);
+    eventBus.emit('task:failed', { taskId, agentId, taskType, error });
   }
 
   /**

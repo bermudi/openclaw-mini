@@ -235,7 +235,7 @@ class InputManagerService {
   /**
    * Process internal hook
    */
-  private async processHook(input: HookInput, targetAgentId?: string): Promise<ProcessInputResult> {
+  async processHook(input: HookInput, targetAgentId?: string): Promise<ProcessInputResult> {
     let resolvedAgentId = targetAgentId;
     if (!resolvedAgentId) {
       const resolved = await this.resolveAgent('internal', input.event);
