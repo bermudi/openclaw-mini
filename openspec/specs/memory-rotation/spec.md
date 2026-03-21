@@ -2,9 +2,7 @@
 
 ## Purpose
 Bounded memory history growth with date-based archival and configurable retention, preventing unbounded database row and file growth.
-
 ## Requirements
-
 ### Requirement: History size cap
 The memory history value for an agent SHALL be capped at a configurable maximum size (default: 50 KB). The size SHALL be measured in bytes (UTF-8 encoded length) of the history memory value.
 
@@ -19,17 +17,17 @@ The memory history value for an agent SHALL be capped at a configurable maximum 
 - **THEN** the system SHALL rotate the current history to an archive file before appending the new entry
 
 ### Requirement: Rotation to dated archive files
-When rotation is triggered, the system SHALL move the current history content to a dated archive file at `data/memories/<agentId>/history/YYYY-MM-DD.md` where the date is the current date. If an archive file for the current date already exists, the new content SHALL be appended to it. After archiving, the active history memory value SHALL be reset to contain only the new entry being appended.
+When rotation is triggered, the system SHALL move the current history content to a dated archive file at `data/memories/<agentId>/history/YYYY-MM-DD.md` where the date is the current date. If an archive file for the current date already exists, the new content SHALL be appended to it. After archiving, the active history memory value SHALL be reset to contain only the new entry being appended. If git versioning is enabled, the archive file creation and history reset SHALL be committed with message `Archive system/history to history/YYYY-MM-DD`.
 
 #### Scenario: First rotation of the day
 - **GIVEN** no archive file exists for today's date
 - **WHEN** rotation triggers for agent `agent_main`
-- **THEN** the system SHALL create `data/memories/agent_main/history/2026-03-19.md` containing the rotated history content, and reset the active history to the new entry
+- **THEN** the system SHALL create `data/memories/agent_main/history/2026-03-19.md` containing the rotated history content, reset the active history to the new entry, and if git is enabled, create a commit with message `Archive system/history to history/2026-03-19`
 
 #### Scenario: Second rotation on the same day
 - **GIVEN** `data/memories/agent_main/history/2026-03-19.md` already exists with prior rotated content
 - **WHEN** rotation triggers again on the same day
-- **THEN** the new rotated content SHALL be appended to the existing `2026-03-19.md` file
+- **THEN** the new rotated content SHALL be appended to the existing `2026-03-19.md` file and a git commit SHALL be created if versioning is enabled
 
 ### Requirement: Archive cleanup
 The system SHALL provide a cleanup function that deletes archive files older than a configurable retention period (default: 30 days). This cleanup SHALL be invoked by the scheduler's daily cleanup job.
@@ -59,3 +57,4 @@ Rotation SHALL be safe to execute while a task is in progress. Because the task 
 - **GIVEN** an agent is processing a task and the task's post-commit side effects call `appendHistory`
 - **WHEN** the append would exceed the history cap
 - **THEN** rotation SHALL complete before the new entry is written, and the next task's `appendHistory` call SHALL see the reset history
+
