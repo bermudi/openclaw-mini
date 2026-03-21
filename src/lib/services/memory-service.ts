@@ -24,6 +24,12 @@ function getPositiveIntegerEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function getPositiveFloatEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  const parsed = value ? Number.parseFloat(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function getCurrentArchiveDate(date: Date = new Date()): string {
   return date.toISOString().slice(0, 10);
 }
@@ -37,7 +43,9 @@ export interface CreateMemoryInput {
   key: string;
   value: string;
   category?: MemoryCategory;
+  confidence?: number;
   _commitAction?: 'Create' | 'Update' | 'Append';
+  _preserveConfidence?: boolean;
 }
 
 export interface UpdateMemoryInput {
@@ -89,6 +97,12 @@ class MemoryService {
         data: {
           value: input.value,
           category: input.category ?? 'general',
+          ...(input._preserveConfidence
+            ? {}
+            : {
+                confidence: input.confidence ?? 1.0,
+                lastReinforcedAt: new Date(),
+              }),
         },
       });
     } else {
@@ -98,6 +112,8 @@ class MemoryService {
           key: input.key,
           value: input.value,
           category: input.category ?? 'general',
+          confidence: input.confidence ?? 1.0,
+          lastReinforcedAt: new Date(),
         },
       });
     }
@@ -132,12 +148,12 @@ class MemoryService {
     const memories = await db.memory.findMany({
       where: {
         agentId,
-        ...(category && { category }),
+        ...(category ? { category } : { category: { not: 'archived' } }),
       },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: { confidence: 'desc' },
     });
 
-    return memories.map(this.mapMemory);
+    return memories.map(m => this.mapMemory(m));
   }
 
   /**
@@ -192,9 +208,11 @@ class MemoryService {
   async loadAgentContext(agentId: string): Promise<string> {
     const memories = await this.getAgentMemories(agentId);
 
-    const sections = memories.map(memory => {
-      return `## ${memory.key}\n\n${memory.value}\n\n---\n`;
-    });
+    const sections = memories
+      .filter(memory => memory.category !== 'archived')
+      .map(memory => {
+        return `## ${memory.key}\n\n${memory.value}\n\n---\n`;
+      });
 
     return `# Agent Context\n\n${sections.join('')}`;
   }
@@ -249,6 +267,7 @@ class MemoryService {
         value: buildHistoryValue(newEntry),
         category: 'history',
         _commitAction: 'Append',
+        _preserveConfidence: true,
       });
       return;
     }
@@ -388,6 +407,48 @@ class MemoryService {
   }
 
   /**
+   * Decay confidence for all non-archived memories using exponential decay.
+   * Soft-deletes (archives) memories below the confidence floor.
+   */
+  async decayMemoryConfidence(): Promise<{ decayed: number; archived: number }> {
+    const halfLifeDays = getPositiveFloatEnv('OPENCLAW_MEMORY_DECAY_HALF_LIFE_DAYS', 14);
+    const floor = getPositiveFloatEnv('OPENCLAW_MEMORY_DECAY_FLOOR', 0.1);
+    const now = new Date();
+
+    const memories = await db.memory.findMany({
+      where: {
+        category: { not: 'archived' },
+        lastReinforcedAt: { not: null },
+      },
+    });
+
+    let decayed = 0;
+    let archived = 0;
+
+    for (const memory of memories) {
+      if (!memory.lastReinforcedAt) continue;
+      const daysSince = (now.getTime() - memory.lastReinforcedAt.getTime()) / (1000 * 60 * 60 * 24);
+      const newConfidence = memory.confidence * Math.pow(0.5, daysSince / halfLifeDays);
+
+      if (newConfidence < floor) {
+        await db.memory.update({
+          where: { id: memory.id },
+          data: { category: 'archived', confidence: newConfidence },
+        });
+        archived++;
+      } else {
+        await db.memory.update({
+          where: { id: memory.id },
+          data: { confidence: newConfidence },
+        });
+        decayed++;
+      }
+    }
+
+    return { decayed, archived };
+  }
+
+  /**
    * Map database memory to interface
    */
   private mapMemory(memory: {
@@ -396,6 +457,8 @@ class MemoryService {
     key: string;
     value: string;
     category: string;
+    confidence: number;
+    lastReinforcedAt: Date | null;
     createdAt: Date;
     updatedAt: Date;
   }): Memory {
@@ -405,6 +468,8 @@ class MemoryService {
       key: memory.key,
       value: memory.value,
       category: memory.category as MemoryCategory,
+      confidence: memory.confidence,
+      lastReinforcedAt: memory.lastReinforcedAt,
       createdAt: memory.createdAt,
       updatedAt: memory.updatedAt,
     };

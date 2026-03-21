@@ -265,6 +265,13 @@ async function start() {
     for (const agent of agents) {
       await memoryService.cleanupHistoryArchives(agent.id);
     }
+
+    try {
+      const decayResult = await memoryService.decayMemoryConfidence();
+      console.log(`[Scheduler] Memory decay: ${decayResult.decayed} updated, ${decayResult.archived} archived`);
+    } catch (error) {
+      console.error('[Scheduler] Error during memory confidence decay:', error);
+    }
   });
 
   // Status logging every 5 minutes

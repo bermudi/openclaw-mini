@@ -6,6 +6,7 @@ import { db } from '@/lib/db';
 import { ChannelType } from '@/lib/types';
 import { countTokens } from '@/lib/utils/token-counter';
 import { memoryService } from './memory-service';
+import { reflectOnContent } from './memory-reflector';
 import { resolveAgentContextWindow, resolveCompactionThreshold, runWithModelFallback } from './model-provider';
 
 export interface SessionContext {
@@ -406,10 +407,16 @@ class SessionService {
     });
 
     const remaining = await db.sessionMessage.count({ where: { sessionId } });
-    return {
+    const compactionResult = {
       summarized: messagesToSummarize.length,
       remaining,
     };
+
+    reflectOnContent(session.agentId, summaryText).catch((error) => {
+      console.error('[SessionService] Memory reflector failed after compaction:', error);
+    });
+
+    return compactionResult;
   }
 
   private async shouldCompact(

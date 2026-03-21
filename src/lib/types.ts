@@ -117,7 +117,7 @@ export interface TriggerConfig {
 }
 
 // Memory Types
-export type MemoryCategory = 'general' | 'preferences' | 'history' | 'context';
+export type MemoryCategory = 'general' | 'preferences' | 'history' | 'context' | 'extracted' | 'archived';
 
 export interface Memory {
   id: string;
@@ -125,6 +125,8 @@ export interface Memory {
   key: string;
   value: string; // Markdown content
   category: MemoryCategory;
+  confidence: number;
+  lastReinforcedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

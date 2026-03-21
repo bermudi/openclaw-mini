@@ -158,13 +158,15 @@ model Trigger {
 
 // Memory - Persistent storage entries
 model Memory {
-  id          String   @id @default(cuid())
-  agentId     String
-  key         String   // memory key (e.g., "preferences", "context", "history")
-  value       String   // Markdown content
-  category    String   @default("general") // general, preferences, history, context
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                String    @id @default(cuid())
+  agentId           String
+  key               String    // memory key (e.g., "preferences", "context", "history")
+  value             String    // Markdown content
+  category          String    @default("general") // general, preferences, history, context, extracted, archived
+  confidence        Float     @default(1.0)
+  lastReinforcedAt  DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
   
   agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
   
