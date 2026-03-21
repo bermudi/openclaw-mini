@@ -18,6 +18,7 @@ export interface CreateTaskInput {
   source?: string;
   parentTaskId?: string | null;
   skillName?: string | null;
+  spawnDepth?: number;
 }
 
 export interface TaskQueueStats {
@@ -46,6 +47,7 @@ class TaskQueueService {
         source: input.source,
         parentTaskId: input.parentTaskId ?? null,
         skillName: input.skillName ?? null,
+        spawnDepth: input.spawnDepth ?? 0,
       },
     });
 
@@ -203,7 +205,31 @@ class TaskQueueService {
       },
     });
 
+    // 4.3: Cascade to nested child tasks
+    await this.failChildTasks(taskId, 'Parent task failed');
+
     return this.mapTask(updated);
+  }
+
+  /**
+   * Fail all pending/processing child tasks of a given parent task
+   */
+  async failChildTasks(parentTaskId: string, error: string): Promise<void> {
+    const children = await db.task.findMany({
+      where: {
+        parentTaskId,
+        status: { in: ['pending', 'processing'] },
+      },
+    });
+
+    for (const child of children) {
+      await db.task.update({
+        where: { id: child.id },
+        data: { status: 'failed', error, completedAt: new Date() },
+      });
+      // Recurse to handle grandchildren
+      await this.failChildTasks(child.id, error);
+    }
   }
 
   completeTaskSideEffects(agentId: string, taskId: string, result?: Record<string, unknown>): void {
@@ -265,6 +291,36 @@ class TaskQueueService {
   }
 
   /**
+   * Sweep orphaned sub-agent tasks stuck in processing beyond the configured timeout
+   */
+  async sweepOrphanedSubagents(): Promise<number> {
+    const rawTimeout = parseInt(process.env.OPENCLAW_SUBAGENT_TIMEOUT ?? '', 10);
+    const timeoutSeconds = Number.isInteger(rawTimeout) && rawTimeout > 0 ? rawTimeout : 300;
+    const cutoff = new Date(Date.now() - timeoutSeconds * 1000);
+
+    const orphans = await db.task.findMany({
+      where: {
+        type: 'subagent',
+        status: 'processing',
+        startedAt: { lt: cutoff },
+      },
+    });
+
+    for (const orphan of orphans) {
+      await db.task.update({
+        where: { id: orphan.id },
+        data: {
+          status: 'failed',
+          error: 'Orphaned sub-agent: exceeded processing timeout',
+          completedAt: new Date(),
+        },
+      });
+    }
+
+    return orphans.length;
+  }
+
+  /**
    * Clean up old completed/failed tasks
    */
   async cleanupOldTasks(daysOld: number = 7): Promise<number> {
@@ -298,6 +354,7 @@ class TaskQueueService {
       source: task.source ?? undefined,
       parentTaskId: task.parentTaskId ?? undefined,
       skillName: task.skillName ?? undefined,
+      spawnDepth: task.spawnDepth,
       createdAt: task.createdAt,
       startedAt: task.startedAt ?? undefined,
       completedAt: task.completedAt ?? undefined,

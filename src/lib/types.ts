@@ -69,6 +69,7 @@ export interface Task {
   source?: string;
   parentTaskId?: string | null;
   skillName?: string | null;
+  spawnDepth?: number;
   createdAt: Date;
   startedAt?: Date;
   completedAt?: Date;

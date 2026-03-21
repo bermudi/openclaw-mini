@@ -49,6 +49,7 @@ export interface RegisteredTool {
 export interface SpawnSubagentContext {
   agentId: string;
   parentTaskId: string;
+  spawnDepth?: number;
   allowedSkills?: string[];
   allowedTools?: string[];
   maxToolInvocations?: number;
@@ -217,40 +218,57 @@ registerTool(
         return { success: false, error: 'spawn_subagent called without task context' };
       }
 
+      // 2.4: Read max spawn depth from env (default 3)
+      const rawMaxDepth = parseInt(process.env.OPENCLAW_MAX_SPAWN_DEPTH ?? '', 10);
+      const maxSpawnDepth = Number.isInteger(rawMaxDepth) && rawMaxDepth > 0 ? rawMaxDepth : 3;
+
+      // 2.3: Compute child depth and reject if it would exceed the limit
+      const spawnDepth = context.spawnDepth ?? 0;
+      const childDepth = spawnDepth + 1;
+      if (childDepth > maxSpawnDepth) {
+        return { success: false, error: `Maximum spawn depth of ${maxSpawnDepth} exceeded` };
+      }
+
       const skillResult = await getSkillForSubAgent(skill);
       if (!skillResult.skill) {
         return { success: false, error: skillResult.error ?? `Skill '${skill}' not found or disabled` };
       }
 
+      const skillName = skillResult.skill.name;
+
+      // 2.5: Pass spawnDepth: childDepth when creating the child task
       const newTask = await taskQueue.createTask({
         agentId: context.agentId,
         type: 'subagent',
         priority: 5,
         payload: {
           task,
-          skill: skillResult.skill.name,
+          skill: skillName,
           skillTools: skillResult.skill.tools,
           systemPrompt: skillResult.skill.instructions,
           overrides: skillResult.skill.overrides,
         },
         source: `subagent:${context.parentTaskId}`,
         parentTaskId: context.parentTaskId,
-        skillName: skillResult.skill.name,
+        skillName,
+        spawnDepth: childDepth,
       });
+
+      const childTaskId = newTask.id;
 
       await auditService.log({
         action: 'subagent_task_dispatched',
         entityType: 'task',
-        entityId: newTask.id,
+        entityId: childTaskId,
         details: {
           agentId: context.agentId,
           parentTaskId: context.parentTaskId,
-          skill: skillResult.skill.name,
+          skill: skillName,
           overrideFieldsApplied: getOverrideFieldsApplied(skillResult.skill.overrides),
         },
       });
 
-      const sessionScope = `subagent:${newTask.id}`;
+      const sessionScope = `subagent:${childTaskId}`;
       const session = await sessionService.getOrCreateSession(
         context.agentId,
         sessionScope,
@@ -259,7 +277,7 @@ registerTool(
       );
 
       await db.task.update({
-        where: { id: newTask.id },
+        where: { id: childTaskId },
         data: { sessionId: session.id },
       });
 
@@ -277,10 +295,15 @@ registerTool(
       let lastStatus: string | undefined;
 
       while (Date.now() < deadline) {
-        const current = await taskQueue.getTask(newTask.id);
+        const current = await taskQueue.getTask(childTaskId);
         if (!current) {
           await cleanupSession();
-          return { success: false, error: 'Sub-agent task disappeared' };
+          // 5.3: Structured error for task disappeared
+          return {
+            success: false,
+            error: 'Sub-agent task disappeared',
+            data: { skill: skillName, depth: childDepth, childTaskId },
+          };
         }
 
         if (current.status !== lastStatus) {
@@ -304,14 +327,19 @@ registerTool(
             success: true,
             data: {
               response,
-              skill: skillResult.skill.name,
+              skill: skillName,
             },
           };
         }
 
         if (current.status === 'failed') {
           await cleanupSession();
-          return { success: false, error: `Sub-agent failed: ${current.error ?? 'unknown error'}` };
+          // 5.1: Structured error for failure
+          return {
+            success: false,
+            error: `Sub-agent failed: ${current.error ?? 'unknown error'}`,
+            data: { skill: skillName, depth: childDepth, childTaskId },
+          };
         }
 
         const jitter = Math.floor(delayMs * 0.1 * Math.random());
@@ -319,9 +347,20 @@ registerTool(
         delayMs = Math.min(delayMs * 2, maxDelayMs);
       }
 
+      // 3.1 & 3.2: Timeout — fail child task unless it already reached a terminal state
+      const taskOnTimeout = await taskQueue.getTask(childTaskId);
+      if (taskOnTimeout && taskOnTimeout.status !== 'completed' && taskOnTimeout.status !== 'failed') {
+        await taskQueue.failTask(childTaskId, 'Sub-agent timed out');
+      }
+
       const timeoutLabel = timeoutSeconds ?? 120;
       await cleanupSession();
-      return { success: false, error: `Sub-agent timed out after ${timeoutLabel}s` };
+      // 5.2: Structured error for timeout
+      return {
+        success: false,
+        error: `Sub-agent timed out after ${timeoutLabel}s`,
+        data: { skill: skillName, depth: childDepth, childTaskId },
+      };
     },
   }),
   { riskLevel: 'medium' },

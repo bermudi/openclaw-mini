@@ -98,6 +98,7 @@ model Task {
   source      String?  // origin of the task
   parentTaskId String?
   skillName    String?
+  spawnDepth   Int      @default(0)
   createdAt   DateTime @default(now())
   startedAt   DateTime?
   completedAt DateTime?

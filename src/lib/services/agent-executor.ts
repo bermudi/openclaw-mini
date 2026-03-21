@@ -160,6 +160,7 @@ class AgentExecutorService {
         {
           agentId: task.agentId,
           parentTaskId: task.id,
+          spawnDepth: task.spawnDepth ?? 0,
           allowedSkills: resolvedSubagentConfig?.allowedSkills,
           allowedTools: resolvedSubagentConfig?.allowedTools,
           maxToolInvocations: resolvedSubagentConfig?.maxToolInvocations,
@@ -254,8 +255,9 @@ class AgentExecutorService {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-      // Fail task
+      // Fail task (failTask internally cascades via failChildTasks; 4.2 adds an explicit belt-and-suspenders call)
       await taskQueue.failTask(taskId, errorMessage);
+      await taskQueue.failChildTasks(taskId, 'Parent task failed');
       await agentService.setAgentStatus(task.agentId, 'error');
 
       // Log audit event
