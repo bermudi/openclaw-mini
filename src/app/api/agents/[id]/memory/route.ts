@@ -44,7 +44,7 @@ export async function POST(
     }
 
     // If entry is provided, append to history
-    if (entry && key === 'history') {
+    if (entry && (key === 'system/history' || key === 'history')) {
       await memoryService.appendHistory(id, entry);
       return NextResponse.json({
         success: true,

@@ -633,7 +633,7 @@ registerTool(
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            key: 'history',
+            key: 'system/history',
             entry: `[${resolvedCategory.toUpperCase()}] ${event}`,
           }),
         });

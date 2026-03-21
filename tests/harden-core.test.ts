@@ -248,7 +248,7 @@ test('appendToContext auto-compacts above threshold and manual compact endpoint 
   expect(compactedRows[0]?.content.startsWith('[Session Summary]')).toBe(true);
   expect(compactedRows.slice(1).map(row => row.content)).toEqual(['m4', 'm5']);
 
-  const history = await memoryService.getMemory(agent.id, 'history');
+  const history = await memoryService.getMemory(agent.id, 'system/history');
   expect(history?.value).toContain('m1');
   expect(history?.value).toContain('m2');
   expect(history?.value).toContain('m3');
@@ -480,7 +480,7 @@ test('appendHistory rotates oversized history into dated archives and cleanup re
   const agent = await createAgent('Memory Rotation Agent');
   await memoryService.setMemory({
     agentId: agent.id,
-    key: 'history',
+    key: 'system/history',
     value: '# History\n\n' + 'A'.repeat(110),
     category: 'history',
   });
@@ -492,7 +492,7 @@ test('appendHistory rotates oversized history into dated archives and cleanup re
   const archiveContent = fs.readFileSync(archivePath, 'utf-8');
   expect(archiveContent).toContain('A'.repeat(110));
 
-  const activeHistory = await memoryService.getMemory(agent.id, 'history');
+  const activeHistory = await memoryService.getMemory(agent.id, 'system/history');
   expect(activeHistory?.value).toContain('B'.repeat(40));
   expect(activeHistory?.value).not.toContain('A'.repeat(110));
 
