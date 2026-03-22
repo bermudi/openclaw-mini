@@ -41,15 +41,19 @@ The system SHALL capture channel-specific reply information (e.g., Telegram `cha
 - **THEN** the task payload SHALL include a `deliveryTarget` with the provided `channel` and `channelKey`, and an empty `metadata` object
 
 ### Requirement: Generic delivery service dispatches pending deliveries
-A `DeliveryService` SHALL poll for pending `OutboundDelivery` rows, resolve the correct `ChannelAdapter` by channel type, and call `sendText()` to dispatch the message.
+The delivery service SHALL check adapter health before attempting to dispatch a delivery. This modifies the existing "Generic delivery service dispatches pending deliveries" requirement.
 
-#### Scenario: Successful delivery
-- **WHEN** the delivery service finds a pending delivery for channel `telegram`
-- **THEN** it SHALL call the Telegram adapter's `sendText()`, update the delivery status to `sent`, and record `sentAt` timestamp
+#### Scenario: Adapter is connected — delivery proceeds
+- **WHEN** the delivery service finds a pending delivery for a channel whose adapter reports `isConnected() === true` or does not implement `isConnected()`
+- **THEN** it SHALL proceed with calling the adapter's `sendText()` as normal
 
-#### Scenario: Adapter not found for channel
-- **WHEN** the delivery service finds a pending delivery for an unregistered channel
-- **THEN** it SHALL mark the delivery as `failed` with error "No adapter registered for channel: <channel>"
+#### Scenario: Adapter is disconnected — delivery deferred
+- **WHEN** the delivery service finds a pending delivery for a channel whose adapter reports `isConnected() === false`
+- **THEN** it SHALL NOT call `sendText()`, SHALL keep the delivery status as `pending`, and SHALL set `nextAttemptAt` to defer the delivery for a later retry cycle
+
+#### Scenario: Adapter becomes connected after deferral
+- **WHEN** a previously deferred delivery is picked up again and the adapter now reports `isConnected() === true`
+- **THEN** the delivery service SHALL proceed with dispatching the message normally
 
 ### Requirement: Retry with exponential backoff
 When a delivery attempt fails with a transient error, the system SHALL retry with exponential backoff. The system SHALL make a maximum of 5 attempts.

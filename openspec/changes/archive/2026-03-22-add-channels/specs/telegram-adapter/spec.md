@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Telegram adapter implements lifecycle interface
 The Telegram adapter SHALL implement the `start()`, `stop()`, and `isConnected()` lifecycle methods from the extended `ChannelAdapter` interface.

@@ -1,6 +1,6 @@
 ## MODIFIED Requirements
 
-### Requirement: Health-aware delivery dispatch
+### Requirement: Generic delivery service dispatches pending deliveries
 The delivery service SHALL check adapter health before attempting to dispatch a delivery. This modifies the existing "Generic delivery service dispatches pending deliveries" requirement.
 
 #### Scenario: Adapter is connected — delivery proceeds
