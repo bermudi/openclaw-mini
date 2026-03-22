@@ -17,19 +17,20 @@
    - The runtime accepts JSON5, so comments are allowed in your real `openclaw.json`.
    - Keep API keys in environment variables and reference them from the config with `${ENV_VAR}`.
 
-4. **Start the development server:**
+4. **Copy example skills (optional, for sub-agent support):**
+   ```bash
+   cp -r examples/subagents skills/
+   ```
+   Sub-agents are defined via `skills/<name>/SKILL.md` files.
+
+5. **Start the development server:**
    ```bash
    bun run dev
    ```
-
-5. **Start the background services** (in separate terminals):
-   ```bash
-   # Terminal 1: WebSocket service
-   cd mini-services/openclaw-ws && bun install && bun run dev
-   
-   # Terminal 2: Scheduler service  
-   cd mini-services/scheduler && bun install && bun run dev
-   ```
+   This starts all three services concurrently:
+   - Main app on port 3000
+   - WebSocket service on port 3003  
+   - Scheduler service (for cron/heartbeat automation)
 
 6. **Open the dashboard:**
    Navigate to http://localhost:3000
@@ -69,10 +70,19 @@
 - `GET /api/agents/[id]/memory` - Get agent memories
 - `POST /api/agents/[id]/memory` - Update memory
 
+### Sessions
+- `GET /api/sessions` - List all sessions
+- `GET /api/sessions/[id]` - Get session details
+
 ### Tasks
 - `GET /api/tasks` - List tasks (with filters)
 - `POST /api/tasks` - Create task
 - `POST /api/tasks/[id]/execute` - Execute task
+
+### Channels
+- `GET /api/channels` - List available channels
+- `POST /api/channels` - Create/configure channel
+- `DELETE /api/channels/[id]` - Remove channel
 
 ### Triggers
 - `GET /api/triggers` - List triggers
@@ -90,6 +100,16 @@
 ### Tools
 - `GET /api/tools` - List available tools
 - `POST /api/tools` - Execute tool directly
+
+### Skills
+- `GET /api/skills` - List available skills (from `skills/*/SKILL.md`)
+
+### Scheduler
+- `GET /api/scheduler` - Get scheduler status
+- `POST /api/scheduler` - Control scheduler (start/stop/pause)
+
+### Workspace
+- `GET /api/workspace` - Get workspace data
 
 ### Audit
 - `GET /api/audit` - Get audit logs with stats
@@ -152,9 +172,19 @@ Some tools require specific skills on the agent. Add skills when creating:
 - `communication` → send_message_to_agent, log_event
 - `general` → get_datetime, calculate, random, files
 
-## Sub-agent overrides
+## Sub-agent Skills
 
-Sub-agents are currently defined through `skills/<name>/SKILL.md`. That skill manifest is the bridge to a future dedicated agent manifest layer, and it already supports a frontmatter `overrides` block for runtime specialization.
+Sub-agents are defined through `skills/<name>/SKILL.md`. Create a `skills/` directory in your project root and add skill folders:
+
+```
+skills/
+  planner/
+    SKILL.md
+  executor/
+    SKILL.md
+```
+
+The skill manifest is the bridge to a future dedicated agent manifest layer, and it already supports a frontmatter `overrides` block for runtime specialization.
 
 Supported override fields:
 

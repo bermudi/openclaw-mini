@@ -143,6 +143,13 @@ Raw user content passed to AI without sanitization.
 
 ---
 
+## Low Priority
+
+### Executor and Planner Skills are generic
+The executor and planner skills are currently generic and not tailored to specific use cases. They should be customized for better performance and functionality. We should also take a look at the override fields and move them to a different place in the actual code structure as skills are just instructions for the agent doing work.
+
+---
+
 ## Scalability
 
 ### SQLite Single-Writer
