@@ -22,25 +22,25 @@
 - [x] 3.3 Handle non-vision model + image + text: run LLM with text-only prompt, enqueue a warning delivery to chat alongside the response
 - [x] 3.4 Handle non-vision model + image only (no text content): skip LLM execution, enqueue error delivery to chat
 - [x] 3.5 Update prompt builder: when task has `attachments`, add an "ATTACHED FILES" section listing each file's path, name, and mime type
-- [ ] 3.6 Write tests for vision handling: vision model gets image content parts, non-vision model with text gets warning, non-vision model image-only gets error
+- [x] 3.6 Write tests for vision handling: vision model gets image content parts, non-vision model with text gets warning, non-vision model image-only gets error
 
 ## 4. Telegram Outbound (sendFile)
 
 - [x] 4.1 Implement `sendFile()` on `TelegramAdapter`: call `bot.api.sendDocument(chatId, new InputFile(filePath), { caption })`, return `externalMessageId`
-- [ ] 4.2 Write tests for Telegram sendFile: sends document, includes caption, handles missing chatId
+- [x] 4.2 Write tests for Telegram sendFile: sends document, includes caption, handles missing chatId
 
 ## 5. WhatsApp Attachment Support
 
 - [x] 5.1 Update WhatsApp `routeInbound()` to detect image/document messages and download via `socket.downloadMediaMessage()` — create appropriate `VisionInput` or `Attachment`
 - [x] 5.2 Implement `sendFile()` on `WhatsAppAdapter`: call `socket.sendMessage(jid, { document: { url: filePath }, mimetype, fileName })`
-- [ ] 5.3 Write tests for WhatsApp attachment handling
+- [x] 5.3 Write tests for WhatsApp attachment handling
 
 ## 6. Delivery Service File Support
 
 - [x] 6.1 Add Prisma migration: add `deliveryType` (string, default `'text'`) and `filePath` (string, nullable) columns to `OutboundDelivery` table
 - [x] 6.2 Create `enqueueFileDelivery()` function in delivery service for file deliveries
 - [x] 6.3 Update `dispatchDelivery()`: check `deliveryType`, call `sendFile()` for file deliveries, handle adapters without `sendFile` support
-- [ ] 6.4 Write tests for file delivery dispatch: file delivery calls sendFile, adapter without sendFile fails gracefully
+- [x] 6.4 Write tests for file delivery dispatch: file delivery calls sendFile, adapter without sendFile fails gracefully
 
 ## 7. send_file_to_chat Tool
 

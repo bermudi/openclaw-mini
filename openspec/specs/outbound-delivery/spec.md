@@ -41,19 +41,19 @@ The system SHALL capture channel-specific reply information (e.g., Telegram `cha
 - **THEN** the task payload SHALL include a `deliveryTarget` with the provided `channel` and `channelKey`, and an empty `metadata` object
 
 ### Requirement: Generic delivery service dispatches pending deliveries
-The delivery service SHALL check adapter health before attempting to dispatch a delivery. This modifies the existing "Generic delivery service dispatches pending deliveries" requirement.
+A `DeliveryService` SHALL poll for pending `OutboundDelivery` rows, resolve the correct `ChannelAdapter` by channel type, and call `sendText()` or `sendFile()` to dispatch the message based on delivery type.
 
-#### Scenario: Adapter is connected — delivery proceeds
-- **WHEN** the delivery service finds a pending delivery for a channel whose adapter reports `isConnected() === true` or does not implement `isConnected()`
-- **THEN** it SHALL proceed with calling the adapter's `sendText()` as normal
+#### Scenario: Successful text delivery
+- **WHEN** the delivery service finds a pending delivery with `deliveryType` = `text` for channel `telegram`
+- **THEN** it SHALL call the Telegram adapter's `sendText()`, update the delivery status to `sent`, and record `sentAt` timestamp
 
-#### Scenario: Adapter is disconnected — delivery deferred
-- **WHEN** the delivery service finds a pending delivery for a channel whose adapter reports `isConnected() === false`
-- **THEN** it SHALL NOT call `sendText()`, SHALL keep the delivery status as `pending`, and SHALL set `nextAttemptAt` to defer the delivery for a later retry cycle
+#### Scenario: Successful file delivery
+- **WHEN** the delivery service finds a pending delivery with `deliveryType` = `file` for channel `telegram`
+- **THEN** it SHALL call the Telegram adapter's `sendFile()` with the stored `filePath`, update the delivery status to `sent`, and record `sentAt` timestamp
 
-#### Scenario: Adapter becomes connected after deferral
-- **WHEN** a previously deferred delivery is picked up again and the adapter now reports `isConnected() === true`
-- **THEN** the delivery service SHALL proceed with dispatching the message normally
+#### Scenario: Adapter not found for channel
+- **WHEN** the delivery service finds a pending delivery for an unregistered channel
+- **THEN** it SHALL mark the delivery as `failed` with error "No adapter registered for channel: <channel>"
 
 ### Requirement: Retry with exponential backoff
 When a delivery attempt fails with a transient error, the system SHALL retry with exponential backoff. The system SHALL make a maximum of 5 attempts.
@@ -81,7 +81,7 @@ The existing scheduler service SHALL poll for pending deliveries on a 2-second i
 - **THEN** it SHALL find all deliveries with status `pending` and `nextAttemptAt` <= now (or null), and dispatch each via the delivery service
 
 ### Requirement: Channel adapter interface
-Each channel adapter SHALL implement a `ChannelAdapter` interface with at minimum a `sendText(target, text)` method that returns a promise resolving to an object with an optional `externalMessageId`.
+Each channel adapter SHALL implement a `ChannelAdapter` interface with at minimum a `sendText(target, text)` method that returns a promise resolving to an object with an optional `externalMessageId`. The interface SHALL also support an optional `sendFile` method.
 
 #### Scenario: Adapter sends text successfully
 - **WHEN** `sendText()` is called with a valid target and text
@@ -90,4 +90,23 @@ Each channel adapter SHALL implement a `ChannelAdapter` interface with at minimu
 #### Scenario: Adapter send fails
 - **WHEN** `sendText()` is called and the channel API returns an error
 - **THEN** it SHALL throw an error that the delivery service can catch and retry
+
+#### Scenario: Adapter sends file successfully
+- **WHEN** `sendFile()` is called with a valid target and file path
+- **THEN** it SHALL send the file via the channel's API and return `{ externalMessageId: "<platform-message-id>" }`
+
+#### Scenario: Adapter does not support files
+- **WHEN** a file delivery is dispatched to an adapter without `sendFile` implemented
+- **THEN** the delivery service SHALL mark the delivery as failed
+
+### Requirement: OutboundDelivery supports file delivery type
+The `OutboundDelivery` table SHALL support both text and file delivery types.
+
+#### Scenario: Text delivery record
+- **WHEN** a text delivery is enqueued
+- **THEN** the `OutboundDelivery` row SHALL have `deliveryType` = `text` and `text` containing the message
+
+#### Scenario: File delivery record
+- **WHEN** a file delivery is enqueued
+- **THEN** the `OutboundDelivery` row SHALL have `deliveryType` = `file`, `filePath` containing the file path, and optionally `text` containing a caption
 
