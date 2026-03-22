@@ -6,13 +6,11 @@ import { PrismaClient } from '@prisma/client';
 import { initializeAdapters } from '../../src/lib/adapters';
 import { processPendingDeliveries } from '../../src/lib/services/delivery-service';
 import { memoryService } from '../../src/lib/services/memory-service';
+import { getRuntimeConfig, getPrismaLogConfig } from '../../src/lib/config/runtime';
 
 const prisma = new PrismaClient({
-  log: ['error', 'warn'], // Disable query logging to reduce noise
+  log: getPrismaLogConfig(),
 });
-
-const POLL_INTERVAL = 5000; // 5 seconds
-const HEARTBEAT_CHECK_INTERVAL = 60000; // 1 minute
 
 // Status tracking
 let isRunning = false;
@@ -177,7 +175,7 @@ function getNextCronDate(expression: string): Date {
 async function cleanupOldTasks() {
   try {
     const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - 7);
+    cutoff.setDate(cutoff.getDate() - getRuntimeConfig().retention.tasks);
 
     const result = await prisma.task.deleteMany({
       where: {
@@ -203,7 +201,7 @@ async function runTaskLoop() {
     console.error('[Scheduler] Error in task loop:', error);
   } finally {
     if (isRunning) {
-      setTimeout(runTaskLoop, POLL_INTERVAL);
+      setTimeout(runTaskLoop, getRuntimeConfig().performance.pollInterval);
     }
   }
 }
@@ -217,7 +215,7 @@ async function runTriggerLoop() {
     console.error('[Scheduler] Error in trigger loop:', error);
   } finally {
     if (isRunning) {
-      setTimeout(runTriggerLoop, HEARTBEAT_CHECK_INTERVAL);
+      setTimeout(runTriggerLoop, getRuntimeConfig().performance.heartbeatInterval);
     }
   }
 }

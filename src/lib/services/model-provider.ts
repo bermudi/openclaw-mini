@@ -2,6 +2,7 @@ import type { LanguageModel } from 'ai';
 import { loadCredentialRef } from '@/lib/credentials';
 import { modelCatalog } from './model-catalog';
 import { ensureProviderRegistryInitialized, providerRegistry } from './provider-registry';
+import { getRuntimeConfig } from '@/lib/config/runtime';
 
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503]);
 const NON_RETRYABLE_STATUS_CODES = new Set([400, 401, 403]);
@@ -37,8 +38,6 @@ interface AgentCompactionThresholdInput {
   compactionThreshold?: number | null;
 }
 
-const DEFAULT_CONTEXT_WINDOW_SIZE = 128000;
-const DEFAULT_COMPACTION_THRESHOLD = 0.5;
 
 function extractStatusCode(error: unknown): number | undefined {
   if (!error || typeof error !== 'object') {
@@ -216,7 +215,7 @@ export async function resolveAgentContextWindow(
   } catch {
   }
 
-  return DEFAULT_CONTEXT_WINDOW_SIZE;
+  return getRuntimeConfig().performance.contextWindow;
 }
 
 export function resolveCompactionThreshold(
@@ -226,13 +225,7 @@ export function resolveCompactionThreshold(
     return agent.compactionThreshold;
   }
 
-  const rawEnvThreshold = process.env.OPENCLAW_SESSION_TOKEN_THRESHOLD;
-  const envThreshold = rawEnvThreshold ? Number.parseFloat(rawEnvThreshold) : Number.NaN;
-  if (Number.isFinite(envThreshold)) {
-    return envThreshold;
-  }
-
-  return DEFAULT_COMPACTION_THRESHOLD;
+  return getRuntimeConfig().performance.compactionThreshold;
 }
 
 export function getLanguageModel(overrides?: Partial<ProviderConfig>): LanguageModel {

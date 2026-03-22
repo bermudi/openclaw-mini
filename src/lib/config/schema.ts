@@ -1,5 +1,71 @@
 import { z } from 'zod';
 
+const prismaLogLevelSchema = z.enum(['query', 'info', 'warn', 'error']);
+
+export type PrismaLogLevel = z.infer<typeof prismaLogLevelSchema>;
+
+const runtimeSafetySchema = z.object({
+  subagentTimeout: z.number().int().positive().optional(),
+  maxSpawnDepth: z.number().int().positive().optional(),
+  maxIterations: z.number().int().positive().optional(),
+  maxDeliveryRetries: z.number().int().positive().optional(),
+});
+
+const runtimeRetentionSchema = z.object({
+  tasks: z.number().int().positive().optional(),
+  auditLogs: z.number().int().positive().optional(),
+});
+
+const runtimeLoggingSchema = z.object({
+  prisma: z.array(prismaLogLevelSchema).optional(),
+});
+
+const runtimePerformanceSchema = z.object({
+  pollInterval: z.number().int().positive().optional(),
+  heartbeatInterval: z.number().int().positive().optional(),
+  deliveryBatchSize: z.number().int().positive().optional(),
+  contextWindow: z.number().int().positive().optional(),
+  compactionThreshold: z.number().min(0).max(1).optional(),
+});
+
+export const runtimeSectionSchema = z.object({
+  safety: runtimeSafetySchema.optional(),
+  retention: runtimeRetentionSchema.optional(),
+  logging: runtimeLoggingSchema.optional(),
+  performance: runtimePerformanceSchema.optional(),
+});
+
+export interface RuntimeSafetyConfig {
+  subagentTimeout?: number;
+  maxSpawnDepth?: number;
+  maxIterations?: number;
+  maxDeliveryRetries?: number;
+}
+
+export interface RuntimeRetentionConfig {
+  tasks?: number;
+  auditLogs?: number;
+}
+
+export interface RuntimeLoggingConfig {
+  prisma?: PrismaLogLevel[];
+}
+
+export interface RuntimePerformanceConfig {
+  pollInterval?: number;
+  heartbeatInterval?: number;
+  deliveryBatchSize?: number;
+  contextWindow?: number;
+  compactionThreshold?: number;
+}
+
+export interface RuntimeSectionConfig {
+  safety?: RuntimeSafetyConfig;
+  retention?: RuntimeRetentionConfig;
+  logging?: RuntimeLoggingConfig;
+  performance?: RuntimePerformanceConfig;
+}
+
 export const providerApiTypeSchema = z.enum([
   'openai-chat',
   'openai-responses',
@@ -50,6 +116,7 @@ const agentConfigSchema = z.object({
 export const runtimeConfigSchema = z.object({
   providers: providersSchema,
   agent: agentConfigSchema,
+  runtime: runtimeSectionSchema.optional(),
 }).strict().superRefine((config, context) => {
   if (!(config.agent.provider in config.providers)) {
     context.addIssue({
@@ -85,6 +152,7 @@ export interface AgentConfig {
 export interface RuntimeConfig {
   providers: Record<string, ProviderDefinition>;
   agent: AgentConfig;
+  runtime?: RuntimeSectionConfig;
 }
 
 export function normalizeRuntimeConfig(input: z.infer<typeof runtimeConfigSchema>): RuntimeConfig {
@@ -106,5 +174,6 @@ export function normalizeRuntimeConfig(input: z.infer<typeof runtimeConfigSchema
       fallbackProvider: input.agent.fallbackProvider,
       fallbackModel: input.agent.fallbackModel,
     },
+    runtime: input.runtime,
   };
 }

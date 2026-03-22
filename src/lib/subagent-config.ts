@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { resolveModelConfig } from '@/lib/services/model-provider';
+import { getRuntimeConfig } from '@/lib/config/runtime';
 
 export const SUB_AGENT_OVERRIDE_FIELDS = [
   'model',
@@ -57,7 +58,6 @@ export interface SubAgentOverrideSchemaOptions {
   knownProviderNames: string[];
 }
 
-export const DEFAULT_MAX_ITERATIONS = 5;
 
 function normalizeNames(values?: string[]): string[] | undefined {
   if (!values || values.length === 0) {
@@ -177,7 +177,7 @@ export function resolveSubAgentConfig(input: {
     apiKey: resolvedModelConfig.apiKey,
     credentialRef: resolvedModelConfig.credentialRef,
     systemPrompt: baseConfig.defaultSystemPrompt,
-    maxIterations: baseConfig.defaultMaxIterations ?? DEFAULT_MAX_ITERATIONS,
+    maxIterations: baseConfig.defaultMaxIterations ?? getRuntimeConfig().safety.maxIterations,
     allowedSkills: normalizeNames(baseConfig.agentSkills),
     allowedTools: normalizeNames(baseConfig.defaultToolNames),
     maxToolInvocations: baseConfig.defaultMaxToolInvocations,

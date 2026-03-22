@@ -48,7 +48,7 @@ mock.module('ai', () => ({
 
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
-const SKILLS_DIR = path.join(process.cwd(), 'skills');
+const SKILLS_DIR = path.join(tmpdir(), 'openclaw-mini-agent-skills');
 const MEMORY_ROOT = path.join(process.cwd(), 'data', 'memories');
 
 let db: PrismaClient;

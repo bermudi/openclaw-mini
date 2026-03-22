@@ -2,6 +2,7 @@
 
 import { afterAll, beforeAll, beforeEach, expect, mock, test } from 'bun:test';
 import fs from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 import type { PrismaClient } from '@prisma/client';
 import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture } from './runtime-config-fixture';
@@ -13,7 +14,7 @@ mock.module('ai', () => ({
 
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'subagent-lifecycle.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
-const SKILLS_DIR = path.join(process.cwd(), 'skills');
+const SKILLS_DIR = path.join(tmpdir(), 'openclaw-mini-subagent-skills');
 
 let db: PrismaClient;
 let agentService: typeof import('../src/lib/services/agent-service').agentService;

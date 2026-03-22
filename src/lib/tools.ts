@@ -12,6 +12,7 @@ import { db } from '@/lib/db';
 import { auditService } from '@/lib/services/audit-service';
 import { getSkillForSubAgent } from '@/lib/services/skill-service';
 import { getOverrideFieldsApplied } from '@/lib/subagent-config';
+import { getRuntimeConfig } from '@/lib/config/runtime';
 
 export interface ToolParameter {
   name: string;
@@ -218,9 +219,7 @@ registerTool(
         return { success: false, error: 'spawn_subagent called without task context' };
       }
 
-      // 2.4: Read max spawn depth from env (default 3)
-      const rawMaxDepth = parseInt(process.env.OPENCLAW_MAX_SPAWN_DEPTH ?? '', 10);
-      const maxSpawnDepth = Number.isInteger(rawMaxDepth) && rawMaxDepth > 0 ? rawMaxDepth : 3;
+      const { maxSpawnDepth, subagentTimeout: defaultTimeout } = getRuntimeConfig().safety;
 
       // 2.3: Compute child depth and reject if it would exceed the limit
       const spawnDepth = context.spawnDepth ?? 0;
@@ -287,7 +286,7 @@ registerTool(
         }
       };
 
-      const timeoutMs = Math.max(1, timeoutSeconds ?? 120) * 1000;
+      const timeoutMs = Math.max(1, timeoutSeconds ?? defaultTimeout) * 1000;
       const deadline = Date.now() + timeoutMs;
       const baseDelayMs = 500;
       const maxDelayMs = 5000;
@@ -353,7 +352,7 @@ registerTool(
         await taskQueue.failTask(childTaskId, 'Sub-agent timed out');
       }
 
-      const timeoutLabel = timeoutSeconds ?? 120;
+      const timeoutLabel = timeoutSeconds ?? defaultTimeout;
       await cleanupSession();
       // 5.2: Structured error for timeout
       return {

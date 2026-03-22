@@ -2,6 +2,7 @@
 // Security audit trail and event logging
 
 import { db } from '@/lib/db';
+import { getRuntimeConfig } from '@/lib/config/runtime';
 
 export interface AuditLogEntry {
   action: string;
@@ -135,9 +136,10 @@ class AuditService {
   /**
    * Clean up old audit logs
    */
-  async cleanupOldLogs(daysOld: number = 90): Promise<number> {
+  async cleanupOldLogs(daysOld?: number): Promise<number> {
+    const resolvedDays = daysOld ?? getRuntimeConfig().retention.auditLogs;
     const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - daysOld);
+    cutoff.setDate(cutoff.getDate() - resolvedDays);
 
     const result = await db.auditLog.deleteMany({
       where: { createdAt: { lt: cutoff } },

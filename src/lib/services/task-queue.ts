@@ -7,6 +7,7 @@ import { Task, TaskStatus, TaskType } from '@/lib/types';
 import { broadcastTaskCreated, broadcastTaskStarted, broadcastTaskCompleted, broadcastTaskFailed } from './ws-client';
 import { auditService } from './audit-service';
 import { eventBus } from './event-bus';
+import { getRuntimeConfig } from '@/lib/config/runtime';
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
 
@@ -299,8 +300,7 @@ class TaskQueueService {
    * Sweep orphaned sub-agent tasks stuck in processing beyond the configured timeout
    */
   async sweepOrphanedSubagents(): Promise<number> {
-    const rawTimeout = parseInt(process.env.OPENCLAW_SUBAGENT_TIMEOUT ?? '', 10);
-    const timeoutSeconds = Number.isInteger(rawTimeout) && rawTimeout > 0 ? rawTimeout : 300;
+    const timeoutSeconds = getRuntimeConfig().safety.subagentTimeout;
     const cutoff = new Date(Date.now() - timeoutSeconds * 1000);
 
     const orphans = await db.task.findMany({

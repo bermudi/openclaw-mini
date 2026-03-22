@@ -23,5 +23,27 @@
     "model": "openai/gpt-4.1-mini",
     "fallbackProvider": "openai",
     "fallbackModel": "gpt-4.1-mini"
+  },
+  "runtime": {
+    "safety": {
+      "subagentTimeout": 300,
+      "maxSpawnDepth": 3,
+      "maxIterations": 5,
+      "maxDeliveryRetries": 5
+    },
+    "retention": {
+      "tasks": 7,
+      "auditLogs": 90
+    },
+    "logging": {
+      "prisma": ["error", "warn"]
+    },
+    "performance": {
+      "pollInterval": 5000,
+      "heartbeatInterval": 60000,
+      "deliveryBatchSize": 10,
+      "contextWindow": 128000,
+      "compactionThreshold": 0.5
+    }
   }
 }

@@ -2,6 +2,7 @@ import { Prisma, PrismaClient } from '@prisma/client';
 import { db } from '@/lib/db';
 import type { ChannelAdapter, ChannelType, DeliveryTarget } from '@/lib/types';
 import { isRetryableTelegramError } from '@/lib/adapters/telegram-adapter';
+import { getRuntimeConfig } from '@/lib/config/runtime';
 
 type DeliveryRecord = {
   id: string;
@@ -115,7 +116,7 @@ export async function processPendingDeliveries(): Promise<DeliveryProcessingStat
       ],
     },
     orderBy: { createdAt: 'asc' },
-    take: 10,
+    take: getRuntimeConfig().performance.deliveryBatchSize,
   });
 
   const stats: DeliveryProcessingStats = {
@@ -178,7 +179,7 @@ export async function dispatchDelivery(delivery: DeliveryRecord): Promise<Dispat
     const attempts = delivery.attempts + 1;
     const retryable = isRetryableDeliveryError(delivery.channel as ChannelType, error);
 
-    if (!retryable || attempts >= 5) {
+    if (!retryable || attempts >= getRuntimeConfig().safety.maxDeliveryRetries) {
       await markDeliveryFailed(delivery.id, getErrorMessage(error), attempts);
       return 'failed';
     }
