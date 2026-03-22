@@ -1,12 +1,15 @@
 import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
+  downloadMediaMessage,
+  extensionForMediaMessage,
   type WASocket,
   type BaileysEventMap,
 } from '@whiskeysockets/baileys';
-import { rmSync, existsSync } from 'fs';
+import { rmSync, existsSync, mkdirSync, writeFileSync } from 'fs';
 import { Boom } from '@hapi/boom';
-import type { ChannelAdapter, DeliveryTarget } from '@/lib/types';
+import * as path from 'path';
+import type { ChannelAdapter, DeliveryTarget, VisionInput, Attachment } from '@/lib/types';
 
 const AUTH_DIR = 'data/whatsapp-auth';
 const RECONNECT_BASE_MS = 2_000;
@@ -66,8 +69,33 @@ export class WhatsAppAdapter implements ChannelAdapter {
     return { externalMessageId };
   }
 
+  async sendFile(target: DeliveryTarget, filePath: string, opts?: {
+    filename?: string;
+    mimeType?: string;
+    caption?: string;
+  }): Promise<{ externalMessageId?: string }> {
+    if (!this.connected || !this.socket) {
+      throw new Error('WhatsApp connection is not active');
+    }
+
+    const chatId = target.metadata.chatId;
+    if (!chatId) {
+      throw new Error('WhatsApp delivery target is missing chatId');
+    }
+
+    const result = await this.socket.sendMessage(chatId, {
+      document: { url: filePath },
+      mimetype: opts?.mimeType ?? 'application/octet-stream',
+      fileName: opts?.filename,
+      caption: opts?.caption,
+    });
+    const externalMessageId = result?.key.id ?? undefined;
+    return { externalMessageId };
+  }
+
   private async connect(): Promise<void> {
     try {
+      // eslint-disable-next-line react-hooks/rules-of-hooks
       const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
       const sock = makeWASocket({ auth: state, printQRInTerminal: false });
@@ -123,9 +151,14 @@ export class WhatsAppAdapter implements ChannelAdapter {
           if (!jid || jid === 'status@broadcast') continue;
 
           const text = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text;
-          if (!text) continue;
+          const imageMessage = msg.message?.imageMessage as { mediaKey?: Uint8Array; mimetype?: string; caption?: string } | undefined;
+          const documentMessage = msg.message?.documentMessage as { mediaKey?: Uint8Array; mimetype?: string; fileName?: string; caption?: string } | undefined;
 
-          void this.routeInbound(jid, text);
+          if (imageMessage || documentMessage) {
+            void this.routeInboundMedia(jid, msg.key.id ?? 'unknown', imageMessage, documentMessage);
+          } else if (text) {
+            void this.routeInbound(jid, text);
+          }
         }
       });
     } catch (error) {
@@ -188,6 +221,86 @@ export class WhatsAppAdapter implements ChannelAdapter {
       });
     } catch (error) {
       console.error('[WhatsApp] Failed to route inbound message:', error);
+    }
+  }
+
+  private async routeInboundMedia(
+    jid: string,
+    msgId: string,
+    imageMessage?: { mediaKey?: Uint8Array; mimetype?: string; caption?: string },
+    documentMessage?: { mediaKey?: Uint8Array; mimetype?: string; fileName?: string; caption?: string },
+  ): Promise<void> {
+    if (!this.socket) {
+      console.error('[WhatsApp] Cannot download media: socket not available');
+      return;
+    }
+
+    const appUrl = process.env.OPENCLAW_APP_URL ?? 'http://localhost:3000';
+    const downloadsDir = path.join('data', 'sandbox', '_inbound', 'whatsapp', 'downloads');
+
+    try {
+      if (!existsSync(downloadsDir)) {
+        mkdirSync(downloadsDir, { recursive: true });
+      }
+
+      let visionInputs: VisionInput[] | undefined;
+      let attachments: Attachment[] | undefined;
+      let caption = '';
+
+      if (imageMessage) {
+        const buffer = await downloadMediaMessage(
+          { key: { remoteJid: jid }, message: { imageMessage } } as never,
+          'buffer',
+          {}
+        );
+        const ext = extensionForMediaMessage({ mediaKey: imageMessage.mediaKey, mimetype: imageMessage.mimetype } as never) ?? 'jpg';
+        const filename = `${msgId}.${ext}`;
+        const localPath = path.join(downloadsDir, filename);
+        writeFileSync(localPath, buffer);
+        caption = imageMessage.caption ?? '';
+        visionInputs = [{
+          channelFileId: msgId,
+          localPath,
+          mimeType: imageMessage.mimetype ?? 'image/jpeg',
+        }];
+      } else if (documentMessage) {
+        const buffer = await downloadMediaMessage(
+          { key: { remoteJid: jid }, message: { documentMessage } } as never,
+          'buffer',
+          {}
+        );
+        const ext = extensionForMediaMessage({ mediaKey: documentMessage.mediaKey, mimetype: documentMessage.mimetype } as never) ?? '';
+        const filename = documentMessage.fileName ?? `${msgId}.${ext}`;
+        const localPath = path.join(downloadsDir, filename);
+        writeFileSync(localPath, buffer);
+        caption = documentMessage.caption ?? '';
+        attachments = [{
+          channelFileId: msgId,
+          localPath,
+          filename,
+          mimeType: documentMessage.mimetype ?? 'application/octet-stream',
+        }];
+      }
+
+      await fetch(`${appUrl}/api/input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'message',
+          channel: 'whatsapp',
+          channelKey: jid,
+          content: caption,
+          deliveryTarget: {
+            channel: 'whatsapp',
+            channelKey: jid,
+            metadata: { chatId: jid },
+          },
+          visionInputs,
+          attachments,
+        }),
+      });
+    } catch (error) {
+      console.error('[WhatsApp] Failed to route inbound media message:', error);
     }
   }
 }

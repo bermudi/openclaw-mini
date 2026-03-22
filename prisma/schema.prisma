@@ -122,6 +122,8 @@ model OutboundDelivery {
   channelKey        String
   targetJson        String
   text              String
+  deliveryType      String   @default("text") // text, file
+  filePath          String?
   status            String   @default("pending") // pending, sent, failed
   attempts          Int      @default(0)
   nextAttemptAt     DateTime?

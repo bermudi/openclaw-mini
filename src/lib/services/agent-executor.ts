@@ -12,13 +12,15 @@ import { enqueueDeliveryTx } from './delivery-service';
 import { getModelConfig, resolveAgentContextWindow, runWithModelFallback } from './model-provider';
 import { parseCommand, type ParsedCommand } from './command-parser';
 import { sessionProviderState } from './session-provider-state';
-import { ChannelType, DeliveryTarget, Task } from '@/lib/types';
+import { ChannelType, DeliveryTarget, Task, VisionInput, Attachment } from '@/lib/types';
 import { getLowRiskTools, getToolsByNames, getToolsForAgent, type ToolResult, withSpawnSubagentContext } from '@/lib/tools';
 import { getSkillForSubAgent, getSkillSummaries } from './skill-service';
 import { type SubAgentOverrides, resolveSubAgentConfig } from '@/lib/subagent-config';
 import { loadBootstrapContext, loadHeartbeatContext } from './workspace-service';
 import { countTokens } from '@/lib/utils/token-counter';
 import { eventBus } from './event-bus';
+import { supportsVision } from './model-catalog';
+import * as fs from 'fs';
 
 export interface ExecutionResult {
   success: boolean;
@@ -158,16 +160,161 @@ class AgentExecutorService {
         ? sessionProviderState.getOrInit(task.sessionId)
         : undefined;
 
+      const msgPayload = task.payload as {
+        content?: string;
+        sender?: string;
+        channel?: ChannelType;
+        channelKey?: string;
+        deliveryTarget?: DeliveryTarget;
+        visionInputs?: VisionInput[];
+        attachments?: Attachment[];
+      };
+
+      const modelId = resolvedSubagentConfig?.model
+        ?? sessionProviderOverrides?.activeModel
+        ?? agent.model
+        ?? 'unknown';
+
+      const canDoVision = supportsVision(modelId);
+      const hasVisionInputs = msgPayload.visionInputs && msgPayload.visionInputs.length > 0;
+      const hasTextContent = (msgPayload.content ?? '').trim().length > 0;
+
+      if (hasVisionInputs && !canDoVision && !hasTextContent) {
+        const deliveryTarget = task.type === 'message'
+          ? msgPayload.deliveryTarget ?? this.buildFallbackDeliveryTarget(msgPayload)
+          : undefined;
+        const errorResponse = 'Your current model doesn\'t support vision. Send images as file attachments, or switch to a vision-capable model.';
+
+        if (deliveryTarget) {
+          await enqueueDeliveryTx(
+            db,
+            taskId,
+            deliveryTarget.channel,
+            deliveryTarget.channelKey,
+            JSON.stringify(deliveryTarget),
+            errorResponse,
+            `task:${taskId}`,
+          );
+        }
+
+        await taskQueue.completeTask(taskId, {
+          response: errorResponse,
+          taskType: task.type,
+          toolCalls: [],
+        });
+        await agentService.setAgentStatus(task.agentId, 'idle');
+        return { success: true, response: errorResponse, actions: [], toolCalls: [] };
+      }
+
+      if (hasVisionInputs && !canDoVision && hasTextContent) {
+        const warningText = '⚠️ Your current model doesn\'t support vision. I\'ll respond to your message but cannot see the images. Send images as file attachments, or switch to a vision-capable model.';
+        const result = await withSpawnSubagentContext(
+          {
+            agentId: task.agentId,
+            parentTaskId: task.id,
+            spawnDepth: task.spawnDepth ?? 0,
+            allowedSkills: resolvedSubagentConfig?.allowedSkills,
+            allowedTools: resolvedSubagentConfig?.allowedTools,
+            maxToolInvocations: resolvedSubagentConfig?.maxToolInvocations,
+            toolInvocationCount: { count: 0 },
+          },
+          () =>
+            runWithModelFallback(
+              ({ model }) =>
+                generateText({
+                  model,
+                  system: systemPrompt,
+                  prompt,
+                  tools,
+                  stopWhen: stepCountIs(resolvedSubagentConfig?.maxIterations ?? 5),
+                }),
+              resolvedSubagentConfig
+                ? {
+                    provider: resolvedSubagentConfig.provider,
+                    model: resolvedSubagentConfig.model,
+                    baseURL: resolvedSubagentConfig.baseURL,
+                    apiKey: resolvedSubagentConfig.apiKey,
+                    credentialRef: resolvedSubagentConfig.credentialRef,
+                  }
+                : sessionProviderOverrides
+                  ? {
+                      provider: sessionProviderOverrides.activeProvider,
+                      model: sessionProviderOverrides.activeModel,
+                    }
+                  : undefined,
+            ),
+        );
+
+        const response = result.text;
+        const toolCalls = result.steps.flatMap(step => step.toolCalls ?? []);
+        const toolResults = result.steps.flatMap(step => step.toolResults ?? []);
+        const toolResultMap = new Map(toolResults.map(toolResult => [toolResult.toolCallId, toolResult]));
+        const executionToolCalls: ExecutionResult['toolCalls'] = toolCalls.map((toolCall) => {
+          const toolResult = toolResultMap.get(toolCall.toolCallId);
+          return {
+            tool: toolCall.toolName,
+            params: toolCall.input as Record<string, unknown>,
+            result:
+              (toolResult?.output as ToolResult | undefined) ??
+              ({ success: false, error: 'Tool result missing' } satisfies ToolResult),
+          };
+        });
+
+        const deliveryTarget = task.type === 'message'
+          ? msgPayload.deliveryTarget ?? this.buildFallbackDeliveryTarget(msgPayload)
+          : undefined;
+
+        if (deliveryTarget) {
+          await db.$transaction(async (tx) => {
+            await taskQueue.completeTaskTx(tx, taskId, { response, taskType: task.type, toolCalls: executionToolCalls.map(tc => ({ tool: tc.tool, success: tc.result.success })) });
+            await enqueueDeliveryTx(tx, taskId, deliveryTarget.channel, deliveryTarget.channelKey, JSON.stringify(deliveryTarget), response, `task:${taskId}`);
+            await enqueueDeliveryTx(tx, taskId, deliveryTarget.channel, deliveryTarget.channelKey, JSON.stringify(deliveryTarget), warningText, `task:${taskId}:warning`);
+          });
+          taskQueue.completeTaskSideEffects(task.agentId, taskId, task.type, { response, taskType: task.type, toolCalls: executionToolCalls.map(tc => ({ tool: tc.tool, success: tc.result.success })) });
+        } else {
+          await taskQueue.completeTask(taskId, { response, taskType: task.type, toolCalls: executionToolCalls.map(tc => ({ tool: tc.tool, success: tc.result.success })) });
+        }
+
+        await this.runPostCommitSideEffects(task.agentId, taskId, task, response, executionToolCalls);
+        return { success: true, response, actions: [], toolCalls: executionToolCalls };
+      }
+
+      let multiModalMessages: Array<{ role: 'user'; content: Array<{ type: 'text'; text: string } | { type: 'image'; image: Uint8Array }> }> | undefined;
+      if (hasVisionInputs && canDoVision) {
+        const contentParts: Array<{ type: 'text'; text: string } | { type: 'image'; image: Uint8Array }> = [{ type: 'text', text: prompt }];
+        for (const visionInput of msgPayload.visionInputs ?? []) {
+          try {
+            const imageBuffer = fs.readFileSync(visionInput.localPath);
+            contentParts.push({ type: 'image', image: imageBuffer });
+          } catch {
+            console.error(`[AgentExecutor] Failed to read vision input file: ${visionInput.localPath}`);
+          }
+        }
+        multiModalMessages = [{ role: 'user', content: contentParts }];
+      }
+
+      const generationArgs = {
+        system: systemPrompt,
+        tools,
+        stopWhen: stepCountIs(resolvedSubagentConfig?.maxIterations ?? 5),
+      };
+
       const executeGeneration = () =>
         runWithModelFallback(
-          ({ model }) =>
-            generateText({
+          ({ model }) => {
+            if (multiModalMessages) {
+              return generateText({
+                ...generationArgs,
+                model,
+                messages: multiModalMessages,
+              });
+            }
+            return generateText({
+              ...generationArgs,
               model,
-              system: systemPrompt,
               prompt,
-              tools,
-              stopWhen: stepCountIs(resolvedSubagentConfig?.maxIterations ?? 5),
-            }),
+            });
+          },
           resolvedSubagentConfig
             ? {
                 provider: resolvedSubagentConfig.provider,
@@ -547,16 +694,26 @@ class AgentExecutorService {
 
   private renderTaskPrompt(task: Task, contextSection: string): string {
     switch (task.type) {
-      case 'message':
+      case 'message': {
+        const payload = task.payload as {
+          channel?: string;
+          sender?: string;
+          content?: string;
+          attachments?: Attachment[];
+        };
+        const attachmentsSection = payload.attachments && payload.attachments.length > 0
+          ? `\n\nATTACHED FILES:\n${payload.attachments.map(a => `- ${a.localPath} (${a.filename}, ${a.mimeType}${a.size ? `, ${a.size} bytes` : ''})`).join('\n')}`
+          : '';
         return `You have received a new message.
 ${contextSection}
 
 MESSAGE DETAILS:
-Channel: ${(task.payload as { channel?: string }).channel}
-Sender: ${(task.payload as { sender?: string }).sender || 'Unknown'}
-Content: ${(task.payload as { content?: string }).content}
+Channel: ${payload.channel}
+Sender: ${payload.sender || 'Unknown'}
+Content: ${payload.content}${attachmentsSection}
 
 Please respond appropriately to this message. Use tools if needed.`;
+      }
 
       case 'heartbeat':
         return `Heartbeat triggered at ${new Date().toISOString()}.

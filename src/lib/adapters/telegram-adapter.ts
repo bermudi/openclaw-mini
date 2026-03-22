@@ -1,4 +1,6 @@
-import { Bot, GrammyError, HttpError } from 'grammy';
+import { Bot, GrammyError, HttpError, InputFile } from 'grammy';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { ChannelAdapter, DeliveryTarget } from '@/lib/types';
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
@@ -50,6 +52,25 @@ export class TelegramAdapter implements ChannelAdapter {
     }
 
     return { externalMessageId };
+  }
+
+  async sendFile(target: DeliveryTarget, filePath: string, opts?: {
+    filename?: string;
+    mimeType?: string;
+    caption?: string;
+  }): Promise<{ externalMessageId?: string }> {
+    const chatId = target.metadata.chatId ?? target.channelKey;
+
+    if (!chatId) {
+      throw new Error('Telegram delivery target is missing chatId');
+    }
+
+    const response = await this.bot.api.sendDocument(chatId, new InputFile(filePath), {
+      caption: opts?.caption,
+      message_thread_id: parseOptionalInteger(target.metadata.threadId),
+    });
+
+    return { externalMessageId: response.message_id.toString() };
   }
 }
 
@@ -103,6 +124,62 @@ export function classifyTelegramError(error: unknown): TelegramErrorClassificati
 
 export function isRetryableTelegramError(error: unknown): boolean {
   return classifyTelegramError(error).retryable;
+}
+
+export async function downloadTelegramFile(
+  bot: Bot,
+  fileId: string,
+  destDir: string,
+  filename?: string,
+): Promise<{ localPath: string; mimeType: string }> {
+  const file = await bot.api.getFile(fileId);
+  const filePath = file.file_path;
+
+  if (!filePath) {
+    throw new Error(`Telegram file ${fileId} has no file_path`);
+  }
+
+  const extension = filePath.split('.').pop() ?? '';
+  const mimeTypeFromExt = getMimeTypeFromExtension(extension);
+  const destFilename = filename ?? `${fileId}.${extension}`;
+  const destPath = path.join(destDir, destFilename);
+
+  if (!fs.existsSync(destDir)) {
+    fs.mkdirSync(destDir, { recursive: true });
+  }
+
+  const token = (bot as unknown as { token?: string }).token;
+  if (!token) {
+    throw new Error('Telegram bot token not available');
+  }
+
+  const fileUrl = `https://api.telegram.org/file/bot${token}/${filePath}`;
+  const response = await fetch(fileUrl);
+
+  if (!response.ok) {
+    throw new Error(`Failed to download Telegram file: ${response.statusText}`);
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  fs.writeFileSync(destPath, buffer);
+
+  return { localPath: destPath, mimeType: mimeTypeFromExt };
+}
+
+function getMimeTypeFromExtension(ext: string): string {
+  const lowerExt = ext.toLowerCase();
+  const map: Record<string, string> = {
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    mp4: 'video/mp4',
+    pdf: 'application/pdf',
+    zip: 'application/zip',
+    txt: 'text/plain',
+  };
+  return map[lowerExt] ?? 'application/octet-stream';
 }
 
 function parseOptionalInteger(value?: string): number | undefined {

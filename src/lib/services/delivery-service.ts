@@ -9,6 +9,8 @@ type DeliveryRecord = {
   channel: string;
   targetJson: string;
   text: string;
+  deliveryType?: string;
+  filePath?: string | null;
   attempts: number;
 };
 
@@ -22,6 +24,8 @@ type DeliveryModel = {
       text: string;
       status: string;
       dedupeKey: string;
+      deliveryType?: string;
+      filePath?: string | null;
     };
   }): Promise<unknown>;
   findMany(args: {
@@ -94,6 +98,40 @@ export async function enqueueDeliveryTx(
         text,
         status: 'pending',
         dedupeKey,
+        deliveryType: 'text',
+      },
+    });
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return;
+    }
+
+    throw error;
+  }
+}
+
+export async function enqueueFileDeliveryTx(
+  tx: DbClient,
+  taskId: string,
+  channel: ChannelType,
+  channelKey: string,
+  targetJson: string,
+  filePath: string,
+  caption: string,
+  dedupeKey: string,
+): Promise<void> {
+  try {
+    await getDeliveryModel(tx).create({
+      data: {
+        taskId,
+        channel,
+        channelKey,
+        targetJson,
+        text: caption,
+        status: 'pending',
+        dedupeKey,
+        deliveryType: 'file',
+        filePath,
       },
     });
   } catch (error) {
@@ -176,6 +214,25 @@ export async function dispatchDelivery(delivery: DeliveryRecord): Promise<Dispat
   }
 
   try {
+    if ((delivery.deliveryType ?? 'text') === 'file' && delivery.filePath) {
+      if (!adapter.sendFile) {
+        await markDeliveryFailed(delivery.id, `Channel adapter ${delivery.channel} does not support file delivery`);
+        return 'failed';
+      }
+      const result = await adapter.sendFile(target, delivery.filePath, { caption: delivery.text });
+      await getDeliveryModel(db).update({
+        where: { id: delivery.id },
+        data: {
+          status: 'sent',
+          sentAt: new Date(),
+          externalMessageId: result.externalMessageId ?? null,
+          lastError: null,
+          nextAttemptAt: null,
+        },
+      });
+      return 'sent';
+    }
+
     const result = await adapter.sendText(target, delivery.text);
     await getDeliveryModel(db).update({
       where: { id: delivery.id },

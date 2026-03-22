@@ -1,10 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { Bot } from 'grammy';
+import * as path from 'path';
+import * as fs from 'fs';
 import { initializeAdapters } from '@/lib/adapters';
 import { inputManager } from '@/lib/services/input-manager';
-import type { DeliveryTarget } from '@/lib/types';
+import { downloadTelegramFile } from '@/lib/adapters/telegram-adapter';
+import type { DeliveryTarget, Attachment, VisionInput } from '@/lib/types';
 
 initializeAdapters();
+
+function getInboundDownloadsDir(channelType: string): string {
+  const downloadsDir = path.join('data', 'sandbox', '_inbound', channelType, 'downloads');
+  if (!fs.existsSync(downloadsDir)) {
+    fs.mkdirSync(downloadsDir, { recursive: true });
+  }
+  return downloadsDir;
+}
+
+const TelegramPhotoSizeSchema = z.object({
+  file_id: z.string(),
+  width: z.number().int(),
+  height: z.number().int(),
+  file_size: z.number().int().optional(),
+});
+
+const TelegramDocumentSchema = z.object({
+  file_id: z.string(),
+  file_name: z.string().optional(),
+  mime_type: z.string().optional(),
+  file_size: z.number().int().optional(),
+});
 
 const TelegramUpdateSchema = z.object({
   message: z.object({
@@ -19,6 +45,10 @@ const TelegramUpdateSchema = z.object({
       username: z.string().optional(),
       first_name: z.string().optional(),
     }).optional(),
+    photo: z.array(TelegramPhotoSizeSchema).optional(),
+    document: TelegramDocumentSchema.optional(),
+    animation: TelegramDocumentSchema.optional(),
+    caption: z.string().optional(),
   }).optional(),
 }).passthrough();
 
@@ -39,7 +69,7 @@ export async function POST(request: NextRequest) {
 
   const message = parsed.data.message;
 
-  if (!message?.text) {
+  if (!message) {
     return NextResponse.json({ success: true, ignored: true });
   }
 
@@ -56,13 +86,79 @@ export async function POST(request: NextRequest) {
     },
   };
 
+  const content = message.text ?? message.caption ?? '';
+  const visionInputs: VisionInput[] = [];
+  const attachments: Attachment[] = [];
+
+  const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
+  const downloadBot = telegramBotToken ? new Bot(telegramBotToken) : null;
+
+  if (downloadBot) {
+    try {
+      if (message.photo && message.photo.length > 0) {
+        const largestPhoto = message.photo.reduce((a, b) =>
+          (a.width * a.height) > (b.width * b.height) ? a : b
+        );
+        const downloadsDir = getInboundDownloadsDir('telegram');
+        const { localPath, mimeType } = await downloadTelegramFile(downloadBot, largestPhoto.file_id, downloadsDir);
+        visionInputs.push({
+          channelFileId: largestPhoto.file_id,
+          localPath,
+          mimeType,
+        });
+      }
+
+      if (message.animation && !message.photo) {
+        const downloadsDir = getInboundDownloadsDir('telegram');
+        const { localPath, mimeType } = await downloadTelegramFile(
+          downloadBot,
+          message.animation.file_id,
+          downloadsDir,
+          message.animation.file_name
+        );
+        attachments.push({
+          channelFileId: message.animation.file_id,
+          localPath,
+          filename: message.animation.file_name ?? `${message.animation.file_id}.gif`,
+          mimeType: message.animation.mime_type ?? mimeType,
+          size: message.animation.file_size,
+        });
+      } else if (message.document && !message.animation) {
+        const downloadsDir = getInboundDownloadsDir('telegram');
+        const { localPath, mimeType } = await downloadTelegramFile(
+          downloadBot,
+          message.document.file_id,
+          downloadsDir,
+          message.document.file_name
+        );
+        attachments.push({
+          channelFileId: message.document.file_id,
+          localPath,
+          filename: message.document.file_name ?? `${message.document.file_id}`,
+          mimeType: message.document.mime_type ?? mimeType,
+          size: message.document.file_size,
+        });
+      }
+    } catch (error) {
+      console.error('[Telegram Webhook] File download error:', error);
+    }
+  } else if (message.photo || message.document || message.animation) {
+    console.warn('[Telegram Webhook] File attachments ignored: TELEGRAM_BOT_TOKEN not configured');
+  }
+
+  if (!content && visionInputs.length === 0 && attachments.length === 0) {
+    return NextResponse.json({ success: true, ignored: true });
+  }
+
   const result = await inputManager.processInput({
     type: 'message',
     channel: 'telegram',
     channelKey: chatId,
-    content: message.text,
+    content,
     sender: message.from?.username ?? message.from?.first_name ?? senderId,
     deliveryTarget,
+    attachments: attachments.length > 0 ? attachments : undefined,
+    visionInputs: visionInputs.length > 0 ? visionInputs : undefined,
   });
 
   if (!result.success) {

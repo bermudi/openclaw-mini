@@ -14,8 +14,11 @@ import { getSkillForSubAgent } from '@/lib/services/skill-service';
 import { getOverrideFieldsApplied } from '@/lib/subagent-config';
 import { getRuntimeConfig } from '@/lib/config/runtime';
 import { getMemoryDir } from '@/lib/services/memory-service';
-import { getSandboxDir } from '@/lib/services/sandbox-service';
+import { getSandboxDir, resolveSandboxPath } from '@/lib/services/sandbox-service';
+import { enqueueFileDeliveryTx } from '@/lib/services/delivery-service';
 import { parseCommand, getBinaryBasename, capCombinedOutput } from '@/lib/utils/exec-helpers';
+import { existsSync } from 'fs';
+import type { ChannelType } from '@/lib/types';
 
 export interface ToolParameter {
   name: string;
@@ -836,6 +839,107 @@ registerTool(
     },
   }),
   { riskLevel: 'high' },
+);
+
+const MIME_TYPE_MAP: Record<string, string> = {
+  '.txt': 'text/plain',
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'application/javascript',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.pdf': 'application/pdf',
+  '.zip': 'application/zip',
+  '.tar': 'application/x-tar',
+  '.gz': 'application/gzip',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.mp4': 'video/mp4',
+  '.avi': 'video/x-msvideo',
+  '.mov': 'video/quicktime',
+};
+
+function detectMimeType(filename: string, fallback?: string): string {
+  const lastDot = filename.lastIndexOf('.');
+  const ext = lastDot === -1 ? '' : filename.slice(lastDot).toLowerCase();
+  return MIME_TYPE_MAP[ext] ?? fallback ?? 'application/octet-stream';
+}
+
+registerTool(
+  'send_file_to_chat',
+  tool({
+    description: 'Send a file from the agent sandbox to the chat. The file path is relative to the sandbox directory.',
+    inputSchema: z.object({
+      agentId: z.string().describe('The agent ID (used to determine sandbox directory)'),
+      filePath: z.string().describe('Path to the file, relative to the agent sandbox directory'),
+      caption: z.string().optional().describe('Optional caption to include with the file'),
+      mimeType: z.string().optional().describe('MIME type of the file (auto-detected from extension if not provided)'),
+    }),
+    execute: async ({ agentId, filePath, caption, mimeType }): Promise<ToolResult> => {
+      const context = spawnSubagentContext.getStore();
+      if (!context) {
+        return { success: false, error: 'send_file_to_chat called without task context' };
+      }
+
+      let resolvedPath: string;
+      try {
+        resolvedPath = resolveSandboxPath(agentId, filePath);
+      } catch (error) {
+        return { success: false, error: `Invalid file path: ${error instanceof Error ? error.message : 'Unknown error'}` };
+      }
+
+      if (!existsSync(resolvedPath)) {
+        return { success: false, error: `File not found: ${filePath}` };
+      }
+
+      const session = await db.session.findFirst({
+        where: { agentId },
+        orderBy: { lastActive: 'desc' },
+      });
+
+      if (!session) {
+        return { success: false, error: 'No active session found for agent' };
+      }
+
+      const channel = session.channel as ChannelType;
+      const channelKey = session.channelKey;
+      const deliveryTarget = {
+        channel,
+        channelKey,
+        metadata: {},
+      };
+
+      const detectedMimeType = detectMimeType(filePath, mimeType);
+      const dedupeKey = `file:${context.parentTaskId}:${filePath}:${crypto.randomUUID()}`;
+
+      try {
+        await enqueueFileDeliveryTx(
+          db,
+          context.parentTaskId,
+          channel,
+          channelKey,
+          JSON.stringify(deliveryTarget),
+          resolvedPath,
+          caption ?? '',
+          dedupeKey,
+        );
+      } catch (error) {
+        return { success: false, error: `Failed to enqueue file delivery: ${error instanceof Error ? error.message : 'Unknown error'}` };
+      }
+
+      return {
+        success: true,
+        data: { filePath: resolvedPath, mimeType: detectedMimeType, caption },
+      };
+    },
+  }),
+  { riskLevel: 'medium' },
 );
 
 export { tools };

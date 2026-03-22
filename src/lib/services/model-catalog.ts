@@ -212,3 +212,22 @@ export class ModelCatalog {
 }
 
 export const modelCatalog = new ModelCatalog();
+
+const KNOWN_VISION_MODELS = new Set([
+  'gpt-4o',
+  'gpt-4o-mini',
+  'gpt-4.1',
+  'gpt-4.1-mini',
+  'gpt-4.1-nano',
+  'claude-3-5-sonnet-latest',
+  'claude-3-5-haiku-latest',
+  'claude-3-7-sonnet-latest',
+]);
+
+export function supportsVision(modelId: string): boolean {
+  const model = modelCatalog.getModels().find(m => m.id === modelId);
+  if (model) {
+    return modelSupportsCapability(model, 'vision');
+  }
+  return KNOWN_VISION_MODELS.has(modelId);
+}

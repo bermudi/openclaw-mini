@@ -41,6 +41,11 @@ export interface ChannelAdapter {
   start?(): Promise<void>;
   stop?(): Promise<void>;
   isConnected?(): boolean;
+  sendFile?(target: DeliveryTarget, filePath: string, opts?: {
+    filename?: string;
+    mimeType?: string;
+    caption?: string;
+  }): Promise<{ externalMessageId?: string }>;
 }
 
 export interface Session {
@@ -135,6 +140,21 @@ export interface Memory {
   updatedAt: Date;
 }
 
+// Attachment Types
+export interface Attachment {
+  channelFileId: string;
+  localPath: string;
+  filename: string;
+  mimeType: string;
+  size?: number;
+}
+
+export interface VisionInput {
+  channelFileId: string;
+  localPath: string;
+  mimeType: string;
+}
+
 // Input Types
 export interface MessageInput {
   type: 'message';
@@ -144,6 +164,8 @@ export interface MessageInput {
   sender?: string;
   deliveryTarget?: DeliveryTarget;
   metadata?: Record<string, unknown>;
+  attachments?: Attachment[];
+  visionInputs?: VisionInput[];
 }
 
 export interface HeartbeatInput {
