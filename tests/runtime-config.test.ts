@@ -408,3 +408,216 @@ describe('getRuntimeConfig() deprecation warnings', () => {
     warnSpy.mockRestore();
   });
 });
+
+// ============================================================
+// 8.4 - Exec config section
+// ============================================================
+
+describe('runtimeSectionSchema exec section', () => {
+  test('accepts a fully specified exec section', async () => {
+    const { runtimeSectionSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeSectionSchema.safeParse({
+      exec: {
+        enabled: true,
+        allowlist: ['cat', 'ls', 'grep'],
+        maxTimeout: 60,
+        maxOutputSize: 50000,
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.exec?.enabled).toBe(true);
+      expect(result.data.exec?.allowlist).toEqual(['cat', 'ls', 'grep']);
+      expect(result.data.exec?.maxTimeout).toBe(60);
+      expect(result.data.exec?.maxOutputSize).toBe(50000);
+    }
+  });
+
+  test('accepts a partial exec section (all fields optional)', async () => {
+    const { runtimeSectionSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeSectionSchema.safeParse({
+      exec: { enabled: true },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts an empty exec section', async () => {
+    const { runtimeSectionSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeSectionSchema.safeParse({
+      exec: {},
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  test('rejects non-boolean enabled field', async () => {
+    const { runtimeSectionSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeSectionSchema.safeParse({
+      exec: { enabled: 'yes' },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects non-string items in allowlist', async () => {
+    const { runtimeSectionSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeSectionSchema.safeParse({
+      exec: { allowlist: ['cat', 123] },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects empty strings in allowlist', async () => {
+    const { runtimeSectionSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeSectionSchema.safeParse({
+      exec: { allowlist: ['cat', ''] },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects negative maxTimeout', async () => {
+    const { runtimeSectionSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeSectionSchema.safeParse({
+      exec: { maxTimeout: -5 },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects zero maxTimeout', async () => {
+    const { runtimeSectionSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeSectionSchema.safeParse({
+      exec: { maxTimeout: 0 },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects negative maxOutputSize', async () => {
+    const { runtimeSectionSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeSectionSchema.safeParse({
+      exec: { maxOutputSize: -100 },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects zero maxOutputSize', async () => {
+    const { runtimeSectionSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeSectionSchema.safeParse({
+      exec: { maxOutputSize: 0 },
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('getRuntimeConfig() exec defaults', () => {
+  test('returns default exec values when no exec section is configured', async () => {
+    mock.module('../src/lib/services/provider-registry', () => ({
+      ensureProviderRegistryInitialized: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      resetProviderRegistryForTests: () => {},
+    }));
+
+    const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
+    resetRuntimeWarningsForTests();
+
+    const config = getRuntimeConfig();
+
+    expect(config.exec.enabled).toBe(false);
+    expect(config.exec.allowlist).toEqual([]);
+    expect(config.exec.maxTimeout).toBe(30);
+    expect(config.exec.maxOutputSize).toBe(10000);
+  });
+
+  test('returns configured exec values from runtime section', async () => {
+    const runtimeSection = {
+      exec: {
+        enabled: true,
+        allowlist: ['cat', 'ls', 'grep'],
+        maxTimeout: 60,
+        maxOutputSize: 50000,
+      },
+    };
+
+    mock.module('../src/lib/services/provider-registry', () => ({
+      ensureProviderRegistryInitialized: () => ({
+        config: makeMinimalConfig(runtimeSection),
+        configPath: '/test',
+      }),
+      resetProviderRegistryForTests: () => {},
+    }));
+
+    const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
+    resetRuntimeWarningsForTests();
+
+    const config = getRuntimeConfig();
+
+    expect(config.exec.enabled).toBe(true);
+    expect(config.exec.allowlist).toEqual(['cat', 'ls', 'grep']);
+    expect(config.exec.maxTimeout).toBe(60);
+    expect(config.exec.maxOutputSize).toBe(50000);
+  });
+
+  test('fills in defaults for partial exec section', async () => {
+    const runtimeSection = {
+      exec: { enabled: true },
+    };
+
+    mock.module('../src/lib/services/provider-registry', () => ({
+      ensureProviderRegistryInitialized: () => ({
+        config: makeMinimalConfig(runtimeSection),
+        configPath: '/test',
+      }),
+      resetProviderRegistryForTests: () => {},
+    }));
+
+    const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
+    resetRuntimeWarningsForTests();
+
+    const config = getRuntimeConfig();
+
+    expect(config.exec.enabled).toBe(true);
+    expect(config.exec.allowlist).toEqual([]);
+    expect(config.exec.maxTimeout).toBe(30);
+    expect(config.exec.maxOutputSize).toBe(10000);
+  });
+
+  test('uses defaults for missing allowlist', async () => {
+    const runtimeSection = {
+      exec: { enabled: true, maxTimeout: 120 },
+    };
+
+    mock.module('../src/lib/services/provider-registry', () => ({
+      ensureProviderRegistryInitialized: () => ({
+        config: makeMinimalConfig(runtimeSection),
+        configPath: '/test',
+      }),
+      resetProviderRegistryForTests: () => {},
+    }));
+
+    const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
+    resetRuntimeWarningsForTests();
+
+    const config = getRuntimeConfig();
+
+    expect(config.exec.enabled).toBe(true);
+    expect(config.exec.allowlist).toEqual([]);
+    expect(config.exec.maxTimeout).toBe(120);
+    expect(config.exec.maxOutputSize).toBe(10000);
+  });
+});

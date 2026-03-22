@@ -22,6 +22,12 @@ export interface RuntimeBehaviorConfig {
     contextWindow: number;
     compactionThreshold: number;
   };
+  exec: {
+    enabled: boolean;
+    allowlist: string[];
+    maxTimeout: number;
+    maxOutputSize: number;
+  };
 }
 
 const warnedEnvVars = new Set<string>();
@@ -85,6 +91,12 @@ export function getRuntimeConfig(): RuntimeBehaviorConfig {
       deliveryBatchSize: runtime?.performance?.deliveryBatchSize ?? 10,
       contextWindow: runtime?.performance?.contextWindow ?? 128000,
       compactionThreshold: runtime?.performance?.compactionThreshold ?? envCompactionThreshold ?? 0.5,
+    },
+    exec: {
+      enabled: runtime?.exec?.enabled ?? false,
+      allowlist: runtime?.exec?.allowlist ?? [],
+      maxTimeout: runtime?.exec?.maxTimeout ?? 30,
+      maxOutputSize: runtime?.exec?.maxOutputSize ?? 10000,
     },
   };
 }

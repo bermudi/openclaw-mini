@@ -28,11 +28,19 @@ const runtimePerformanceSchema = z.object({
   compactionThreshold: z.number().min(0).max(1).optional(),
 });
 
+const runtimeExecSchema = z.object({
+  enabled: z.boolean().optional(),
+  allowlist: z.array(z.string().trim().min(1)).optional(),
+  maxTimeout: z.number().int().positive().optional(),
+  maxOutputSize: z.number().int().positive().optional(),
+});
+
 export const runtimeSectionSchema = z.object({
   safety: runtimeSafetySchema.optional(),
   retention: runtimeRetentionSchema.optional(),
   logging: runtimeLoggingSchema.optional(),
   performance: runtimePerformanceSchema.optional(),
+  exec: runtimeExecSchema.optional(),
 });
 
 export interface RuntimeSafetyConfig {
@@ -59,11 +67,19 @@ export interface RuntimePerformanceConfig {
   compactionThreshold?: number;
 }
 
+export interface ExecConfig {
+  enabled?: boolean;
+  allowlist?: string[];
+  maxTimeout?: number;
+  maxOutputSize?: number;
+}
+
 export interface RuntimeSectionConfig {
   safety?: RuntimeSafetyConfig;
   retention?: RuntimeRetentionConfig;
   logging?: RuntimeLoggingConfig;
   performance?: RuntimePerformanceConfig;
+  exec?: ExecConfig;
 }
 
 export const providerApiTypeSchema = z.enum([

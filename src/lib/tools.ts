@@ -14,6 +14,8 @@ import { getSkillForSubAgent } from '@/lib/services/skill-service';
 import { getOverrideFieldsApplied } from '@/lib/subagent-config';
 import { getRuntimeConfig } from '@/lib/config/runtime';
 import { getMemoryDir } from '@/lib/services/memory-service';
+import { getSandboxDir } from '@/lib/services/sandbox-service';
+import { parseCommand, getBinaryBasename, capCombinedOutput } from '@/lib/utils/exec-helpers';
 
 export interface ToolParameter {
   name: string;
@@ -689,6 +691,151 @@ registerTool(
     },
   }),
   { riskLevel: 'low' },
+);
+
+// ============================================
+// exec_command tool (registered always; enabled check is inside execute)
+// ============================================
+
+// Re-export helpers so callers can import from one place
+export { parseCommand, getBinaryBasename } from '@/lib/utils/exec-helpers';
+export { truncateOutput } from '@/lib/utils/exec-helpers';
+
+// Minimal safe environment to pass to sandboxed commands
+function buildSafeEnv(): NodeJS.ProcessEnv {
+  // NODE_ENV is included because bun-types requires it in ProcessEnv; it is not sensitive
+  const env: Record<string, string> = {
+    PATH: process.env.PATH ?? '/usr/bin:/bin',
+    HOME: process.env.HOME ?? '/tmp',
+    TERM: 'dumb',
+    NODE_ENV: process.env.NODE_ENV ?? 'production',
+  };
+  if (process.env.LANG) env.LANG = process.env.LANG;
+  if (process.env.LC_ALL) env.LC_ALL = process.env.LC_ALL;
+  return env as NodeJS.ProcessEnv;
+}
+
+registerTool(
+  'exec_command',
+  tool({
+    description: 'Execute an allowlisted shell command in the agent sandbox directory. Commands are run directly (no shell), with timeout and output size limits enforced.',
+    inputSchema: z.object({
+      agentId: z.string().describe('The agent ID (used to determine sandbox directory)'),
+      command: z.string().describe('The command to execute (binary name and arguments)'),
+      surfaceOutput: z.boolean().optional().describe('Whether to surface output directly (reserved for future use)'),
+    }),
+    execute: async ({ agentId, command }): Promise<ToolResult> => {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+
+      const config = getRuntimeConfig().exec;
+
+      if (!config.enabled) {
+        return { success: false, error: 'exec_command is disabled. Set runtime.exec.enabled to true in openclaw.json.' };
+      }
+
+      // Enforce sane upper bounds regardless of what the config says
+      const maxTimeout = Math.min(config.maxTimeout ?? 30, 300); // cap at 5 min
+      const maxOutputSize = Math.min(config.maxOutputSize ?? 10000, 1_000_000); // cap at 1 MB
+
+      // Parse command
+      const parsed = parseCommand(command);
+      if ('error' in parsed) {
+        return { success: false, error: parsed.error };
+      }
+
+      const { binary, args } = parsed;
+
+      // Check allowlist
+      const binaryBasename = getBinaryBasename(binary);
+      const allowlist = config.allowlist ?? [];
+
+      if (!allowlist.includes(binaryBasename)) {
+        return {
+          success: false,
+          error: `Command '${binaryBasename}' is not in the allowlist. Allowed commands: ${allowlist.join(', ') || '(none)'}`,
+        };
+      }
+
+      // Get sandbox directory
+      let sandboxDir: string;
+      try {
+        sandboxDir = getSandboxDir(agentId);
+      } catch (error) {
+        return { success: false, error: `Invalid agent sandbox: ${error}` };
+      }
+
+      const timeoutMs = maxTimeout * 1000;
+      // maxBuffer limits each stream; set large enough to capture output before our truncation
+      const streamBuffer = Math.max(maxOutputSize * 5, 1024 * 1024);
+
+      try {
+        const { stdout, stderr } = await execFileAsync(binary, args, {
+          cwd: sandboxDir,
+          timeout: timeoutMs,
+          maxBuffer: streamBuffer,
+          killSignal: 'SIGTERM',
+          env: buildSafeEnv() as NodeJS.ProcessEnv,
+        });
+
+        const capped = capCombinedOutput(stdout, stderr, maxOutputSize);
+
+        return {
+          success: true,
+          data: {
+            stdout: capped.stdout,
+            stderr: capped.stderr,
+            exitCode: 0,
+            outputTruncated: capped.truncated,
+          },
+        };
+      } catch (error) {
+        const execError = error as { code?: string | number; signal?: string; stdout?: string; stderr?: string; message?: string };
+
+        // Handle timeout
+        if (execError.signal === 'SIGTERM' || execError.code === 'ETIMEDOUT') {
+          return {
+            success: false,
+            error: `Command timed out after ${maxTimeout} seconds`,
+          };
+        }
+
+        // Handle spawn errors (binary not found, etc.)
+        if (execError.code === 'ENOENT') {
+          return {
+            success: false,
+            error: `Command not found: '${binary}'`,
+          };
+        }
+
+        // Handle non-zero exit codes — still a successful execution
+        if (typeof execError.code === 'number') {
+          const capped = capCombinedOutput(
+            execError.stdout ?? '',
+            execError.stderr ?? '',
+            maxOutputSize,
+          );
+
+          return {
+            success: true,
+            data: {
+              stdout: capped.stdout,
+              stderr: capped.stderr,
+              exitCode: execError.code,
+              outputTruncated: capped.truncated,
+            },
+          };
+        }
+
+        return {
+          success: false,
+          error: `Failed to execute command: ${execError.message ?? 'Unknown error'}`,
+        };
+      }
+    },
+  }),
+  { riskLevel: 'high' },
 );
 
 export { tools };
