@@ -9,7 +9,8 @@ import makeWASocket, {
 import { rmSync, existsSync, mkdirSync, writeFileSync } from 'fs';
 import { Boom } from '@hapi/boom';
 import * as path from 'path';
-import type { ChannelAdapter, DeliveryTarget, VisionInput, Attachment } from '@/lib/types';
+import type { ChannelAdapter, DeliveryTarget, VisionInput, Attachment, DownloadedFile } from '@/lib/types';
+import { inboundFileService } from '@/lib/services/inbound-file-service';
 
 const AUTH_DIR = 'data/whatsapp-auth';
 const RECONNECT_BASE_MS = 2_000;
@@ -91,6 +92,50 @@ export class WhatsAppAdapter implements ChannelAdapter {
     });
     const externalMessageId = result?.key.id ?? undefined;
     return { externalMessageId };
+  }
+
+  /**
+   * Download a media file from WhatsApp.
+   * For WhatsApp, the fileId is the message ID, and we need additional context
+   * (jid, message type, mediaKey, mimetype) which must be provided.
+   */
+  async downloadFile(
+    fileId: string,
+    destDir: string,
+    filename?: string,
+    context?: {
+      jid: string;
+      messageType: 'image' | 'document';
+      mediaKey?: Uint8Array;
+      mimetype?: string;
+      fileName?: string;
+    },
+  ): Promise<DownloadedFile> {
+    if (!this.socket) {
+      throw new Error('WhatsApp socket not available');
+    }
+
+    if (!context) {
+      throw new Error('WhatsApp download requires message context (jid, messageType, mediaKey, mimetype)');
+    }
+
+    const { jid, messageType, mediaKey, mimetype, fileName } = context;
+
+    if (!existsSync(destDir)) {
+      mkdirSync(destDir, { recursive: true });
+    }
+
+    const messageWrapper = messageType === 'image'
+      ? { key: { remoteJid: jid }, message: { imageMessage: { mediaKey, mimetype } } } as never
+      : { key: { remoteJid: jid }, message: { documentMessage: { mediaKey, mimetype, fileName } } } as never;
+
+    const buffer = await downloadMediaMessage(messageWrapper, 'buffer', {});
+    const ext = extensionForMediaMessage({ mediaKey, mimetype } as never) ?? (messageType === 'image' ? 'jpg' : '');
+    const destFilename = filename ?? fileName ?? `${fileId}.${ext}`;
+    const localPath = path.join(destDir, destFilename);
+    writeFileSync(localPath, buffer);
+
+    return { localPath, mimeType: mimetype ?? 'application/octet-stream' };
   }
 
   private async connect(): Promise<void> {
@@ -236,13 +281,9 @@ export class WhatsAppAdapter implements ChannelAdapter {
     }
 
     const appUrl = process.env.OPENCLAW_APP_URL ?? 'http://localhost:3000';
-    const downloadsDir = path.join('data', 'sandbox', '_inbound', 'whatsapp', 'downloads');
+    const downloadsDir = inboundFileService.getDownloadsDir('whatsapp');
 
     try {
-      if (!existsSync(downloadsDir)) {
-        mkdirSync(downloadsDir, { recursive: true });
-      }
-
       let visionInputs: VisionInput[] | undefined;
       let attachments: Attachment[] | undefined;
       let caption = '';

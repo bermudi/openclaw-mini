@@ -34,6 +34,22 @@ export interface DeliveryTarget {
   metadata: DeliveryMetadata;
 }
 
+/**
+ * Result of downloading a file from a channel.
+ */
+export interface DownloadedFile {
+  localPath: string;
+  mimeType: string;
+}
+
+/**
+ * Interface for downloading files from a channel.
+ * Each adapter that supports file downloads implements this.
+ */
+export interface ChannelFileDownloader {
+  downloadFile(fileId: string, destDir: string, filename?: string): Promise<DownloadedFile>;
+}
+
 export interface ChannelAdapter {
   readonly channel: ChannelType;
   sendText(target: DeliveryTarget, text: string): Promise<{ externalMessageId?: string }>;
@@ -46,6 +62,7 @@ export interface ChannelAdapter {
     mimeType?: string;
     caption?: string;
   }): Promise<{ externalMessageId?: string }>;
+  downloadFile?(fileId: string, destDir: string, filename?: string): Promise<DownloadedFile>;
 }
 
 export interface Session {

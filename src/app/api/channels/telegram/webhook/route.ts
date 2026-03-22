@@ -1,22 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { Bot } from 'grammy';
-import * as path from 'path';
-import * as fs from 'fs';
 import { initializeAdapters } from '@/lib/adapters';
 import { inputManager } from '@/lib/services/input-manager';
 import { downloadTelegramFile } from '@/lib/adapters/telegram-adapter';
+import { inboundFileService } from '@/lib/services/inbound-file-service';
 import type { DeliveryTarget, Attachment, VisionInput } from '@/lib/types';
 
 initializeAdapters();
-
-function getInboundDownloadsDir(channelType: string): string {
-  const downloadsDir = path.join('data', 'sandbox', '_inbound', channelType, 'downloads');
-  if (!fs.existsSync(downloadsDir)) {
-    fs.mkdirSync(downloadsDir, { recursive: true });
-  }
-  return downloadsDir;
-}
 
 const TelegramPhotoSizeSchema = z.object({
   file_id: z.string(),
@@ -99,7 +90,7 @@ export async function POST(request: NextRequest) {
         const largestPhoto = message.photo.reduce((a, b) =>
           (a.width * a.height) > (b.width * b.height) ? a : b
         );
-        const downloadsDir = getInboundDownloadsDir('telegram');
+        const downloadsDir = inboundFileService.getDownloadsDir('telegram');
         const { localPath, mimeType } = await downloadTelegramFile(downloadBot, largestPhoto.file_id, downloadsDir);
         visionInputs.push({
           channelFileId: largestPhoto.file_id,
@@ -109,7 +100,7 @@ export async function POST(request: NextRequest) {
       }
 
       if (message.animation && !message.photo) {
-        const downloadsDir = getInboundDownloadsDir('telegram');
+        const downloadsDir = inboundFileService.getDownloadsDir('telegram');
         const { localPath, mimeType } = await downloadTelegramFile(
           downloadBot,
           message.animation.file_id,
@@ -124,7 +115,7 @@ export async function POST(request: NextRequest) {
           size: message.animation.file_size,
         });
       } else if (message.document && !message.animation) {
-        const downloadsDir = getInboundDownloadsDir('telegram');
+        const downloadsDir = inboundFileService.getDownloadsDir('telegram');
         const { localPath, mimeType } = await downloadTelegramFile(
           downloadBot,
           message.document.file_id,

@@ -12,7 +12,7 @@ import { enqueueDeliveryTx } from './delivery-service';
 import { getModelConfig, resolveAgentContextWindow, runWithModelFallback } from './model-provider';
 import { parseCommand, type ParsedCommand } from './command-parser';
 import { sessionProviderState } from './session-provider-state';
-import { ChannelType, DeliveryTarget, Task, VisionInput, Attachment } from '@/lib/types';
+import { ChannelType, DeliveryTarget, Task, VisionInput, Attachment, DownloadedFile } from '@/lib/types';
 import { getLowRiskTools, getToolsByNames, getToolsForAgent, type ToolResult, withSpawnSubagentContext } from '@/lib/tools';
 import { getSkillForSubAgent, getSkillSummaries } from './skill-service';
 import { type SubAgentOverrides, resolveSubAgentConfig } from '@/lib/subagent-config';
@@ -20,7 +20,7 @@ import { loadBootstrapContext, loadHeartbeatContext } from './workspace-service'
 import { countTokens } from '@/lib/utils/token-counter';
 import { eventBus } from './event-bus';
 import { supportsVision } from './model-catalog';
-import * as fs from 'fs';
+import { handleVisionInput, buildFallbackDeliveryTarget as buildFallbackDeliveryTargetUtil, type VisionHandlerContext } from './vision-handler';
 
 export interface ExecutionResult {
   success: boolean;
@@ -176,38 +176,38 @@ class AgentExecutorService {
         ?? 'unknown';
 
       const canDoVision = supportsVision(modelId);
-      const hasVisionInputs = msgPayload.visionInputs && msgPayload.visionInputs.length > 0;
+      const hasVisionInputs = !!(msgPayload.visionInputs && msgPayload.visionInputs.length > 0);
       const hasTextContent = (msgPayload.content ?? '').trim().length > 0;
 
-      if (hasVisionInputs && !canDoVision && !hasTextContent) {
-        const deliveryTarget = task.type === 'message'
-          ? msgPayload.deliveryTarget ?? this.buildFallbackDeliveryTarget(msgPayload)
-          : undefined;
-        const errorResponse = 'Your current model doesn\'t support vision. Send images as file attachments, or switch to a vision-capable model.';
+      const deliveryTarget = task.type === 'message'
+        ? msgPayload.deliveryTarget ?? this.buildFallbackDeliveryTarget(msgPayload)
+        : undefined;
 
-        if (deliveryTarget) {
-          await enqueueDeliveryTx(
-            db,
-            taskId,
-            deliveryTarget.channel,
-            deliveryTarget.channelKey,
-            JSON.stringify(deliveryTarget),
-            errorResponse,
-            `task:${taskId}`,
-          );
-        }
+      // Handle vision inputs using extracted handler
+      const visionResult = await handleVisionInput(
+        task,
+        msgPayload.visionInputs,
+        { modelId, canDoVision, hasVisionInputs, hasTextContent, prompt },
+        deliveryTarget,
+        async (taskId, target, message, key) => {
+          await enqueueDeliveryTx(db, taskId, target.channel, target.channelKey, JSON.stringify(target), message, key);
+        },
+      );
 
+      // Case: Vision-only with non-vision model - error was delivered, skip LLM
+      if (visionResult.skipLlm) {
         await taskQueue.completeTask(taskId, {
-          response: errorResponse,
+          response: visionResult.errorResponse ?? '',
           taskType: task.type,
           toolCalls: [],
         });
         await agentService.setAgentStatus(task.agentId, 'idle');
-        return { success: true, response: errorResponse, actions: [], toolCalls: [] };
+        return { success: true, response: visionResult.errorResponse ?? '', actions: [], toolCalls: [] };
       }
 
-      if (hasVisionInputs && !canDoVision && hasTextContent) {
-        const warningText = '⚠️ Your current model doesn\'t support vision. I\'ll respond to your message but cannot see the images. Send images as file attachments, or switch to a vision-capable model.';
+      // Case: Vision with non-vision model but has text - execute with warning
+      if (visionResult.warning) {
+        const warningText = visionResult.warning;
         const result = await withSpawnSubagentContext(
           {
             agentId: task.agentId,
@@ -260,10 +260,6 @@ class AgentExecutorService {
           };
         });
 
-        const deliveryTarget = task.type === 'message'
-          ? msgPayload.deliveryTarget ?? this.buildFallbackDeliveryTarget(msgPayload)
-          : undefined;
-
         if (deliveryTarget) {
           await db.$transaction(async (tx) => {
             await taskQueue.completeTaskTx(tx, taskId, { response, taskType: task.type, toolCalls: executionToolCalls.map(tc => ({ tool: tc.tool, success: tc.result.success })) });
@@ -279,19 +275,7 @@ class AgentExecutorService {
         return { success: true, response, actions: [], toolCalls: executionToolCalls };
       }
 
-      let multiModalMessages: Array<{ role: 'user'; content: Array<{ type: 'text'; text: string } | { type: 'image'; image: Uint8Array }> }> | undefined;
-      if (hasVisionInputs && canDoVision) {
-        const contentParts: Array<{ type: 'text'; text: string } | { type: 'image'; image: Uint8Array }> = [{ type: 'text', text: prompt }];
-        for (const visionInput of msgPayload.visionInputs ?? []) {
-          try {
-            const imageBuffer = fs.readFileSync(visionInput.localPath);
-            contentParts.push({ type: 'image', image: imageBuffer });
-          } catch {
-            console.error(`[AgentExecutor] Failed to read vision input file: ${visionInput.localPath}`);
-          }
-        }
-        multiModalMessages = [{ role: 'user', content: contentParts }];
-      }
+      const multiModalMessages = visionResult.multiModalMessages;
 
       const generationArgs = {
         system: systemPrompt,
@@ -374,7 +358,7 @@ class AgentExecutorService {
         channelKey?: string;
         deliveryTarget?: DeliveryTarget;
       };
-      const deliveryTarget = task.type === 'message'
+      const finalDeliveryTarget = task.type === 'message'
         ? payload.deliveryTarget ?? this.buildFallbackDeliveryTarget(payload)
         : undefined;
       const taskResult = {
@@ -382,7 +366,7 @@ class AgentExecutorService {
         taskType: task.type,
         toolCalls: executionToolCalls.map(tc => ({ tool: tc.tool, success: tc.result.success })),
       };
-      const shouldAutoDeliver = task.type === 'message' && response.trim().length > 0 && !!deliveryTarget;
+      const shouldAutoDeliver = task.type === 'message' && response.trim().length > 0 && !!finalDeliveryTarget;
 
       if (task.sessionId && task.type === 'message') {
         await sessionService.appendToContext(task.sessionId, {
@@ -400,16 +384,16 @@ class AgentExecutorService {
         });
       }
 
-      if (shouldAutoDeliver && deliveryTarget) {
+      if (shouldAutoDeliver && finalDeliveryTarget) {
         // Delivery semantics are at-least-once: a crash after channel API success but before DB status update can duplicate sends.
         await db.$transaction(async (tx) => {
           await taskQueue.completeTaskTx(tx, taskId, taskResult);
           await enqueueDeliveryTx(
             tx,
             taskId,
-            deliveryTarget.channel,
-            deliveryTarget.channelKey,
-            JSON.stringify(deliveryTarget),
+            finalDeliveryTarget.channel,
+            finalDeliveryTarget.channelKey,
+            JSON.stringify(finalDeliveryTarget),
             response,
             `task:${taskId}`,
           );

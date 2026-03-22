@@ -1,7 +1,7 @@
 import { Bot, GrammyError, HttpError, InputFile } from 'grammy';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { ChannelAdapter, DeliveryTarget } from '@/lib/types';
+import type { ChannelAdapter, DeliveryTarget, DownloadedFile } from '@/lib/types';
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 
@@ -71,6 +71,10 @@ export class TelegramAdapter implements ChannelAdapter {
     });
 
     return { externalMessageId: response.message_id.toString() };
+  }
+
+  async downloadFile(fileId: string, destDir: string, filename?: string): Promise<DownloadedFile> {
+    return downloadTelegramFile(this.bot, fileId, destDir, filename);
   }
 }
 
