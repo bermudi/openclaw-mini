@@ -7,7 +7,9 @@ import { initializeAdapters } from '../../src/lib/adapters';
 import { processPendingDeliveries } from '../../src/lib/services/delivery-service';
 import { memoryService } from '../../src/lib/services/memory-service';
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  log: ['error', 'warn'], // Disable query logging to reduce noise
+});
 
 const POLL_INTERVAL = 5000; // 5 seconds
 const HEARTBEAT_CHECK_INTERVAL = 60000; // 1 minute
