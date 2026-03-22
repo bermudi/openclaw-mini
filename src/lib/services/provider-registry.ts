@@ -1,4 +1,5 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
 import type { LanguageModel } from 'ai';
 import { loadConfig, type LoadConfigResult } from '@/lib/config/loader';
@@ -12,6 +13,10 @@ interface OpenAIModelFactory {
 }
 
 interface AnthropicModelFactory {
+  (model: string): LanguageModel;
+}
+
+interface GoogleModelFactory {
   (model: string): LanguageModel;
 }
 
@@ -32,6 +37,13 @@ function createAnthropicProvider(definition: ProviderDefinition): AnthropicModel
     apiKey: definition.apiKey,
     baseURL: definition.baseURL,
   }) as AnthropicModelFactory;
+}
+
+function createGeminiProvider(definition: ProviderDefinition): GoogleModelFactory {
+  return createGoogleGenerativeAI({
+    apiKey: definition.apiKey,
+    baseURL: definition.baseURL,
+  }) as GoogleModelFactory;
 }
 
 export function createLanguageModel(
@@ -57,6 +69,10 @@ export function createLanguageModel(
         apiKey: definition.apiKey,
         baseURL: definition.baseURL,
       });
+    }
+    case 'gemini': {
+      const gemini = createGeminiProvider(definition);
+      return gemini(model);
     }
   }
 }

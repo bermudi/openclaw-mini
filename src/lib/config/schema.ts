@@ -71,6 +71,7 @@ export const providerApiTypeSchema = z.enum([
   'openai-responses',
   'anthropic',
   'poe',
+  'gemini',
 ]);
 
 export type ProviderApiType = z.infer<typeof providerApiTypeSchema>;

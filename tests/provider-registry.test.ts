@@ -24,6 +24,11 @@ mock.module('@ai-sdk/anthropic', () => ({
     (model: string) => ({ provider: 'anthropic', model, baseURL, apiKey }),
 }));
 
+mock.module('@ai-sdk/google', () => ({
+  createGoogleGenerativeAI: ({ baseURL, apiKey }: { baseURL?: string; apiKey?: string }) =>
+    (model: string) => ({ provider: 'gemini', model, baseURL, apiKey }),
+}));
+
 const ORIGINAL_ENV = { ...process.env };
 const createdDirs = new Set<string>();
 
@@ -56,6 +61,7 @@ beforeEach(() => {
   process.env.ANTHROPIC_API_KEY = 'anthropic-test-key';
   process.env.OPENROUTER_API_KEY = 'openrouter-test-key';
   process.env.POE_API_KEY = 'poe-test-key';
+  process.env.GEMINI_API_KEY = 'gemini-test-key';
   delete process.env.OPENCLAW_CONFIG_PATH;
   delete process.env.OPENCLAW_CONFIG_DIR;
   delete process.env.OPENCLAW_STATE_DIR;
@@ -202,6 +208,11 @@ describe('ProviderRegistry', () => {
           apiType: 'poe',
           apiKey: 'poe-key',
         },
+        gemini: {
+          id: 'gemini',
+          apiType: 'gemini',
+          apiKey: 'gemini-key',
+        },
       },
       agent: {
         provider: 'chat',
@@ -213,6 +224,7 @@ describe('ProviderRegistry', () => {
     const responsesModel = registry.getLanguageModel('responses', 'gpt-5-pro') as { provider?: string; mode?: string };
     const anthropicModel = registry.getLanguageModel('anthropic', 'claude-haiku-4.5') as { provider?: string; model?: string };
     const poeModel = registry.getLanguageModel('poe', 'gpt-5-pro') as { provider?: string; mode?: string };
+    const geminiModel = registry.getLanguageModel('gemini', 'gemini-2.5-pro') as { provider?: string; model?: string };
 
     expect(chatModel.provider).toBe('openai');
     expect(chatModel.mode).toBe('chat');
@@ -222,6 +234,32 @@ describe('ProviderRegistry', () => {
     expect(anthropicModel.model).toBe('claude-haiku-4.5');
     expect(poeModel.provider).toBe('openai');
     expect(poeModel.mode).toBe('responses');
+    expect(geminiModel.provider).toBe('gemini');
+    expect(geminiModel.model).toBe('gemini-2.5-pro');
+  });
+
+  test('gemini adapter supports custom baseURL for Vertex AI', async () => {
+    const { ProviderRegistry } = await import('../src/lib/services/provider-registry');
+    const registry = new ProviderRegistry();
+
+    registry.reload({
+      providers: {
+        vertex: {
+          id: 'vertex',
+          apiType: 'gemini',
+          apiKey: 'vertex-key',
+          baseURL: 'https://us-central1-aiplatform.googleapis.com/v1',
+        },
+      },
+      agent: {
+        provider: 'vertex',
+        model: 'gemini-2.5-pro',
+      },
+    });
+
+    const vertexModel = registry.getLanguageModel('vertex', 'gemini-2.5-pro') as { provider?: string; baseURL?: string };
+    expect(vertexModel.provider).toBe('gemini');
+    expect(vertexModel.baseURL).toBe('https://us-central1-aiplatform.googleapis.com/v1');
   });
 });
 
