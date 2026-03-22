@@ -3,7 +3,7 @@
 
 import cron from 'node-cron';
 import { PrismaClient } from '@prisma/client';
-import { initializeAdapters } from '../../src/lib/adapters';
+import { initializeAdapters, getRegisteredAdapters } from '../../src/lib/adapters';
 import { processPendingDeliveries } from '../../src/lib/services/delivery-service';
 import { memoryService } from '../../src/lib/services/memory-service';
 import { getRuntimeConfig, getPrismaLogConfig } from '../../src/lib/config/runtime';
@@ -237,9 +237,69 @@ async function runDeliveryLoop() {
 // ============================================
 // Main Loop
 // ============================================
+async function startAdapters(): Promise<void> {
+  const adapters = getRegisteredAdapters();
+  for (const adapter of adapters) {
+    if (adapter.start) {
+      try {
+        await adapter.start();
+        console.log(`[Scheduler] Adapter started: ${adapter.channel}`);
+      } catch (error) {
+        console.error(`[Scheduler] Adapter start failed (${adapter.channel}):`, error);
+      }
+    }
+  }
+}
+
+async function stopAdapters(): Promise<void> {
+  const adapters = getRegisteredAdapters();
+  const STOP_TIMEOUT_MS = 5_000;
+  await Promise.all(
+    adapters
+      .filter(a => typeof a.stop === 'function')
+      .map(async (adapter) => {
+        const timeout = new Promise<void>((resolve) => setTimeout(() => {
+          console.warn(`[Scheduler] Adapter stop timed out: ${adapter.channel}`);
+          resolve();
+        }, STOP_TIMEOUT_MS));
+        try {
+          await Promise.race([adapter.stop!(), timeout]);
+          console.log(`[Scheduler] Adapter stopped: ${adapter.channel}`);
+        } catch (error) {
+          console.error(`[Scheduler] Adapter stop error (${adapter.channel}):`, error);
+        }
+      }),
+  );
+}
+
+const adapterWasConnected = new Map<string, boolean>();
+
+async function checkAdapterHealth(): Promise<void> {
+  const adapters = getRegisteredAdapters();
+  for (const adapter of adapters) {
+    if (typeof adapter.isConnected !== 'function') continue;
+
+    const nowConnected = adapter.isConnected();
+    const wasConnected = adapterWasConnected.get(adapter.channel) ?? false;
+
+    if (!nowConnected && wasConnected) {
+      console.log(`[Scheduler] Adapter disconnected, attempting recovery: ${adapter.channel}`);
+      try {
+        await adapter.start?.();
+        console.log(`[Scheduler] Adapter recovered: ${adapter.channel}`);
+      } catch (error) {
+        console.error(`[Scheduler] Adapter recovery failed (${adapter.channel}):`, error);
+      }
+    }
+
+    adapterWasConnected.set(adapter.channel, adapter.isConnected());
+  }
+}
+
 async function start() {
   isRunning = true;
   initializeAdapters();
+  await startAdapters();
   console.log('[Scheduler] Service started');
 
   // Initial processing
@@ -278,22 +338,25 @@ async function start() {
   setInterval(() => {
     console.log(`[Scheduler] Status: ${tasksProcessed} tasks processed, ${triggersFired} triggers fired, ${deliveriesSent} deliveries sent, ${deliveriesFailed} deliveries failed`);
   }, 300000);
+
+  // Adapter health check every 30 seconds
+  setInterval(() => {
+    if (isRunning) {
+      checkAdapterHealth().catch(error => console.error('[Scheduler] Health check error:', error));
+    }
+  }, 30_000);
 }
 
-// Graceful shutdown
-process.on('SIGINT', async () => {
+async function shutdown(): Promise<void> {
   console.log('[Scheduler] Shutting down...');
   isRunning = false;
+  await stopAdapters();
   await prisma.$disconnect();
   process.exit(0);
-});
+}
 
-process.on('SIGTERM', async () => {
-  console.log('[Scheduler] Shutting down...');
-  isRunning = false;
-  await prisma.$disconnect();
-  process.exit(0);
-});
+process.on('SIGINT', () => { void shutdown(); });
+process.on('SIGTERM', () => { void shutdown(); });
 
 // Start the service
 start().catch(console.error);

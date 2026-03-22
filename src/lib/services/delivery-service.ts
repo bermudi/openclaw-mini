@@ -162,6 +162,19 @@ export async function dispatchDelivery(delivery: DeliveryRecord): Promise<Dispat
     return 'failed';
   }
 
+  if (adapter.isConnected?.() === false) {
+    const attempts = delivery.attempts + 1;
+    await getDeliveryModel(db).update({
+      where: { id: delivery.id },
+      data: {
+        attempts,
+        nextAttemptAt: calculateNextAttemptAt(attempts),
+        lastError: `Adapter for channel ${delivery.channel} is not connected`,
+      },
+    });
+    return 'retried';
+  }
+
   try {
     const result = await adapter.sendText(target, delivery.text);
     await getDeliveryModel(db).update({

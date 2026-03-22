@@ -11,9 +11,22 @@ export interface TelegramErrorClassification {
 export class TelegramAdapter implements ChannelAdapter {
   readonly channel = 'telegram' as const;
   private readonly bot: Bot;
+  private connected = false;
 
   constructor(token: string) {
     this.bot = new Bot(token);
+  }
+
+  async start(): Promise<void> {
+    this.connected = true;
+  }
+
+  async stop(): Promise<void> {
+    this.connected = false;
+  }
+
+  isConnected(): boolean {
+    return this.connected;
   }
 
   async sendText(target: DeliveryTarget, text: string): Promise<{ externalMessageId?: string }> {

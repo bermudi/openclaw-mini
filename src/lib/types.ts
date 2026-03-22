@@ -18,7 +18,7 @@ export interface Agent {
 }
 
 // Session Types
-export type ChannelType = 'slack' | 'discord' | 'whatsapp' | 'telegram' | 'imessage' | 'webhook' | 'internal';
+export type ChannelType = 'slack' | 'discord' | 'whatsapp' | 'telegram' | 'imessage' | 'webhook' | 'internal' | 'webchat';
 
 export interface DeliveryMetadata {
   chatId?: string;
@@ -38,6 +38,9 @@ export interface ChannelAdapter {
   readonly channel: ChannelType;
   sendText(target: DeliveryTarget, text: string): Promise<{ externalMessageId?: string }>;
   sendTyping?(target: DeliveryTarget): Promise<void>;
+  start?(): Promise<void>;
+  stop?(): Promise<void>;
+  isConnected?(): boolean;
 }
 
 export interface Session {
