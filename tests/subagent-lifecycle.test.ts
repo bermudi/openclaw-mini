@@ -60,6 +60,7 @@ beforeAll(async () => {
 
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-subagent-lifecycle-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
+  process.env.OPENCLAW_SKILLS_DIR = SKILLS_DIR;
 
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();
@@ -116,6 +117,7 @@ afterAll(async () => {
   if (fs.existsSync(SKILLS_DIR)) {
     fs.rmSync(SKILLS_DIR, { recursive: true, force: true });
   }
+  delete process.env.OPENCLAW_SKILLS_DIR;
 });
 
 // ============================================================

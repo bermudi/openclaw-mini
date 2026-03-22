@@ -2,6 +2,7 @@
 
 import { afterAll, beforeAll, beforeEach, expect, mock, test } from 'bun:test';
 import fs from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 import type { PrismaClient } from '@prisma/client';
 import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture } from './runtime-config-fixture';
@@ -17,7 +18,7 @@ mock.module('ai', () => ({
 
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'multi-provider-switching.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
-const MEMORY_ROOT = path.join(process.cwd(), 'data', 'memories');
+const MEMORY_ROOT = path.join(tmpdir(), 'openclaw-mini-multi-provider-memories');
 
 let db: PrismaClient;
 let agentService: typeof import('../src/lib/services/agent-service').agentService;
@@ -83,6 +84,7 @@ beforeAll(async () => {
 
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-multi-provider-switching-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
+  process.env.OPENCLAW_MEMORY_DIR = MEMORY_ROOT;
 
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();

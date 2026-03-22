@@ -15,7 +15,7 @@ mock.module('ai', () => ({
 
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'memory-git-versioning.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
-const MEMORY_ROOT = path.join(process.cwd(), 'data', 'memories');
+const MEMORY_ROOT = path.join(os.tmpdir(), 'openclaw-mini-memory-git-memories');
 
 let db: PrismaClient;
 let memoryService: typeof import('../src/lib/services/memory-service').memoryService;
@@ -75,6 +75,7 @@ beforeAll(async () => {
 
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-memory-git-versioning-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
+  process.env.OPENCLAW_MEMORY_DIR = MEMORY_ROOT;
 
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
 

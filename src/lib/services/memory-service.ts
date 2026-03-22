@@ -17,7 +17,9 @@ export function validateMemoryKey(key: string): boolean {
   return /^[a-zA-Z0-9/_-]+$/.test(key);
 }
 
-const MEMORY_DIR = path.join(process.cwd(), 'data', 'memories');
+export function getMemoryDir(): string {
+  return process.env.OPENCLAW_MEMORY_DIR ?? path.join(process.cwd(), 'data', 'memories');
+}
 
 function getPositiveIntegerEnv(name: string, fallback: number): number {
   const value = process.env[name];
@@ -56,19 +58,22 @@ export interface UpdateMemoryInput {
 
 class MemoryService {
   private gitInstances = new Map<string, MemoryGit>();
+  private memoryDirCreated = false;
 
-  constructor() {
-    // Ensure memory directory exists
-    if (!fs.existsSync(MEMORY_DIR)) {
-      fs.mkdirSync(MEMORY_DIR, { recursive: true });
+  private ensureMemoryDir(): void {
+    if (this.memoryDirCreated) return;
+    const memoryDir = getMemoryDir();
+    if (!fs.existsSync(memoryDir)) {
+      fs.mkdirSync(memoryDir, { recursive: true });
     }
+    this.memoryDirCreated = true;
   }
 
   private async getGit(agentId: string): Promise<MemoryGit | null> {
     if (!MemoryGit.isAvailable()) return null;
     let git = this.gitInstances.get(agentId);
     if (!git) {
-      git = new MemoryGit(path.join(MEMORY_DIR, agentId));
+      git = new MemoryGit(path.join(getMemoryDir(), agentId));
       this.gitInstances.set(agentId, git);
     }
     return git;
@@ -335,7 +340,8 @@ class MemoryService {
    * Save memory to file
    */
   private async saveToFile(agentId: string, key: string, value: string, action: 'Create' | 'Update' | 'Append' = 'Update'): Promise<void> {
-    const agentDir = path.join(MEMORY_DIR, agentId);
+    this.ensureMemoryDir();
+    const agentDir = path.join(getMemoryDir(), agentId);
     const filePath = path.join(agentDir, `${key}.md`);
     const fileDir = path.dirname(filePath);
     if (!fs.existsSync(fileDir)) {
@@ -355,7 +361,8 @@ class MemoryService {
    * Delete memory file
    */
   private async deleteFile(agentId: string, key: string): Promise<void> {
-    const agentDir = path.join(MEMORY_DIR, agentId);
+    this.ensureMemoryDir();
+    const agentDir = path.join(getMemoryDir(), agentId);
     const filePath = path.join(agentDir, `${key}.md`);
     if (!fs.existsSync(filePath)) return;
 
@@ -479,28 +486,29 @@ class MemoryService {
   }
 
    private async appendHistoryArchive(agentId: string, value: string): Promise<void> {
-     const archiveDir = this.getHistoryArchiveDir(agentId);
-     if (!fs.existsSync(archiveDir)) {
-       fs.mkdirSync(archiveDir, { recursive: true });
-     }
+    this.ensureMemoryDir();
+    const archiveDir = this.getHistoryArchiveDir(agentId);
+    if (!fs.existsSync(archiveDir)) {
+      fs.mkdirSync(archiveDir, { recursive: true });
+    }
 
-     const dateStr = getCurrentArchiveDate();
-     const archivePath = path.join(archiveDir, `${dateStr}.md`);
-     const archiveContent = fs.existsSync(archivePath)
-       ? `\n\n${value}`
-       : value;
-     fs.appendFileSync(archivePath, archiveContent, 'utf-8');
+    const dateStr = getCurrentArchiveDate();
+    const archivePath = path.join(archiveDir, `${dateStr}.md`);
+    const archiveContent = fs.existsSync(archivePath)
+      ? `\n\n${value}`
+      : value;
+    fs.appendFileSync(archivePath, archiveContent, 'utf-8');
 
-     const git = await this.getGit(agentId);
-     if (git) {
-       await git.init();
-       await git.add(`history/${dateStr}.md`);
-       await git.commit(`Archive system/history to history/${dateStr}`);
-     }
-   }
+    const git = await this.getGit(agentId);
+    if (git) {
+      await git.init();
+      await git.add(`history/${dateStr}.md`);
+      await git.commit(`Archive system/history to history/${dateStr}`);
+    }
+  }
 
    private getHistoryArchiveDir(agentId: string): string {
-     return path.join(MEMORY_DIR, agentId, 'history');
+     return path.join(getMemoryDir(), agentId, 'history');
    }
 }
 

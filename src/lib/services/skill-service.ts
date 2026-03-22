@@ -13,8 +13,11 @@ import {
 } from '@/lib/subagent-config';
 import { initializeProviderRegistry, providerRegistry } from '@/lib/services/provider-registry';
 
-const SKILLS_DIR = path.join(process.cwd(), 'skills');
 const DEFAULT_CACHE_TTL_MS = 60_000;
+
+function getSkillsDir(): string {
+  return process.env.OPENCLAW_SKILLS_DIR ?? path.join(process.cwd(), 'skills');
+}
 const execFileAsync = promisify(execFile);
 const binaryCache = new Map<string, boolean>();
 
@@ -183,18 +186,19 @@ export async function loadAllSkills(): Promise<LoadedSkill[]> {
 
   const skills = new Map<string, UnvalidatedLoadedSkill>();
 
-  if (!fs.existsSync(SKILLS_DIR)) {
-    console.info(`Skills directory not found at ${SKILLS_DIR}. No skills loaded.`);
+  const skillsDir = getSkillsDir();
+  if (!fs.existsSync(skillsDir)) {
+    console.info(`Skills directory not found at ${skillsDir}. No skills loaded.`);
     saveCache(skills);
     return [];
   }
 
-  const entries = await fs.promises.readdir(SKILLS_DIR, { withFileTypes: true });
+  const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true });
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
 
-    const skillPath = path.join(SKILLS_DIR, entry.name, 'SKILL.md');
+    const skillPath = path.join(skillsDir, entry.name, 'SKILL.md');
     if (!fs.existsSync(skillPath)) {
       continue;
     }

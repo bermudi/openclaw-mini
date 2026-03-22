@@ -2,6 +2,7 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, expect, mock, test } from 'bun:test';
 import fs from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 import { NextRequest } from 'next/server';
 import type { PrismaClient } from '@prisma/client';
@@ -20,7 +21,7 @@ let setCountTokensThrowOnErrorForTests: typeof import('../src/lib/utils/token-co
 
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'harden-core.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
-const MEMORY_ROOT = path.join(process.cwd(), 'data', 'memories');
+const MEMORY_ROOT = path.join(tmpdir(), 'openclaw-mini-harden-memories');
 const createdAgentIds = new Set<string>();
 const originalEnv = {
   threshold: process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD,
@@ -73,6 +74,7 @@ beforeAll(async () => {
   process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-harden-core-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
+  process.env.OPENCLAW_MEMORY_DIR = MEMORY_ROOT;
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });

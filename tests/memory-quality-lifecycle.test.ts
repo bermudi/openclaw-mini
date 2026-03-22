@@ -2,13 +2,14 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, expect, mock, test } from 'bun:test';
 import fs from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 import type { PrismaClient } from '@prisma/client';
 import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture } from './runtime-config-fixture';
 
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'memory-quality-lifecycle.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
-const MEMORY_ROOT = path.join(process.cwd(), 'data', 'memories');
+const MEMORY_ROOT = path.join(tmpdir(), 'openclaw-mini-memory-quality-memories');
 
 let mockGenerateTextResponse = '[]';
 
@@ -65,6 +66,7 @@ beforeAll(async () => {
 
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-memory-quality-lifecycle-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
+  process.env.OPENCLAW_MEMORY_DIR = MEMORY_ROOT;
 
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();

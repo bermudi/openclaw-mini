@@ -2,6 +2,7 @@
 
 import { afterAll, beforeAll, beforeEach, expect, mock, test } from 'bun:test';
 import fs from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 import { NextRequest } from 'next/server';
 import type { PrismaClient } from '@prisma/client';
@@ -25,7 +26,7 @@ type AdapterIndexModule = typeof import('../src/lib/adapters');
 
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'response-delivery.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
-const MEMORY_ROOT = path.join(process.cwd(), 'data', 'memories');
+const MEMORY_ROOT = path.join(tmpdir(), 'openclaw-mini-response-delivery-memories');
 
 let db: PrismaClient;
 type DeliveryRecord = {
@@ -130,6 +131,7 @@ beforeAll(async () => {
   process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-response-delivery-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
+  process.env.OPENCLAW_MEMORY_DIR = MEMORY_ROOT;
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
@@ -361,7 +363,7 @@ test('completeTaskTx works inside a transaction and side effects happen only whe
     expect(fetchCalls).toHaveLength(0);
   });
 
-  taskQueueModule.taskQueue.completeTaskSideEffects(agent.id, task.id, { ok: true });
+  taskQueueModule.taskQueue.completeTaskSideEffects(agent.id, task.id, 'message', { ok: true });
   expect(fetchCalls).toHaveLength(1);
   expect(fetchCalls[0]?.body).toContain('task:completed');
 });

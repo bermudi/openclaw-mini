@@ -49,7 +49,7 @@ mock.module('ai', () => ({
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
 const SKILLS_DIR = path.join(tmpdir(), 'openclaw-mini-agent-skills');
-const MEMORY_ROOT = path.join(process.cwd(), 'data', 'memories');
+const MEMORY_ROOT = path.join(tmpdir(), 'openclaw-mini-agent-memories');
 
 let db: PrismaClient;
 let workspaceService: typeof import('../src/lib/services/workspace-service');
@@ -149,6 +149,8 @@ beforeAll(async () => {
   process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-agent-architecture-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
+  process.env.OPENCLAW_SKILLS_DIR = SKILLS_DIR;
+  process.env.OPENCLAW_MEMORY_DIR = MEMORY_ROOT;
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
@@ -213,6 +215,11 @@ afterAll(async () => {
     fs.rmSync(testWorkspaceDir, { recursive: true, force: true });
   }
   delete process.env.OPENCLAW_WORKSPACE_DIR;
+  delete process.env.OPENCLAW_SKILLS_DIR;
+  delete process.env.OPENCLAW_MEMORY_DIR;
+  if (fs.existsSync(MEMORY_ROOT)) {
+    fs.rmSync(MEMORY_ROOT, { recursive: true, force: true });
+  }
 });
 
 test('routing resolution covers exact, wildcard, default, missing default, and explicit override', async () => {

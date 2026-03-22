@@ -50,3 +50,6 @@ prompt
 server.log
 **/*.db
 *.log
+
+# test artifacts
+/data/memories/

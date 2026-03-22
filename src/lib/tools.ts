@@ -13,6 +13,7 @@ import { auditService } from '@/lib/services/audit-service';
 import { getSkillForSubAgent } from '@/lib/services/skill-service';
 import { getOverrideFieldsApplied } from '@/lib/subagent-config';
 import { getRuntimeConfig } from '@/lib/config/runtime';
+import { getMemoryDir } from '@/lib/services/memory-service';
 
 export interface ToolParameter {
   name: string;
@@ -438,7 +439,7 @@ registerTool(
       // Sanitize filename to prevent path traversal
       const safeName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '');
 
-      const filePath = path.join(process.cwd(), 'data', 'memories', agentId, safeName);
+      const filePath = path.join(getMemoryDir(), agentId, safeName);
 
       try {
         if (!fs.existsSync(filePath)) {
@@ -474,7 +475,7 @@ registerTool(
       const timestamp = new Date().toISOString().split('T')[0];
       const filename = `note-${timestamp}-${safeTitle}.md`;
 
-      const dir = path.join(process.cwd(), 'data', 'memories', agentId);
+      const dir = path.join(getMemoryDir(), agentId);
 
       try {
         if (!fs.existsSync(dir)) {
@@ -507,7 +508,7 @@ registerTool(
       const fs = await import('fs');
       const path = await import('path');
 
-      const dir = path.join(process.cwd(), 'data', 'memories', agentId);
+      const dir = path.join(getMemoryDir(), agentId);
 
       try {
         if (!fs.existsSync(dir)) {

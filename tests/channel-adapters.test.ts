@@ -2,6 +2,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import fs from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 import { NextRequest } from 'next/server';
 import type { PrismaClient } from '@prisma/client';
@@ -67,7 +68,7 @@ mock.module('@whiskeysockets/baileys', () => ({
 
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'channel-adapters.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
-const MEMORY_ROOT = path.join(process.cwd(), 'data', 'memories');
+const MEMORY_ROOT = path.join(tmpdir(), 'openclaw-mini-channel-memories');
 
 let db: PrismaClient;
 let deliveryService: typeof import('../src/lib/services/delivery-service');
@@ -143,6 +144,7 @@ beforeAll(async () => {
   process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-channel-adapters-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
+  process.env.OPENCLAW_MEMORY_DIR = MEMORY_ROOT;
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
@@ -187,6 +189,8 @@ afterAll(async () => {
     runtimeConfigFixture = null;
   }
   if (fs.existsSync(TEST_DB_PATH)) fs.rmSync(TEST_DB_PATH, { force: true });
+  delete process.env.OPENCLAW_MEMORY_DIR;
+  if (fs.existsSync(MEMORY_ROOT)) fs.rmSync(MEMORY_ROOT, { recursive: true, force: true });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
