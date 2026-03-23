@@ -114,7 +114,8 @@ mock.module('@whiskeysockets/baileys', () => ({
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'attachments.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
 const MEMORY_ROOT = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-attachments-memories-'));
-const createdTempDirs = new Set<string>([MEMORY_ROOT]);
+const INBOUND_ROOT = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-attachments-inbound-'));
+const createdTempDirs = new Set<string>([MEMORY_ROOT, INBOUND_ROOT]);
 
 function createTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(tmpdir(), prefix));
@@ -206,6 +207,10 @@ beforeAll(async () => {
   agentService = await import('../src/lib/services/agent-service');
   inputManager = await import('../src/lib/services/input-manager');
 
+  // Set inbound root to temp dir for tests
+  const { setInboundRootForTests } = await import('../src/lib/services/inbound-file-service');
+  setInboundRootForTests(INBOUND_ROOT);
+
   await resetDb();
 });
 
@@ -232,6 +237,11 @@ afterAll(async () => {
   if (fs.existsSync(TEST_DB_PATH)) fs.rmSync(TEST_DB_PATH, { force: true });
   delete process.env.OPENCLAW_MEMORY_DIR;
   delete process.env.TELEGRAM_BOT_TOKEN;
+
+  // Reset inbound root override
+  const { setInboundRootForTests } = await import('../src/lib/services/inbound-file-service');
+  setInboundRootForTests(null);
+
   // Clean up all created temp dirs
   for (const dir of createdTempDirs) {
     if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });

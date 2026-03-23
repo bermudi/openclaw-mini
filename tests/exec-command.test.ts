@@ -3,6 +3,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
+import { tmpdir } from 'os';
 import {
   parseCommand,
   getBinaryBasename,
@@ -10,22 +11,17 @@ import {
   capCombinedOutput,
 } from '../src/lib/utils/exec-helpers';
 
-const TEST_SANDBOX_ROOT = path.join(process.cwd(), 'data', 'sandbox');
 const TEST_AGENT_ID = 'exec-test-agent';
-
-function cleanTestSandbox(): void {
-  const testDir = path.join(TEST_SANDBOX_ROOT, TEST_AGENT_ID);
-  if (fs.existsSync(testDir)) {
-    fs.rmSync(testDir, { recursive: true, force: true });
-  }
-}
+let TEST_SANDBOX_ROOT: string;
 
 beforeEach(() => {
-  cleanTestSandbox();
+  TEST_SANDBOX_ROOT = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-exec-'));
 });
 
 afterEach(() => {
-  cleanTestSandbox();
+  if (TEST_SANDBOX_ROOT && fs.existsSync(TEST_SANDBOX_ROOT)) {
+    fs.rmSync(TEST_SANDBOX_ROOT, { recursive: true, force: true });
+  }
 });
 
 describe('parseCommand', () => {
@@ -305,6 +301,16 @@ describe('capCombinedOutput', () => {
 });
 
 describe('sandbox integration', () => {
+  beforeEach(async () => {
+    const { setSandboxRootForTests } = await import('../src/lib/services/sandbox-service');
+    setSandboxRootForTests(TEST_SANDBOX_ROOT);
+  });
+
+  afterEach(async () => {
+    const { setSandboxRootForTests } = await import('../src/lib/services/sandbox-service');
+    setSandboxRootForTests(null);
+  });
+
   it('sandbox directory is created for agent', async () => {
     const { getSandboxDir } = await import('../src/lib/services/sandbox-service');
     const sandboxDir = getSandboxDir(TEST_AGENT_ID);

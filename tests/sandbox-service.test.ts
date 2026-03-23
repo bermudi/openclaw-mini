@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
+import { tmpdir } from 'os';
 import {
   getSandboxRoot,
   getSandboxDir,
@@ -8,25 +9,29 @@ import {
   getSandboxOutputDir,
   resolveSandboxPath,
   validateSandboxPath,
+  setSandboxRootForTests,
 } from '@/lib/services/sandbox-service';
 
-const TEST_SANDBOX_ROOT = path.join(process.cwd(), 'data', 'sandbox');
 const TEST_AGENT_ID = 'test-agent-123';
-describe('sandbox-service', () => {
-  function cleanTestDir(): void {
-    const testDir = path.join(TEST_SANDBOX_ROOT, TEST_AGENT_ID);
-    if (fs.existsSync(testDir)) {
-      fs.rmSync(testDir, { recursive: true, force: true });
-    }
-  }
+let TEST_SANDBOX_ROOT: string;
 
-  beforeEach(() => { cleanTestDir(); });
-  afterEach(() => { cleanTestDir(); });
+describe('sandbox-service', () => {
+  beforeEach(() => {
+    TEST_SANDBOX_ROOT = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-sandbox-'));
+    setSandboxRootForTests(TEST_SANDBOX_ROOT);
+  });
+
+  afterEach(() => {
+    setSandboxRootForTests(null);
+    if (TEST_SANDBOX_ROOT && fs.existsSync(TEST_SANDBOX_ROOT)) {
+      fs.rmSync(TEST_SANDBOX_ROOT, { recursive: true, force: true });
+    }
+  });
 
   describe('getSandboxRoot', () => {
     it('returns the sandbox root path', () => {
       const root = getSandboxRoot();
-      expect(root).toBe(path.join(process.cwd(), 'data', 'sandbox'));
+      expect(root).toBe(TEST_SANDBOX_ROOT);
     });
   });
 

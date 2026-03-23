@@ -4,13 +4,15 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-const SANDBOX_ROOT = 'data/sandbox';
+const DEFAULT_SANDBOX_ROOT = 'data/sandbox';
+let _sandboxRootOverride: string | null = null;
 
 /**
  * Get the sandbox root directory (data/sandbox/)
  */
 export function getSandboxRoot(): string {
-  return path.join(process.cwd(), SANDBOX_ROOT);
+  const root = _sandboxRootOverride ?? DEFAULT_SANDBOX_ROOT;
+  return path.isAbsolute(root) ? root : path.join(process.cwd(), root);
 }
 
 /**
@@ -94,4 +96,12 @@ export function resolveSandboxPath(agentId: string, relativePath: string): strin
   validateSandboxPath(resolvedPath, getSandboxRoot());
   
   return resolvedPath;
+}
+
+/**
+ * Override the sandbox root for testing purposes.
+ * Pass null to reset to default.
+ */
+export function setSandboxRootForTests(root: string | null): void {
+  _sandboxRootOverride = root;
 }
