@@ -33,7 +33,6 @@ describeIntegration('Gemini provider integration', () => {
     const result = await generateText({
       model,
       prompt: 'Say "Hello from Gemini" and nothing else.',
-      maxOutputTokens: 20,
     });
 
     expect(result.text.toLowerCase()).toContain('hello');
@@ -56,7 +55,6 @@ describeIntegration('Gemini provider integration', () => {
     const result = await generateText({
       model,
       prompt: 'Respond with just the word "test".',
-      maxOutputTokens: 10,
     });
 
     expect(result.text.toLowerCase()).toContain('test');
