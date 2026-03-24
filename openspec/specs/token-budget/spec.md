@@ -22,22 +22,25 @@ The prompt budget SHALL be allocated in the following priority order:
 1. **System prompt** (workspace bootstrap context) — always included in full
 2. **Task-specific content** (the message/event payload section) — always included in full
 3. **Session context** — filled up to the remaining budget after system prompt and task content
-4. **Memory snapshot** — gets whatever budget remains after session context
+4. **Pinned memory section** — filled from the remaining budget after session context using always-preferred memory entries
+5. **Recalled memory section** — filled from any budget remaining after pinned memory using dynamically recalled memories
 
-#### Scenario: Small context fits entirely
-- **GIVEN** the system prompt uses 2,000 tokens, task content uses 500 tokens, session context uses 1,000 tokens, and memory snapshot uses 800 tokens
-- **WHEN** the budget is 102,400 tokens
-- **THEN** all four sections SHALL be included in full without truncation
+If pinned or recalled memories do not fully fit, the system SHALL omit lower-priority memory entries first and SHALL report the omitted count in the assembled memory section metadata.
 
-#### Scenario: Large session gets truncated to budget
-- **GIVEN** the system prompt uses 3,000 tokens, task content uses 500 tokens, and session context would use 100,000 tokens
-- **WHEN** the budget is 102,400 tokens
-- **THEN** the session context SHALL be truncated to fit within 98,900 tokens (budget minus system prompt and task content), and memory snapshot SHALL be excluded
+#### Scenario: Pinned and recalled memory both fit within remaining budget
+- **GIVEN** the system prompt, task content, and session context leave sufficient room for pinned memory and recalled memory
+- **WHEN** the prompt is assembled
+- **THEN** both memory sections SHALL be included in full without omissions
 
-#### Scenario: Memory excluded when session fills budget
+#### Scenario: Recalled memory omitted after pinned memory consumes remaining memory budget
+- **GIVEN** the system prompt, task content, and session context leave enough room for pinned memory but not enough room for all recalled memories
+- **WHEN** the prompt is assembled
+- **THEN** the pinned memory section SHALL be included first and the recalled memory section SHALL omit lower-priority entries until the remaining budget is respected
+
+#### Scenario: Memory sections omitted when session exhausts remaining budget
 - **GIVEN** session context consumes all remaining budget after system prompt and task content
 - **WHEN** the prompt is assembled
-- **THEN** the memory snapshot section SHALL be omitted entirely from the prompt
+- **THEN** both pinned memory and recalled memory sections SHALL be omitted
 
 ### Requirement: Respects model context limit
 The system SHALL maintain a registry of known model context window sizes. For unrecognized models, the system SHALL default to a conservative context window size (default: 8,192 tokens). The `model-provider.ts` module SHALL expose a function to retrieve the context window size for the active model.

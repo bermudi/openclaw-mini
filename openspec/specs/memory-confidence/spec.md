@@ -26,17 +26,17 @@ Every memory entry SHALL have a `lastReinforcedAt` timestamp (nullable DateTime)
 - **THEN** `lastReinforcedAt` SHALL be reset to the current time
 
 ### Requirement: Confidence-aware context loading
-When loading agent context via `loadAgentContext()`, memories SHALL be sorted by confidence descending. If the token budget spec is active and context must be truncated, memories with the lowest confidence SHALL be dropped first.
+The memory recall pipeline SHALL use memory confidence as a recall policy control during automatic prompt assembly and explicit memory retrieval. Automatic prompt recall SHALL exclude memories below a configurable recall threshold and SHALL prioritize higher-confidence candidates after retrieval fusion and before token-budget filtering. Explicit memory search and exact retrieval SHALL return confidence metadata for every result and MAY expose lower-confidence memories without automatically injecting them into prompt context.
 
-#### Scenario: High-confidence memories prioritized
-- **GIVEN** an agent has 5 memories with confidences [1.0, 0.9, 0.7, 0.5, 0.2]
-- **WHEN** `loadAgentContext()` is called
-- **THEN** memories SHALL be ordered with confidence 1.0 first and 0.2 last
+#### Scenario: Low-confidence memories excluded from automatic recall
+- **GIVEN** an agent has memories with confidences 0.92, 0.74, and 0.18 and the automatic recall threshold is 0.40
+- **WHEN** automatic prompt recall runs
+- **THEN** the memory with confidence 0.18 SHALL be excluded from the recall candidate set before prompt injection
 
-#### Scenario: Low-confidence memories dropped under budget pressure
-- **GIVEN** an agent's combined memory exceeds the available token budget
-- **WHEN** context is assembled
-- **THEN** the lowest-confidence memories SHALL be excluded first
+#### Scenario: Explicit search exposes low-confidence memory with metadata
+- **GIVEN** an agent has a low-confidence memory that matches a `memory_search` query
+- **WHEN** the explicit search is executed
+- **THEN** the result SHALL include the matching memory with its confidence metadata and SHALL NOT cause the memory to be auto-injected into prompt context
 
 ### Requirement: Confidence decay
 A scheduled decay job SHALL reduce the confidence of memories that have not been reinforced recently. The decay formula SHALL be: `newConfidence = confidence × (0.5 ^ (daysSinceReinforced / halfLifeDays))`. The default half-life SHALL be 14 days, configurable via `OPENCLAW_MEMORY_DECAY_HALF_LIFE_DAYS`.
