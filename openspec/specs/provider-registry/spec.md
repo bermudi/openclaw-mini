@@ -6,13 +6,15 @@ TBD - created by archiving change runtime-provider-registry. Update Purpose afte
 ### Requirement: Provider registry initialization
 The system SHALL initialize a provider registry at startup by loading provider definitions from the runtime config.
 
-#### Scenario: Registry loads providers from config
-- **WHEN** the system starts with a config file containing providers
-- **THEN** the provider registry SHALL contain all defined providers
+#### Scenario: Registry loads providers at server startup
+- **WHEN** the server starts via instrumentation
+- **THEN** the provider registry SHALL be initialized before any requests are handled
+- **AND** the provider registry SHALL contain all defined providers
 
-#### Scenario: Registry is empty when no providers defined
-- **WHEN** the config contains no providers section
-- **THEN** the provider registry SHALL be empty
+#### Scenario: Registry initialization failure exits
+- **WHEN** provider registry initialization fails (e.g., invalid provider config)
+- **THEN** the system SHALL exit with code 1 at startup
+- **AND** the system SHALL print the initialization error
 
 ### Requirement: Provider lookup
 The system SHALL allow looking up a provider by its ID.
@@ -49,6 +51,7 @@ The system SHALL validate provider definitions when registering them.
 #### Scenario: Invalid apiType rejected
 - **WHEN** a provider with unknown `apiType` is registered
 - **THEN** registration SHALL fail with an error
+- **AND** the system SHALL exit at startup if this occurs during initialization
 
 ### Requirement: SDK adapter selection
 The system SHALL select the correct SDK adapter based on `apiType`.

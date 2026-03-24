@@ -43,9 +43,15 @@ The `runtime` section, if present, SHALL be validated against a Zod schema with 
 ### Requirement: Config validation
 The system SHALL validate config against a Zod schema.
 
-#### Scenario: Invalid config rejected
+#### Scenario: Invalid config rejected at startup
 - **WHEN** config file contains invalid structure
-- **THEN** validation SHALL fail and system SHALL use previous config (or env vars)
+- **THEN** validation SHALL fail
+- **AND** the system SHALL exit with code 1 at startup
+- **AND** the system SHALL print validation errors with guidance
+
+#### Scenario: Config validation runs at server startup
+- **WHEN** the server starts
+- **THEN** config validation SHALL run before any requests are handled
 
 ### Requirement: Agent config fields
 The `agent` section SHALL contain `provider`, `model`, and optionally `fallbackProvider` and `fallbackModel`.
