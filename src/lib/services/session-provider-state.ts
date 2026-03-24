@@ -1,7 +1,7 @@
 // OpenClaw Agent Runtime - Session Provider State
 // Per-session active provider/model state (ephemeral, in-memory)
 
-import { ensureProviderRegistryInitialized, providerRegistry } from './provider-registry';
+import { providerRegistry } from './provider-registry';
 
 export interface ActiveProviderState {
   activeProvider: string;
@@ -19,7 +19,7 @@ class SessionProviderStateService {
     const existing = this.sessions.get(sessionId);
     if (existing) return existing;
 
-    const { config } = ensureProviderRegistryInitialized();
+    const { config } = providerRegistry.getState();
     const defaults: ActiveProviderState = {
       activeProvider: config.agent.provider,
       activeModel: config.agent.model,
@@ -29,7 +29,6 @@ class SessionProviderStateService {
   }
 
   switchProvider(sessionId: string, providerName: string): SwitchProviderResult {
-    ensureProviderRegistryInitialized();
     const definition = providerRegistry.get(providerName);
     const available = providerRegistry.list().map(p => p.id);
 
@@ -52,7 +51,6 @@ class SessionProviderStateService {
   }
 
   listProviders(): string[] {
-    ensureProviderRegistryInitialized();
     return providerRegistry.list().map(p => p.id);
   }
 

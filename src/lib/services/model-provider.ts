@@ -1,7 +1,7 @@
 import type { LanguageModel } from 'ai';
 import { loadCredentialRef } from '@/lib/credentials';
 import { modelCatalog } from './model-catalog';
-import { ensureProviderRegistryInitialized, providerRegistry } from './provider-registry';
+import { providerRegistry } from './provider-registry';
 import { getRuntimeConfig } from '@/lib/config/runtime';
 
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503]);
@@ -93,7 +93,7 @@ function getErrorMessage(error: unknown): string {
 }
 
 function getRuntimeState() {
-  return ensureProviderRegistryInitialized();
+  return providerRegistry.getState();
 }
 
 function resolveFallbackModelConfig(config: ProviderConfig): ProviderConfig | undefined {

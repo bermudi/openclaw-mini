@@ -114,8 +114,9 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();
+  initializeProviderRegistry();
   sessionProviderState.resetForTests();
   lastModelOverrides = {};
   await resetDb();

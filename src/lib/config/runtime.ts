@@ -1,4 +1,4 @@
-import { ensureProviderRegistryInitialized } from '@/lib/services/provider-registry';
+import { providerRegistry } from '@/lib/services/provider-registry';
 import type { PrismaLogLevel } from '@/lib/config/schema';
 
 export interface RuntimeBehaviorConfig {
@@ -44,8 +44,51 @@ function warnDeprecatedEnvVar(envVar: string, replacement: string): void {
   console.warn(`[runtime-config] ${envVar} env var is deprecated, use ${replacement} in config`);
 }
 
+function getDefaults(): RuntimeBehaviorConfig {
+  return {
+    safety: {
+      subagentTimeout: 300,
+      maxSpawnDepth: 3,
+      maxIterations: 5,
+      maxDeliveryRetries: 5,
+    },
+    retention: {
+      tasks: 7,
+      auditLogs: 90,
+    },
+    logging: {
+      prisma: ['error', 'warn'],
+    },
+    performance: {
+      pollInterval: 5000,
+      heartbeatInterval: 60000,
+      deliveryBatchSize: 10,
+      contextWindow: 128000,
+      compactionThreshold: 0.5,
+    },
+    exec: {
+      enabled: false,
+      allowlist: [],
+      maxTimeout: 30,
+      maxOutputSize: 10000,
+    },
+  };
+}
+
 export function getRuntimeConfig(): RuntimeBehaviorConfig {
-  const { config } = ensureProviderRegistryInitialized();
+  // Handle uninitialized registry - return defaults
+  let state: ReturnType<typeof providerRegistry.getState> | null = null;
+  try {
+    state = providerRegistry.getState();
+  } catch {
+    // Registry not initialized yet
+  }
+  
+  if (!state) {
+    return getDefaults();
+  }
+  
+  const { config } = state;
   const runtime = config.runtime;
 
   if (process.env.OPENCLAW_MAX_SPAWN_DEPTH) {
@@ -71,32 +114,34 @@ export function getRuntimeConfig(): RuntimeBehaviorConfig {
     : Number.NaN;
   const envCompactionThreshold = Number.isFinite(rawThreshold) ? rawThreshold : undefined;
 
+  const defaults = getDefaults();
+  
   return {
     safety: {
-      subagentTimeout: runtime?.safety?.subagentTimeout ?? envSubagentTimeout ?? 300,
-      maxSpawnDepth: runtime?.safety?.maxSpawnDepth ?? envMaxSpawnDepth ?? 3,
-      maxIterations: runtime?.safety?.maxIterations ?? 5,
-      maxDeliveryRetries: runtime?.safety?.maxDeliveryRetries ?? 5,
+      subagentTimeout: runtime?.safety?.subagentTimeout ?? envSubagentTimeout ?? defaults.safety.subagentTimeout,
+      maxSpawnDepth: runtime?.safety?.maxSpawnDepth ?? envMaxSpawnDepth ?? defaults.safety.maxSpawnDepth,
+      maxIterations: runtime?.safety?.maxIterations ?? defaults.safety.maxIterations,
+      maxDeliveryRetries: runtime?.safety?.maxDeliveryRetries ?? defaults.safety.maxDeliveryRetries,
     },
     retention: {
-      tasks: runtime?.retention?.tasks ?? 7,
-      auditLogs: runtime?.retention?.auditLogs ?? 90,
+      tasks: runtime?.retention?.tasks ?? defaults.retention.tasks,
+      auditLogs: runtime?.retention?.auditLogs ?? defaults.retention.auditLogs,
     },
     logging: {
-      prisma: runtime?.logging?.prisma ?? ['error', 'warn'],
+      prisma: runtime?.logging?.prisma ?? defaults.logging.prisma,
     },
     performance: {
-      pollInterval: runtime?.performance?.pollInterval ?? 5000,
-      heartbeatInterval: runtime?.performance?.heartbeatInterval ?? 60000,
-      deliveryBatchSize: runtime?.performance?.deliveryBatchSize ?? 10,
-      contextWindow: runtime?.performance?.contextWindow ?? 128000,
-      compactionThreshold: runtime?.performance?.compactionThreshold ?? envCompactionThreshold ?? 0.5,
+      pollInterval: runtime?.performance?.pollInterval ?? defaults.performance.pollInterval,
+      heartbeatInterval: runtime?.performance?.heartbeatInterval ?? defaults.performance.heartbeatInterval,
+      deliveryBatchSize: runtime?.performance?.deliveryBatchSize ?? defaults.performance.deliveryBatchSize,
+      contextWindow: runtime?.performance?.contextWindow ?? defaults.performance.contextWindow,
+      compactionThreshold: runtime?.performance?.compactionThreshold ?? envCompactionThreshold ?? defaults.performance.compactionThreshold,
     },
     exec: {
-      enabled: runtime?.exec?.enabled ?? false,
-      allowlist: runtime?.exec?.allowlist ?? [],
-      maxTimeout: runtime?.exec?.maxTimeout ?? 30,
-      maxOutputSize: runtime?.exec?.maxOutputSize ?? 10000,
+      enabled: runtime?.exec?.enabled ?? defaults.exec.enabled,
+      allowlist: runtime?.exec?.allowlist ?? defaults.exec.allowlist,
+      maxTimeout: runtime?.exec?.maxTimeout ?? defaults.exec.maxTimeout,
+      maxOutputSize: runtime?.exec?.maxOutputSize ?? defaults.exec.maxOutputSize,
     },
   };
 }

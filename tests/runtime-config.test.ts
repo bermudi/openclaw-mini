@@ -168,7 +168,9 @@ describe('getRuntimeConfig() defaults', () => {
 
   test('returns all default values when no runtime section is configured', async () => {
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      providerRegistry: {
+        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -206,10 +208,12 @@ describe('getRuntimeConfig() defaults', () => {
     };
 
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({
-        config: makeMinimalConfig(runtimeSection),
-        configPath: '/test',
-      }),
+      providerRegistry: {
+        getState: () => ({
+          config: makeMinimalConfig(runtimeSection),
+          configPath: '/test',
+        }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -234,10 +238,12 @@ describe('getRuntimeConfig() defaults', () => {
 
   test('fills in defaults for missing nested sections', async () => {
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({
-        config: makeMinimalConfig({ safety: { subagentTimeout: 60 } }),
-        configPath: '/test',
-      }),
+      providerRegistry: {
+        getState: () => ({
+          config: makeMinimalConfig({ safety: { subagentTimeout: 60 } }),
+          configPath: '/test',
+        }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -260,7 +266,9 @@ describe('getRuntimeConfig() defaults', () => {
 describe('getRuntimeConfig() deprecation warnings', () => {
   test('emits deprecation warning for OPENCLAW_MAX_SPAWN_DEPTH', async () => {
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      providerRegistry: {
+        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -281,7 +289,9 @@ describe('getRuntimeConfig() deprecation warnings', () => {
 
   test('uses OPENCLAW_MAX_SPAWN_DEPTH value as fallback when not in config', async () => {
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      providerRegistry: {
+        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -296,7 +306,9 @@ describe('getRuntimeConfig() deprecation warnings', () => {
 
   test('emits deprecation warning for OPENCLAW_SUBAGENT_TIMEOUT', async () => {
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      providerRegistry: {
+        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -317,7 +329,9 @@ describe('getRuntimeConfig() deprecation warnings', () => {
 
   test('uses OPENCLAW_SUBAGENT_TIMEOUT value as fallback when not in config', async () => {
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      providerRegistry: {
+        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -332,7 +346,9 @@ describe('getRuntimeConfig() deprecation warnings', () => {
 
   test('emits deprecation warning for OPENCLAW_SESSION_TOKEN_THRESHOLD', async () => {
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      providerRegistry: {
+        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -353,7 +369,9 @@ describe('getRuntimeConfig() deprecation warnings', () => {
 
   test('uses OPENCLAW_SESSION_TOKEN_THRESHOLD as fallback when not in config', async () => {
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      providerRegistry: {
+        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -368,10 +386,12 @@ describe('getRuntimeConfig() deprecation warnings', () => {
 
   test('config file value takes precedence over env var', async () => {
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({
-        config: makeMinimalConfig({ safety: { subagentTimeout: 120 } }),
-        configPath: '/test',
-      }),
+      providerRegistry: {
+        getState: () => ({
+          config: makeMinimalConfig({ safety: { subagentTimeout: 120 } }),
+          configPath: '/test',
+        }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -386,7 +406,9 @@ describe('getRuntimeConfig() deprecation warnings', () => {
 
   test('deprecation warning is emitted only once per env var', async () => {
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      providerRegistry: {
+        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -529,7 +551,9 @@ describe('runtimeSectionSchema exec section', () => {
 describe('getRuntimeConfig() exec defaults', () => {
   test('returns default exec values when no exec section is configured', async () => {
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      providerRegistry: {
+        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -555,10 +579,12 @@ describe('getRuntimeConfig() exec defaults', () => {
     };
 
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({
-        config: makeMinimalConfig(runtimeSection),
-        configPath: '/test',
-      }),
+      providerRegistry: {
+        getState: () => ({
+          config: makeMinimalConfig(runtimeSection),
+          configPath: '/test',
+        }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -579,10 +605,12 @@ describe('getRuntimeConfig() exec defaults', () => {
     };
 
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({
-        config: makeMinimalConfig(runtimeSection),
-        configPath: '/test',
-      }),
+      providerRegistry: {
+        getState: () => ({
+          config: makeMinimalConfig(runtimeSection),
+          configPath: '/test',
+        }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 
@@ -603,10 +631,12 @@ describe('getRuntimeConfig() exec defaults', () => {
     };
 
     mock.module('../src/lib/services/provider-registry', () => ({
-      ensureProviderRegistryInitialized: () => ({
-        config: makeMinimalConfig(runtimeSection),
-        configPath: '/test',
-      }),
+      providerRegistry: {
+        getState: () => ({
+          config: makeMinimalConfig(runtimeSection),
+          configPath: '/test',
+        }),
+      },
       resetProviderRegistryForTests: () => {},
     }));
 

@@ -1,14 +1,16 @@
 import { PrismaClient } from '@prisma/client'
-import { getPrismaLogConfig } from '@/lib/config/runtime'
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
 }
 
+// Default log config for module load time - runtime config not available yet
+const DEFAULT_PRISMA_LOG: ('error' | 'warn')[] = ['error', 'warn']
+
 export const db =
   globalForPrisma.prisma ??
   new PrismaClient({
-    log: getPrismaLogConfig(),
+    log: DEFAULT_PRISMA_LOG,
   })
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = db

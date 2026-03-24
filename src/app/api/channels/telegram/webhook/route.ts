@@ -1,13 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { Bot } from 'grammy';
-import { initializeAdapters } from '@/lib/adapters';
 import { inputManager } from '@/lib/services/input-manager';
 import { downloadTelegramFile } from '@/lib/adapters/telegram-adapter';
 import { inboundFileService } from '@/lib/services/inbound-file-service';
 import type { DeliveryTarget, Attachment, VisionInput } from '@/lib/types';
-
-initializeAdapters();
 
 const TelegramPhotoSizeSchema = z.object({
   file_id: z.string(),
