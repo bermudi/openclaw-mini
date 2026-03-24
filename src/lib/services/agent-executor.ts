@@ -21,6 +21,7 @@ import { countTokens } from '@/lib/utils/token-counter';
 import { eventBus } from './event-bus';
 import { supportsVision } from './model-catalog';
 import { handleVisionInput, buildFallbackDeliveryTarget as buildFallbackDeliveryTargetUtil, type VisionHandlerContext } from './vision-handler';
+import { mcpService } from './mcp-service';
 
 export interface ExecutionResult {
   success: boolean;
@@ -629,8 +630,9 @@ class AgentExecutorService {
     const workspaceContext = loadBootstrapContext();
     const heartbeatContext = task.type === 'heartbeat' ? loadHeartbeatContext() : '';
     const runtimeSection = `## Runtime Context\nCurrent task type: ${task.type}\nYour Agent ID: ${task.agentId}`;
+    const mcpDirectory = mcpService.buildMcpDirectory();
 
-    return [workspaceContext, heartbeatContext, skillSection, runtimeSection]
+    return [workspaceContext, heartbeatContext, mcpDirectory, skillSection, runtimeSection]
       .filter(section => section.trim().length > 0)
       .join('\n\n');
   }

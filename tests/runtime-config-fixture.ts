@@ -18,6 +18,9 @@ interface RuntimeAgentConfig {
 interface RuntimeConfigFixtureData {
   providers: Record<string, RuntimeProviderConfig>;
   agent: RuntimeAgentConfig;
+  mcp?: {
+    servers: Record<string, Record<string, unknown>>;
+  };
 }
 
 export interface RuntimeConfigFixture {
@@ -61,6 +64,7 @@ function mergeRuntimeConfig(overrides: Partial<RuntimeConfigFixtureData> = {}): 
       ...DEFAULT_RUNTIME_CONFIG.agent,
       ...overrides.agent,
     },
+    ...(overrides.mcp ? { mcp: overrides.mcp } : {}),
   };
 }
 

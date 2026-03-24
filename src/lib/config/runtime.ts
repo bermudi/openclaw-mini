@@ -1,5 +1,5 @@
 import { providerRegistry } from '@/lib/services/provider-registry';
-import type { BrowserConfig, BrowserViewportConfig, PrismaLogLevel } from '@/lib/config/schema';
+import type { BrowserConfig, BrowserViewportConfig, McpServerConfig, PrismaLogLevel } from '@/lib/config/schema';
 
 export interface RuntimeBehaviorConfig {
   safety: {
@@ -189,6 +189,17 @@ export function getBrowserConfig(config?: BrowserConfig): ResolvedBrowserConfig 
   }
 
   return resolveBrowserConfig(state.config.browser);
+}
+
+export function getMcpServers(): Record<string, McpServerConfig> {
+  let state: ReturnType<typeof providerRegistry.getState> | null = null;
+  try {
+    state = providerRegistry.getState();
+  } catch {
+    return {};
+  }
+
+  return state.config.mcp?.servers ?? {};
 }
 
 export function getPrismaLogConfig(): PrismaLogLevel[] {

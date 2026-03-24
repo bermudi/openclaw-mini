@@ -408,6 +408,10 @@ test('sub-agent overrides are validated and surfaced as skill diagnostics', asyn
 });
 
 test('sub-agent config resolution merges base runtime and overrides deterministically', async () => {
+  const { initializeProviderRegistry, resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
+  initializeProviderRegistry();
+
   const { resolveSubAgentConfig } = await import('../src/lib/subagent-config');
 
   const resolved = resolveSubAgentConfig({
@@ -437,6 +441,10 @@ test('sub-agent config resolution merges base runtime and overrides deterministi
 
 test('model provider resolves credentialRef from environment at instantiation time', async () => {
   process.env.OPENCLAW_CREDENTIAL_PROVIDERS_OPENROUTER_PLANNER = 'planner-secret';
+
+  const { initializeProviderRegistry, resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
+  initializeProviderRegistry();
 
   const { resolveModelConfig } = await import('../src/lib/services/model-provider');
   const resolved = resolveModelConfig({
@@ -742,4 +750,147 @@ test('HEARTBEAT.md is injected for heartbeat tasks and excluded for message task
   }
 
   expect(lastSystemPrompt).not.toContain('## Heartbeat Checklist');
+});
+
+test('system prompt includes MCP directory when servers are configured and excludes it when absent', async () => {
+  if (!runtimeConfigFixture) {
+    throw new Error('Runtime config fixture not initialized');
+  }
+
+  const { writeRuntimeConfig } = await import('./runtime-config-fixture');
+  writeRuntimeConfig(runtimeConfigFixture.configPath, {
+    mcp: {
+      servers: {
+        github: {
+          command: 'node',
+          args: ['github-server.js'],
+          description: 'GitHub API operations',
+        },
+      },
+    },
+  });
+
+  const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
+  initializeProviderRegistry();
+
+  const agent = await agentService.createAgent({ name: 'MCP Directory Agent' });
+  const taskWithMcp = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    priority: 3,
+    payload: {
+      channel: 'telegram',
+      channelKey: 'chat-mcp-1',
+      sender: 'tester',
+      content: 'What integrations do you have?',
+    },
+  });
+
+  const withMcpResult = await agentExecutor.executeTask(taskWithMcp.id);
+  if (!withMcpResult.success) {
+    throw new Error(`Executor failed: ${withMcpResult.error ?? 'unknown error'}`);
+  }
+
+  expect(lastSystemPrompt).toContain('Available MCP servers (use mcp_list to discover tools):');
+  expect(lastSystemPrompt).toContain('- github - GitHub API operations');
+
+  writeRuntimeConfig(runtimeConfigFixture.configPath, {});
+  resetProviderRegistryForTests();
+  initializeProviderRegistry();
+
+  const taskWithoutMcp = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    priority: 3,
+    payload: {
+      channel: 'telegram',
+      channelKey: 'chat-mcp-2',
+      sender: 'tester',
+      content: 'What integrations do you have now?',
+    },
+  });
+
+  const withoutMcpResult = await agentExecutor.executeTask(taskWithoutMcp.id);
+  if (!withoutMcpResult.success) {
+    throw new Error(`Executor failed: ${withoutMcpResult.error ?? 'unknown error'}`);
+  }
+
+  expect(lastSystemPrompt).not.toContain('Available MCP servers (use mcp_list to discover tools):');
+});
+
+test('mcp_list and mcp_call tools use MCP service responses', async () => {
+  const { McpService } = await import('../src/lib/services/mcp-service');
+  const listServersSpy = mock(() => [{ name: 'github', description: 'GitHub API operations' }]);
+  const listToolsSpy = mock(async () => ['create_issue: Create a new issue (required: title)']);
+  const callToolSpy = mock(async (_server: string, _tool: string, args: Record<string, unknown>) => ({ echoed: args }));
+
+  const originalListServers = McpService.prototype.listServers;
+  const originalListTools = McpService.prototype.listTools;
+  const originalCallTool = McpService.prototype.callTool;
+
+  McpService.prototype.listServers = listServersSpy;
+  McpService.prototype.listTools = listToolsSpy;
+  McpService.prototype.callTool = callToolSpy;
+
+  try {
+    const listTool = toolsModule.getTool('mcp_list');
+    const callTool = toolsModule.getTool('mcp_call');
+    if (!listTool?.execute || !callTool?.execute) {
+      throw new Error('Expected MCP tools to be registered');
+    }
+
+    const serverListResult = await listTool.execute({}, { toolCallId: 'mcp-list-servers', messages: [] });
+    expect(serverListResult).toMatchObject({
+      success: true,
+      data: { servers: [{ name: 'github', description: 'GitHub API operations' }] },
+    });
+
+    const toolListResult = await listTool.execute({ server: 'github' }, { toolCallId: 'mcp-list-tools', messages: [] });
+    expect(toolListResult).toMatchObject({
+      success: true,
+      data: { server: 'github', tools: ['create_issue: Create a new issue (required: title)'] },
+    });
+
+    const callResult = await callTool.execute(
+      { server: 'github', tool: 'create_issue', arguments: { title: 'Bug' } },
+      { toolCallId: 'mcp-call', messages: [] },
+    );
+    expect(callResult).toMatchObject({
+      success: true,
+      data: {
+        server: 'github',
+        tool: 'create_issue',
+        result: { echoed: { title: 'Bug' } },
+      },
+    });
+
+    callToolSpy.mockImplementationOnce(async () => {
+      throw new Error("MCP server 'missing' is not configured");
+    });
+    const missingServerResult = await callTool.execute(
+      { server: 'missing', tool: 'create_issue' },
+      { toolCallId: 'mcp-call-missing-server', messages: [] },
+    );
+    expect(missingServerResult).toEqual({
+      success: false,
+      error: "MCP server 'missing' is not configured",
+    });
+
+    callToolSpy.mockImplementationOnce(async () => {
+      throw new Error('Tool not found');
+    });
+    const missingToolResult = await callTool.execute(
+      { server: 'github', tool: 'missing_tool' },
+      { toolCallId: 'mcp-call-missing-tool', messages: [] },
+    );
+    expect(missingToolResult).toEqual({
+      success: false,
+      error: 'Tool not found',
+    });
+  } finally {
+    McpService.prototype.listServers = originalListServers;
+    McpService.prototype.listTools = originalListTools;
+    McpService.prototype.callTool = originalCallTool;
+  }
 });

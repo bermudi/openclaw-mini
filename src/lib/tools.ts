@@ -21,6 +21,7 @@ import { existsSync } from 'fs';
 import type { ChannelType } from '@/lib/types';
 import { SearchService, getSearchProvider } from '@/lib/services/search-service';
 import { browserService } from '@/lib/services/browser-service';
+import { mcpService } from '@/lib/services/mcp-service';
 
 function assertNever(value: never): never {
   throw new Error(`Unsupported browser action: ${String(value)}`);
@@ -762,6 +763,74 @@ registerTool(
         return {
           success: false,
           error: message,
+        };
+      }
+    },
+  }),
+  { riskLevel: 'medium' },
+);
+
+registerTool(
+  'mcp_list',
+  tool({
+    description: 'List configured MCP servers or discover tools on one MCP server.',
+    inputSchema: z.object({
+      server: z.string().optional().describe('Optional MCP server name. Omit to list configured servers.'),
+    }),
+    execute: async ({ server }): Promise<ToolResult> => {
+      try {
+        if (server) {
+          const tools = await mcpService.listTools(server);
+          return {
+            success: true,
+            data: {
+              server,
+              tools,
+            },
+          };
+        }
+
+        return {
+          success: true,
+          data: {
+            servers: mcpService.listServers(),
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to list MCP resources',
+        };
+      }
+    },
+  }),
+  { riskLevel: 'low' },
+);
+
+registerTool(
+  'mcp_call',
+  tool({
+    description: 'Call a tool on a configured MCP server.',
+    inputSchema: z.object({
+      server: z.string().min(1).describe('Configured MCP server name'),
+      tool: z.string().min(1).describe('Tool name to invoke on the MCP server'),
+      arguments: z.record(z.string(), z.unknown()).optional().describe('Arguments to pass to the MCP tool'),
+    }),
+    execute: async ({ server, tool: toolName, arguments: args }): Promise<ToolResult> => {
+      try {
+        const result = await mcpService.callTool(server, toolName, args ?? {});
+        return {
+          success: true,
+          data: {
+            server,
+            tool: toolName,
+            result,
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to call MCP tool',
         };
       }
     },

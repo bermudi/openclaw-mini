@@ -46,6 +46,27 @@ const browserConfigSchema = z.object({
   navigationTimeout: z.number().int().positive().optional(),
 });
 
+const mcpStringMapSchema = z.record(z.string().trim().min(1), z.string());
+
+const stdioMcpServerSchema = z.object({
+  command: z.string().trim().min(1),
+  args: z.array(z.string()).optional(),
+  env: mcpStringMapSchema.optional(),
+  description: z.string().trim().min(1).optional(),
+}).strict();
+
+const httpMcpServerSchema = z.object({
+  url: z.string().url(),
+  headers: mcpStringMapSchema.optional(),
+  description: z.string().trim().min(1).optional(),
+}).strict();
+
+export const mcpServerSchema = z.union([stdioMcpServerSchema, httpMcpServerSchema]);
+
+const mcpConfigSchema = z.object({
+  servers: z.record(z.string().trim().min(1), mcpServerSchema),
+}).strict();
+
 export const runtimeSectionSchema = z.object({
   safety: runtimeSafetySchema.optional(),
   retention: runtimeRetentionSchema.optional(),
@@ -94,6 +115,12 @@ export interface BrowserConfig {
   headless?: boolean;
   viewport?: BrowserViewportConfig;
   navigationTimeout?: number;
+}
+
+export type McpServerConfig = z.infer<typeof mcpServerSchema>;
+
+export interface McpConfig {
+  servers: Record<string, McpServerConfig>;
 }
 
 export interface SearchConfig {
@@ -168,6 +195,7 @@ export const runtimeConfigSchema = z.object({
   runtime: runtimeSectionSchema.optional(),
   browser: browserConfigSchema.optional(),
   search: searchConfigSchema.optional(),
+  mcp: mcpConfigSchema.optional(),
 }).strict().superRefine((config, context) => {
   if (!(config.agent.provider in config.providers)) {
     context.addIssue({
@@ -206,6 +234,7 @@ export interface RuntimeConfig {
   runtime?: RuntimeSectionConfig;
   browser?: BrowserConfig;
   search?: SearchConfig;
+  mcp?: McpConfig;
 }
 
 export function normalizeRuntimeConfig(input: z.infer<typeof runtimeConfigSchema>): RuntimeConfig {
@@ -230,5 +259,6 @@ export function normalizeRuntimeConfig(input: z.infer<typeof runtimeConfigSchema
     runtime: input.runtime,
     browser: input.browser,
     search: input.search,
+    mcp: input.mcp,
   };
 }

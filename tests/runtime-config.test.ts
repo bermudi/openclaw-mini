@@ -611,6 +611,148 @@ describe('runtimeConfigSchema browser section', () => {
   });
 });
 
+describe('runtimeConfigSchema mcp section', () => {
+  test('accepts stdio MCP server config', async () => {
+    const { runtimeConfigSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeConfigSchema.safeParse({
+      providers: {
+        openai: { apiType: 'openai-chat', apiKey: 'test-key' },
+      },
+      agent: { provider: 'openai', model: 'gpt-4.1-mini' },
+      mcp: {
+        servers: {
+          github: {
+            command: 'npx',
+            args: ['-y', '@modelcontextprotocol/server-github'],
+            env: { GITHUB_TOKEN: '$GITHUB_TOKEN' },
+            description: 'GitHub API operations',
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts HTTP MCP server config', async () => {
+    const { runtimeConfigSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeConfigSchema.safeParse({
+      providers: {
+        openai: { apiType: 'openai-chat', apiKey: 'test-key' },
+      },
+      agent: { provider: 'openai', model: 'gpt-4.1-mini' },
+      mcp: {
+        servers: {
+          api: {
+            url: 'http://localhost:3001/mcp',
+            headers: { Authorization: 'Bearer $TOKEN' },
+            description: 'Custom API server',
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  test('rejects MCP server with both command and url', async () => {
+    const { runtimeConfigSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeConfigSchema.safeParse({
+      providers: {
+        openai: { apiType: 'openai-chat', apiKey: 'test-key' },
+      },
+      agent: { provider: 'openai', model: 'gpt-4.1-mini' },
+      mcp: {
+        servers: {
+          invalid: {
+            command: 'npx',
+            url: 'http://localhost:3001/mcp',
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects MCP server with neither command nor url', async () => {
+    const { runtimeConfigSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeConfigSchema.safeParse({
+      providers: {
+        openai: { apiType: 'openai-chat', apiKey: 'test-key' },
+      },
+      agent: { provider: 'openai', model: 'gpt-4.1-mini' },
+      mcp: {
+        servers: {
+          invalid: {
+            description: 'broken',
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('accepts empty mcp.servers object', async () => {
+    const { runtimeConfigSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeConfigSchema.safeParse({
+      providers: {
+        openai: { apiType: 'openai-chat', apiKey: 'test-key' },
+      },
+      agent: { provider: 'openai', model: 'gpt-4.1-mini' },
+      mcp: { servers: {} },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts missing mcp section and getMcpServers returns empty record', async () => {
+    await setProviderRegistryState();
+
+    const { getMcpServers } = await import('../src/lib/config/runtime');
+
+    expect(getMcpServers()).toEqual({});
+  });
+
+  test('getMcpServers returns configured servers', async () => {
+    await setProviderRegistryState(makeMinimalConfig(undefined, {
+      mcp: {
+        servers: {
+          github: {
+            command: 'npx',
+            args: ['-y', '@modelcontextprotocol/server-github'],
+            description: 'GitHub API operations',
+          },
+          api: {
+            url: 'http://localhost:3001/mcp',
+            description: 'Custom API server',
+          },
+        },
+      },
+    }));
+
+    const { getMcpServers } = await import('../src/lib/config/runtime');
+
+    expect(getMcpServers()).toEqual({
+      github: {
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-github'],
+        description: 'GitHub API operations',
+      },
+      api: {
+        url: 'http://localhost:3001/mcp',
+        description: 'Custom API server',
+      },
+    });
+  });
+});
+
 describe('getRuntimeConfig() exec defaults', () => {
   test('returns default exec values when no exec section is configured', async () => {
     await setProviderRegistryState();
