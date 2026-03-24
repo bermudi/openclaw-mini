@@ -15,7 +15,7 @@ let lastStepCount = 0;
 type SpawnResult = {
   success?: boolean;
   error?: string;
-  data?: { response?: string };
+  data?: { response?: string; skill?: string; surfaces?: unknown[] };
 };
 
 type InputRouteResponse = {
@@ -483,7 +483,7 @@ test('spawn_subagent tool handles success, missing skill, and timeout', async ()
   }
 
   const successPromise = toolsModule.withSpawnSubagentContext(
-    { agentId: agent.id, parentTaskId: parentTask.id },
+    { agentId: agent.id, taskId: parentTask.id, taskType: 'message' },
     () => spawnTool.execute?.({ skill: 'helper', task: 'do the thing' }, { toolCallId: 'test', messages: [] }),
   );
 
@@ -495,19 +495,96 @@ test('spawn_subagent tool handles success, missing skill, and timeout', async ()
   expect((successResult?.data as { response?: string } | undefined)?.response).toBe('done');
 
   const missingResult = (await toolsModule.withSpawnSubagentContext(
-    { agentId: agent.id, parentTaskId: parentTask.id },
+    { agentId: agent.id, taskId: parentTask.id, taskType: 'message' },
     () => spawnTool.execute?.({ skill: 'unknown', task: 'fail' }, { toolCallId: 'test', messages: [] }),
   )) as SpawnResult | undefined;
   expect(missingResult?.success).toBe(false);
   expect(missingResult?.error).toContain('not found');
 
   const timeoutPromise = toolsModule.withSpawnSubagentContext(
-    { agentId: agent.id, parentTaskId: parentTask.id },
+    { agentId: agent.id, taskId: parentTask.id, taskType: 'message' },
     () => spawnTool.execute?.({ skill: 'helper', task: 'timeout', timeoutSeconds: 3 }, { toolCallId: 'test', messages: [] }),
   );
   const timeoutResult = (await timeoutPromise) as SpawnResult | undefined;
   expect(timeoutResult?.success).toBe(false);
   expect(timeoutResult?.error).toContain('timed out');
+});
+
+test('spawn_subagent bubbles child surfaces without auto-delivering them', async () => {
+  writeSkill(
+    'helper',
+    'name: helper\ndescription: Helper skill',
+    'Respond with a concise answer.',
+  );
+  skillService.clearSkillCache();
+
+  const agent = await agentService.createAgent({ name: 'Surface Parent Agent' });
+  const parentTask = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    priority: 3,
+    payload: { content: 'parent', channel: 'telegram', channelKey: 'parent-chat' },
+    source: 'test',
+  });
+
+  const spawnTool = toolsModule.getTool('spawn_subagent');
+  if (!spawnTool || !spawnTool.execute) {
+    throw new Error('spawn_subagent tool not registered');
+  }
+
+  const successPromise = toolsModule.withSpawnSubagentContext(
+    { agentId: agent.id, taskId: parentTask.id, taskType: 'message' },
+    () => spawnTool.execute?.({ skill: 'helper', task: 'surface this' }, { toolCallId: 'surface-test', messages: [] }),
+  );
+
+  const subTask = await waitForSubagentTask(parentTask.id);
+  await taskQueue.completeTask(subTask.id, {
+    response: 'done',
+    surfaces: [{ type: 'text', content: 'child surfaced text' }],
+  });
+
+  const successResult = (await successPromise) as SpawnResult | undefined;
+  expect(successResult?.success).toBe(true);
+  expect(successResult?.data?.response).toBe('done');
+  expect(successResult?.data?.surfaces).toEqual([{ type: 'text', content: 'child surfaced text' }]);
+
+  const deliveries = await db.outboundDelivery.findMany({ where: { taskId: parentTask.id } });
+  expect(deliveries).toHaveLength(0);
+});
+
+test('spawn_subagent omits surfaces when child result does not include them', async () => {
+  writeSkill(
+    'helper',
+    'name: helper\ndescription: Helper skill',
+    'Respond with a concise answer.',
+  );
+  skillService.clearSkillCache();
+
+  const agent = await agentService.createAgent({ name: 'Surface Parent Agent 2' });
+  const parentTask = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    priority: 3,
+    payload: { content: 'parent' },
+    source: 'test',
+  });
+
+  const spawnTool = toolsModule.getTool('spawn_subagent');
+  if (!spawnTool || !spawnTool.execute) {
+    throw new Error('spawn_subagent tool not registered');
+  }
+
+  const successPromise = toolsModule.withSpawnSubagentContext(
+    { agentId: agent.id, taskId: parentTask.id, taskType: 'message' },
+    () => spawnTool.execute?.({ skill: 'helper', task: 'normal child' }, { toolCallId: 'surface-test-2', messages: [] }),
+  );
+
+  const subTask = await waitForSubagentTask(parentTask.id);
+  await taskQueue.completeTask(subTask.id, { response: 'done' });
+
+  const successResult = (await successPromise) as SpawnResult | undefined;
+  expect(successResult?.success).toBe(true);
+  expect(successResult?.data).toEqual({ response: 'done', skill: 'helper' });
 });
 
 test('sub-agent executor applies overrides to prompt, toolset, iterations, and audit logs', async () => {
@@ -574,7 +651,8 @@ test('sub-agent policy rejects disallowed tool and skill invocations', async () 
     toolsModule.withSpawnSubagentContext(
       {
         agentId: 'agent-1',
-        parentTaskId: 'task-1',
+        taskId: 'task-1',
+        taskType: 'subagent',
         allowedTools: ['get_datetime'],
       },
       () => randomTool.execute?.({ type: 'number' }, { toolCallId: 'tool-1', messages: [] }),
@@ -585,7 +663,8 @@ test('sub-agent policy rejects disallowed tool and skill invocations', async () 
     toolsModule.withSpawnSubagentContext(
       {
         agentId: 'agent-1',
-        parentTaskId: 'task-1',
+        taskId: 'task-1',
+        taskType: 'subagent',
         allowedSkills: ['helper'],
       },
       () => spawnTool.execute?.({ skill: 'planner', task: 'do planner work' }, { toolCallId: 'tool-2', messages: [] }),

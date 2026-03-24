@@ -122,6 +122,23 @@ describe('web_search tool', () => {
   });
 });
 
+describe('surface directive tools', () => {
+  test('emit_to_chat returns a text surface directive', async () => {
+    const emitToChat = getTool('emit_to_chat');
+    if (!emitToChat?.execute) {
+      throw new Error('emit_to_chat tool is not registered');
+    }
+
+    const result = await emitToChat.execute({ text: 'Surface this directly' }, { toolCallId: 'emit', messages: [] });
+
+    expect(result).toEqual({
+      success: true,
+      data: { emitted: true },
+      surface: [{ type: 'text', content: 'Surface this directly' }],
+    });
+  });
+});
+
 describe('web_fetch tool', () => {
   test('fetches and strips HTML content', async () => {
     global.fetch = (async () => {

@@ -15,10 +15,9 @@ import { getOverrideFieldsApplied } from '@/lib/subagent-config';
 import { getRuntimeConfig } from '@/lib/config/runtime';
 import { getMemoryDir } from '@/lib/services/memory-service';
 import { getSandboxDir, resolveSandboxPath } from '@/lib/services/sandbox-service';
-import { enqueueFileDeliveryTx } from '@/lib/services/delivery-service';
 import { parseCommand, getBinaryBasename, capCombinedOutput } from '@/lib/utils/exec-helpers';
 import { existsSync } from 'fs';
-import type { ChannelType } from '@/lib/types';
+import type { DeliveryTarget, TaskType } from '@/lib/types';
 import { SearchService, getSearchProvider } from '@/lib/services/search-service';
 import { browserService } from '@/lib/services/browser-service';
 import { mcpService } from '@/lib/services/mcp-service';
@@ -34,8 +33,24 @@ export interface ToolParameter {
   required: boolean;
 }
 
-export function withSpawnSubagentContext<T>(context: SpawnSubagentContext, fn: () => Promise<T>): Promise<T> {
-  return spawnSubagentContext.run(
+export interface ToolExecutionContext {
+  agentId: string;
+  taskId: string;
+  taskType: TaskType;
+  sessionId?: string;
+  parentTaskId?: string;
+  deliveryTarget?: DeliveryTarget;
+  spawnDepth?: number;
+  allowedSkills?: string[];
+  allowedTools?: string[];
+  maxToolInvocations?: number;
+  toolInvocationCount?: { count: number };
+}
+
+export type SpawnSubagentContext = ToolExecutionContext;
+
+export function withToolExecutionContext<T>(context: ToolExecutionContext, fn: () => Promise<T>): Promise<T> {
+  return toolExecutionContext.run(
     {
       ...context,
       toolInvocationCount: context.toolInvocationCount ?? { count: 0 },
@@ -44,10 +59,65 @@ export function withSpawnSubagentContext<T>(context: SpawnSubagentContext, fn: (
   );
 }
 
+export function withSpawnSubagentContext<T>(context: SpawnSubagentContext, fn: () => Promise<T>): Promise<T> {
+  return withToolExecutionContext(context, fn);
+}
+
+export function getToolExecutionContext(): ToolExecutionContext | undefined {
+  return toolExecutionContext.getStore();
+}
+
+export interface SurfaceDirective {
+  type: 'text' | 'file';
+  content?: string;
+  filePath?: string;
+  mimeType?: string;
+  caption?: string;
+}
+
+export function isSurfaceDirective(value: unknown): value is SurfaceDirective {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  if (candidate.type !== 'text' && candidate.type !== 'file') {
+    return false;
+  }
+
+  if (candidate.content !== undefined && typeof candidate.content !== 'string') {
+    return false;
+  }
+
+  if (candidate.filePath !== undefined && typeof candidate.filePath !== 'string') {
+    return false;
+  }
+
+  if (candidate.mimeType !== undefined && typeof candidate.mimeType !== 'string') {
+    return false;
+  }
+
+  if (candidate.caption !== undefined && typeof candidate.caption !== 'string') {
+    return false;
+  }
+
+  return true;
+}
+
+export function normalizeSurfaceDirectives(value: unknown): SurfaceDirective[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter(isSurfaceDirective);
+}
+
 export interface ToolResult {
   success: boolean;
   data?: unknown;
   error?: string;
+  surface?: SurfaceDirective[];
 }
 
 export interface ToolMeta {
@@ -60,22 +130,12 @@ export interface RegisteredTool {
   meta: ToolMeta;
 }
 
-export interface SpawnSubagentContext {
-  agentId: string;
-  parentTaskId: string;
-  spawnDepth?: number;
-  allowedSkills?: string[];
-  allowedTools?: string[];
-  maxToolInvocations?: number;
-  toolInvocationCount?: { count: number };
-}
-
 // ============================================
 // Tool Registry
 // ============================================
 const tools: Map<string, CoreTool> = new Map();
 const toolMeta: Map<string, ToolMeta> = new Map();
-const spawnSubagentContext = new AsyncLocalStorage<SpawnSubagentContext>();
+const toolExecutionContext = new AsyncLocalStorage<ToolExecutionContext>();
 
 export function registerTool(name: string, registeredTool: CoreTool, meta: ToolMeta): void {
   const execute = registeredTool.execute;
@@ -83,7 +143,7 @@ export function registerTool(name: string, registeredTool: CoreTool, meta: ToolM
     ? {
         ...registeredTool,
         execute: async (input: unknown, options: unknown) => {
-          const context = spawnSubagentContext.getStore();
+          const context = getToolExecutionContext();
           const invocationCount = context?.toolInvocationCount;
 
           if (context?.allowedTools) {
@@ -309,7 +369,7 @@ registerTool(
       timeoutSeconds: z.number().int().positive().optional().describe('Timeout in seconds (default: 120)'),
     }),
     execute: async ({ skill, task, timeoutSeconds }): Promise<ToolResult> => {
-      const context = spawnSubagentContext.getStore();
+      const context = getToolExecutionContext();
       if (!context) {
         return { success: false, error: 'spawn_subagent called without task context' };
       }
@@ -341,9 +401,10 @@ registerTool(
           skillTools: skillResult.skill.tools,
           systemPrompt: skillResult.skill.instructions,
           overrides: skillResult.skill.overrides,
+          deliveryTarget: context.deliveryTarget,
         },
-        source: `subagent:${context.parentTaskId}`,
-        parentTaskId: context.parentTaskId,
+        source: `subagent:${context.taskId}`,
+        parentTaskId: context.taskId,
         skillName,
         spawnDepth: childDepth,
       });
@@ -356,7 +417,7 @@ registerTool(
         entityId: childTaskId,
         details: {
           agentId: context.agentId,
-          parentTaskId: context.parentTaskId,
+          parentTaskId: context.taskId,
           skill: skillName,
           overrideFieldsApplied: getOverrideFieldsApplied(skillResult.skill.overrides),
         },
@@ -412,16 +473,22 @@ registerTool(
             typeof (resultValue as { response?: unknown }).response === 'string'
               ? (resultValue as { response: string }).response
               : undefined;
+          const surfaces =
+            typeof resultValue === 'object' && resultValue !== null
+              ? normalizeSurfaceDirectives((resultValue as { surfaces?: unknown }).surfaces)
+              : [];
 
           if (!response) {
             await cleanupSession();
             return { success: false, error: 'Sub-agent completed without a valid response' };
           }
+          await cleanupSession();
           return {
             success: true,
             data: {
               response,
               skill: skillName,
+              ...(surfaces.length > 0 ? { surfaces } : {}),
             },
           };
         }
@@ -465,6 +532,22 @@ registerTool(
 // ============================================
 
 // Get current date/time
+registerTool(
+  'emit_to_chat',
+  tool({
+    description: 'Send text directly to the user chat without including it in your response',
+    inputSchema: z.object({
+      text: z.string().describe('Text to send to chat'),
+    }),
+    execute: async ({ text }): Promise<ToolResult> => ({
+      success: true,
+      data: { emitted: true },
+      surface: [{ type: 'text', content: text }],
+    }),
+  }),
+  { riskLevel: 'low' },
+);
+
 registerTool(
   'get_datetime',
   tool({
@@ -1005,9 +1088,9 @@ registerTool(
     inputSchema: z.object({
       agentId: z.string().describe('The agent ID (used to determine sandbox directory)'),
       command: z.string().describe('The command to execute (binary name and arguments)'),
-      surfaceOutput: z.boolean().optional().describe('Whether to surface output directly (reserved for future use)'),
+      surfaceOutput: z.boolean().optional().describe('Whether to surface stdout directly to chat'),
     }),
-    execute: async ({ agentId, command }): Promise<ToolResult> => {
+    execute: async ({ agentId, command, surfaceOutput }): Promise<ToolResult> => {
       const { execFile } = await import('child_process');
       const { promisify } = await import('util');
       const execFileAsync = promisify(execFile);
@@ -1063,6 +1146,9 @@ registerTool(
         });
 
         const capped = capCombinedOutput(stdout, stderr, maxOutputSize);
+        const surface = surfaceOutput && capped.stdout.length > 0
+          ? [{ type: 'text', content: capped.stdout } satisfies SurfaceDirective]
+          : undefined;
 
         return {
           success: true,
@@ -1072,6 +1158,7 @@ registerTool(
             exitCode: 0,
             outputTruncated: capped.truncated,
           },
+          surface,
         };
       } catch (error) {
         const execError = error as { code?: string | number; signal?: string; stdout?: string; stderr?: string; message?: string };
@@ -1099,6 +1186,9 @@ registerTool(
             execError.stderr ?? '',
             maxOutputSize,
           );
+          const surface = surfaceOutput && capped.stdout.length > 0
+            ? [{ type: 'text', content: capped.stdout } satisfies SurfaceDirective]
+            : undefined;
 
           return {
             success: true,
@@ -1108,6 +1198,7 @@ registerTool(
               exitCode: execError.code,
               outputTruncated: capped.truncated,
             },
+            surface,
           };
         }
 
@@ -1162,7 +1253,7 @@ registerTool(
       mimeType: z.string().optional().describe('MIME type of the file (auto-detected from extension if not provided)'),
     }),
     execute: async ({ agentId, filePath, caption, mimeType }): Promise<ToolResult> => {
-      const context = spawnSubagentContext.getStore();
+      const context = getToolExecutionContext();
       if (!context) {
         return { success: false, error: 'send_file_to_chat called without task context' };
       }
@@ -1178,44 +1269,21 @@ registerTool(
         return { success: false, error: `File not found: ${filePath}` };
       }
 
-      const session = await db.session.findFirst({
-        where: { agentId },
-        orderBy: { lastActive: 'desc' },
-      });
-
-      if (!session) {
-        return { success: false, error: 'No active session found for agent' };
+      if (!context.deliveryTarget) {
+        return { success: false, error: 'send_file_to_chat requires a delivery target' };
       }
-
-      const channel = session.channel as ChannelType;
-      const channelKey = session.channelKey;
-      const deliveryTarget = {
-        channel,
-        channelKey,
-        metadata: {},
-      };
 
       const detectedMimeType = detectMimeType(filePath, mimeType);
-      const dedupeKey = `file:${context.parentTaskId}:${filePath}:${crypto.randomUUID()}`;
-
-      try {
-        await enqueueFileDeliveryTx(
-          db,
-          context.parentTaskId,
-          channel,
-          channelKey,
-          JSON.stringify(deliveryTarget),
-          resolvedPath,
-          caption ?? '',
-          dedupeKey,
-        );
-      } catch (error) {
-        return { success: false, error: `Failed to enqueue file delivery: ${error instanceof Error ? error.message : 'Unknown error'}` };
-      }
 
       return {
         success: true,
-        data: { filePath: resolvedPath, mimeType: detectedMimeType, caption },
+        data: {
+          filePath: resolvedPath,
+          mimeType: detectedMimeType,
+          caption,
+          deliveryTarget: context.deliveryTarget,
+        },
+        surface: [{ type: 'file', filePath: resolvedPath, mimeType: detectedMimeType, caption }],
       };
     },
   }),

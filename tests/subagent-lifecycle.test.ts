@@ -4,7 +4,6 @@ import { afterAll, beforeAll, beforeEach, expect, mock, test } from 'bun:test';
 import fs from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import type { PrismaClient } from '@prisma/client';
 import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture } from './runtime-config-fixture';
 
 mock.module('ai', () => ({
@@ -16,7 +15,9 @@ const TEST_DB_PATH = path.join(process.cwd(), 'db', 'subagent-lifecycle.test.db'
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
 const SKILLS_DIR = path.join(tmpdir(), 'openclaw-mini-subagent-skills');
 
-let db: PrismaClient;
+type TestDbClient = typeof import('../src/lib/db').db;
+
+let db: TestDbClient;
 let agentService: typeof import('../src/lib/services/agent-service').agentService;
 let taskQueue: typeof import('../src/lib/services/task-queue').taskQueue;
 let withSpawnSubagentContext: typeof import('../src/lib/tools').withSpawnSubagentContext;
@@ -163,7 +164,7 @@ test('7.1 top-level spawn creates child with depth 1', async () => {
   const parent = await createParentTask(agent.id);
   let childTaskId: string | undefined;
   const result = await withSpawnSubagentContext(
-    { agentId: agent.id, parentTaskId: parent.id, spawnDepth: 0 },
+    { agentId: agent.id, taskId: parent.id, taskType: 'message', spawnDepth: 0 },
     async () => {
       const res = await spawnTool!.execute!(
         { skill: 'test-skill', task: 'do something', timeoutSeconds: 1 },
@@ -192,7 +193,7 @@ test('7.1 nested sub-agent spawn increments depth', async () => {
 
   let childTaskId: string | undefined;
   await withSpawnSubagentContext(
-    { agentId: agent.id, parentTaskId: parent.id, spawnDepth: 2 },
+    { agentId: agent.id, taskId: parent.id, taskType: 'message', spawnDepth: 2 },
     async () => {
       const res = await spawnTool!.execute!(
         { skill: 'test-skill', task: 'nested task', timeoutSeconds: 1 },
@@ -219,7 +220,7 @@ test('7.1 spawn at max depth is rejected without creating a task', async () => {
   const beforeCount = await db.task.count({ where: { type: 'subagent' } });
 
   const result = await withSpawnSubagentContext(
-    { agentId: agent.id, parentTaskId: 'nonexistent-depth-check', spawnDepth: 3 },
+    { agentId: agent.id, taskId: 'nonexistent-depth-check', taskType: 'message', spawnDepth: 3 },
     async () =>
       spawnTool!.execute!(
         { skill: 'any-skill', task: 'this should fail', timeoutSeconds: 1 },
@@ -242,7 +243,7 @@ test('7.1 spawn allowed below max depth proceeds normally', async () => {
   const parent = await createParentTask(agent.id);
 
   await withSpawnSubagentContext(
-    { agentId: agent.id, parentTaskId: parent.id, spawnDepth: 2 },
+    { agentId: agent.id, taskId: parent.id, taskType: 'message', spawnDepth: 2 },
     async () =>
       spawnTool!.execute!(
         { skill: 'test-skill', task: 'depth-2 spawn', timeoutSeconds: 1 },
@@ -268,7 +269,7 @@ test('7.2 timeout fails child task in DB', async () => {
   let childTaskId: string | undefined;
 
   const result = await withSpawnSubagentContext(
-    { agentId: agent.id, parentTaskId: parent.id, spawnDepth: 0 },
+    { agentId: agent.id, taskId: parent.id, taskType: 'message', spawnDepth: 0 },
     async () => {
       const res = await spawnTool!.execute!(
         { skill: 'test-skill', task: 'slow task', timeoutSeconds: 1 },
@@ -299,7 +300,7 @@ test('7.2 child that completes before timeout is not failed', async () => {
   const parent = await createParentTask(agent.id);
   // Run spawn in background
   const spawnPromise = withSpawnSubagentContext(
-    { agentId: agent.id, parentTaskId: parent.id, spawnDepth: 0 },
+    { agentId: agent.id, taskId: parent.id, taskType: 'message', spawnDepth: 0 },
     async () =>
       spawnTool!.execute!(
         { skill: 'test-skill', task: 'quick task', timeoutSeconds: 5 },
@@ -346,7 +347,7 @@ test('7.2 structured timeout error includes skill, depth, childTaskId', async ()
   let childTaskId: string | undefined;
 
   const result = await withSpawnSubagentContext(
-    { agentId: agent.id, parentTaskId: parent.id, spawnDepth: 0 },
+    { agentId: agent.id, taskId: parent.id, taskType: 'message', spawnDepth: 0 },
     async () => {
       const res = await spawnTool!.execute!(
         { skill: 'web-search', task: 'find something', timeoutSeconds: 1 },
@@ -563,7 +564,7 @@ test('7.5 failure returns structured data with skill, depth, childTaskId', async
   let capturedChildId: string | undefined;
   const parent = await createParentTask(agent.id);
   const spawnPromise = withSpawnSubagentContext(
-    { agentId: agent.id, parentTaskId: parent.id, spawnDepth: 1 },
+    { agentId: agent.id, taskId: parent.id, taskType: 'message', spawnDepth: 1 },
     async () =>
       spawnTool!.execute!(
         { skill: 'web-search', task: 'search task', timeoutSeconds: 5 },
@@ -609,7 +610,7 @@ test('7.5 timeout returns structured data', async () => {
   let childTaskId: string | undefined;
 
   const result = await withSpawnSubagentContext(
-    { agentId: agent.id, parentTaskId: parent.id, spawnDepth: 0 },
+    { agentId: agent.id, taskId: parent.id, taskType: 'message', spawnDepth: 0 },
     async () => {
       const res = await spawnTool!.execute!(
         { skill: 'analyzer', task: 'analyze data', timeoutSeconds: 1 },
@@ -636,22 +637,23 @@ test('7.5 timeout returns structured data', async () => {
 
 test('7.5 depth limit rejection returns no childTaskId (no task created)', async () => {
   const agent = await agentService.createAgent({ name: 'Agent' });
-  process.env.OPENCLAW_MAX_SPAWN_DEPTH = '2';
+  writeSkill('test-skill');
 
   const spawnTool = toolsMap.get('spawn_subagent');
+  const parent = await createParentTask(agent.id);
 
   const result = await withSpawnSubagentContext(
-    { agentId: agent.id, parentTaskId: 'nonexistent-depth-check', spawnDepth: 2 },
+    { agentId: agent.id, taskId: parent.id, taskType: 'message', spawnDepth: 3 },
     async () =>
       spawnTool!.execute!(
-        { skill: 'any-skill', task: 'deep spawn', timeoutSeconds: 1 },
+        { skill: 'test-skill', task: 'deep spawn', timeoutSeconds: 1 },
         {} as never,
       ),
   );
 
   expect(result).toMatchObject({
     success: false,
-    error: 'Maximum spawn depth of 2 exceeded',
+    error: 'Maximum spawn depth of 3 exceeded',
   });
   // No data field — no task was created
   expect((result as { data?: unknown }).data).toBeUndefined();

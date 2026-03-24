@@ -8,12 +8,22 @@ import { agentService } from './agent-service';
 import { memoryService } from './memory-service';
 import { sessionService, type SessionContext } from './session-service';
 import { auditService } from './audit-service';
-import { enqueueDeliveryTx } from './delivery-service';
+import { enqueueDeliveryTx, enqueueFileDeliveryTx } from './delivery-service';
 import { getModelConfig, resolveAgentContextWindow, runWithModelFallback } from './model-provider';
 import { parseCommand, type ParsedCommand } from './command-parser';
 import { sessionProviderState } from './session-provider-state';
+import type { Prisma } from '@prisma/client';
 import { ChannelType, DeliveryTarget, Task, VisionInput, Attachment, DownloadedFile } from '@/lib/types';
-import { getLowRiskTools, getToolsByNames, getToolsForAgent, type ToolResult, withSpawnSubagentContext } from '@/lib/tools';
+import {
+  getLowRiskTools,
+  getToolExecutionContext,
+  getToolsByNames,
+  getToolsForAgent,
+  withToolExecutionContext,
+  normalizeSurfaceDirectives,
+  type SurfaceDirective,
+  type ToolResult,
+} from '@/lib/tools';
 import { getSkillForSubAgent, getSkillSummaries } from './skill-service';
 import { type SubAgentOverrides, resolveSubAgentConfig } from '@/lib/subagent-config';
 import { loadBootstrapContext, loadHeartbeatContext } from './workspace-service';
@@ -30,6 +40,31 @@ export interface ExecutionResult {
   toolCalls?: Array<{ tool: string; params: Record<string, unknown>; result: ToolResult }>;
   error?: string;
 }
+
+function collectSurfaceDirectives(toolResults: Array<{ output?: unknown }>): SurfaceDirective[] {
+  return toolResults.flatMap((toolResult) => {
+    const output = toolResult.output;
+    if (!output || typeof output !== 'object') {
+      return [];
+    }
+
+    return normalizeSurfaceDirectives((output as ToolResult).surface);
+  });
+}
+
+type CompletedTaskResult = {
+  response: string;
+  taskType: Task['type'];
+  toolCalls: Array<{ tool: string; success: boolean }>;
+  surfaces?: SurfaceDirective[];
+};
+
+type ParsedExecutionArtifacts = {
+  response: string;
+  surfaces: SurfaceDirective[];
+  executionToolCalls: NonNullable<ExecutionResult['toolCalls']>;
+  actions: Record<string, unknown>[];
+};
 
 class AgentExecutorService {
   /**
@@ -209,16 +244,8 @@ class AgentExecutorService {
       // Case: Vision with non-vision model but has text - execute with warning
       if (visionResult.warning) {
         const warningText = visionResult.warning;
-        const result = await withSpawnSubagentContext(
-          {
-            agentId: task.agentId,
-            parentTaskId: task.id,
-            spawnDepth: task.spawnDepth ?? 0,
-            allowedSkills: resolvedSubagentConfig?.allowedSkills,
-            allowedTools: resolvedSubagentConfig?.allowedTools,
-            maxToolInvocations: resolvedSubagentConfig?.maxToolInvocations,
-            toolInvocationCount: { count: 0 },
-          },
+        const result = await withToolExecutionContext(
+          this.buildToolExecutionContext(task, deliveryTarget, resolvedSubagentConfig),
           () =>
             runWithModelFallback(
               ({ model }) =>
@@ -245,35 +272,24 @@ class AgentExecutorService {
                   : undefined,
             ),
         );
-
-        const response = result.text;
-        const toolCalls = result.steps.flatMap(step => step.toolCalls ?? []);
-        const toolResults = result.steps.flatMap(step => step.toolResults ?? []);
-        const toolResultMap = new Map(toolResults.map(toolResult => [toolResult.toolCallId, toolResult]));
-        const executionToolCalls: ExecutionResult['toolCalls'] = toolCalls.map((toolCall) => {
-          const toolResult = toolResultMap.get(toolCall.toolCallId);
-          return {
-            tool: toolCall.toolName,
-            params: toolCall.input as Record<string, unknown>,
-            result:
-              (toolResult?.output as ToolResult | undefined) ??
-              ({ success: false, error: 'Tool result missing' } satisfies ToolResult),
-          };
+        const artifacts = this.parseExecutionArtifacts(result);
+        await this.finalizeTaskExecution({
+          task,
+          response: artifacts.response,
+          deliveryTarget,
+          executionToolCalls: artifacts.executionToolCalls,
+          surfaces: artifacts.surfaces,
+          responseDedupeKey: `task:${taskId}`,
+          extraDeliveries: warningText.trim().length > 0
+            ? [{ text: warningText, dedupeKey: `task:${taskId}:warning` }]
+            : [],
         });
-
-        if (deliveryTarget) {
-          await db.$transaction(async (tx) => {
-            await taskQueue.completeTaskTx(tx, taskId, { response, taskType: task.type, toolCalls: executionToolCalls.map(tc => ({ tool: tc.tool, success: tc.result.success })) });
-            await enqueueDeliveryTx(tx, taskId, deliveryTarget.channel, deliveryTarget.channelKey, JSON.stringify(deliveryTarget), response, `task:${taskId}`);
-            await enqueueDeliveryTx(tx, taskId, deliveryTarget.channel, deliveryTarget.channelKey, JSON.stringify(deliveryTarget), warningText, `task:${taskId}:warning`);
-          });
-          taskQueue.completeTaskSideEffects(task.agentId, taskId, task.type, { response, taskType: task.type, toolCalls: executionToolCalls.map(tc => ({ tool: tc.tool, success: tc.result.success })) });
-        } else {
-          await taskQueue.completeTask(taskId, { response, taskType: task.type, toolCalls: executionToolCalls.map(tc => ({ tool: tc.tool, success: tc.result.success })) });
-        }
-
-        await this.runPostCommitSideEffects(task.agentId, taskId, task, response, executionToolCalls);
-        return { success: true, response, actions: [], toolCalls: executionToolCalls };
+        return {
+          success: true,
+          response: artifacts.response,
+          actions: artifacts.actions,
+          toolCalls: artifacts.executionToolCalls,
+        };
       }
 
       const multiModalMessages = visionResult.multiModalMessages;
@@ -316,101 +332,41 @@ class AgentExecutorService {
               : undefined,
         );
 
-      const result = await withSpawnSubagentContext(
-        {
-          agentId: task.agentId,
-          parentTaskId: task.id,
-          spawnDepth: task.spawnDepth ?? 0,
-          allowedSkills: resolvedSubagentConfig?.allowedSkills,
-          allowedTools: resolvedSubagentConfig?.allowedTools,
-          maxToolInvocations: resolvedSubagentConfig?.maxToolInvocations,
-          toolInvocationCount: { count: 0 },
-        },
+      const result = await withToolExecutionContext(
+        this.buildToolExecutionContext(task, deliveryTarget, resolvedSubagentConfig),
         executeGeneration,
       );
-
-      const response = result.text;
-      const toolCalls = result.steps.flatMap(step => step.toolCalls ?? []);
-      const toolResults = result.steps.flatMap(step => step.toolResults ?? []);
-      const toolResultMap = new Map(toolResults.map(toolResult => [toolResult.toolCallId, toolResult]));
-
-      const executionToolCalls: ExecutionResult['toolCalls'] = toolCalls.map((toolCall) => {
-        const toolResult = toolResultMap.get(toolCall.toolCallId);
-        return {
-          tool: toolCall.toolName,
-          params: toolCall.input as Record<string, unknown>,
-          result:
-            (toolResult?.output as ToolResult | undefined) ??
-            ({ success: false, error: 'Tool result missing' } satisfies ToolResult),
-        };
-      });
-
-      const actions: Record<string, unknown>[] = toolResults.map((toolResult) => ({
-        type: 'tool_call',
-        tool: toolResult.toolName,
-        success: (toolResult.output as ToolResult | undefined)?.success ?? false,
-        data: (toolResult.output as ToolResult | undefined)?.data,
-      }));
-
-      const payload = task.payload as {
-        content?: string;
-        sender?: string;
-        channel?: ChannelType;
-        channelKey?: string;
-        deliveryTarget?: DeliveryTarget;
-      };
-      const finalDeliveryTarget = task.type === 'message'
-        ? payload.deliveryTarget ?? this.buildFallbackDeliveryTarget(payload)
-        : undefined;
-      const taskResult = {
-        response,
-        taskType: task.type,
-        toolCalls: executionToolCalls.map(tc => ({ tool: tc.tool, success: tc.result.success })),
-      };
-      const shouldAutoDeliver = task.type === 'message' && response.trim().length > 0 && !!finalDeliveryTarget;
+      const artifacts = this.parseExecutionArtifacts(result);
 
       if (task.sessionId && task.type === 'message') {
         await sessionService.appendToContext(task.sessionId, {
           role: 'user',
-          content: payload.content || '',
-          sender: payload.sender,
-          channel: payload.channel,
-          channelKey: payload.channelKey,
+          content: msgPayload.content || '',
+          sender: msgPayload.sender,
+          channel: msgPayload.channel,
+          channelKey: msgPayload.channelKey,
         });
         await sessionService.appendToContext(task.sessionId, {
           role: 'assistant',
-          content: response,
-          channel: payload.channel,
-          channelKey: payload.channelKey,
+          content: artifacts.response,
+          channel: msgPayload.channel,
+          channelKey: msgPayload.channelKey,
         });
       }
-
-      if (shouldAutoDeliver && finalDeliveryTarget) {
-        // Delivery semantics are at-least-once: a crash after channel API success but before DB status update can duplicate sends.
-        await db.$transaction(async (tx) => {
-          await taskQueue.completeTaskTx(tx, taskId, taskResult);
-          await enqueueDeliveryTx(
-            tx,
-            taskId,
-            finalDeliveryTarget.channel,
-            finalDeliveryTarget.channelKey,
-            JSON.stringify(finalDeliveryTarget),
-            response,
-            `task:${taskId}`,
-          );
-        });
-        taskQueue.completeTaskSideEffects(task.agentId, taskId, task.type, taskResult);
-      } else {
-        await taskQueue.completeTask(taskId, taskResult);
-      }
-
-      await this.runPostCommitSideEffects(task.agentId, taskId, task, response, executionToolCalls);
+      await this.finalizeTaskExecution({
+        task,
+        response: artifacts.response,
+        deliveryTarget,
+        executionToolCalls: artifacts.executionToolCalls,
+        surfaces: artifacts.surfaces,
+        responseDedupeKey: `task:${taskId}`,
+      });
 
       return {
         success: true,
-        response,
-        actions,
-        toolCalls: executionToolCalls,
+        response: artifacts.response,
+        actions: artifacts.actions,
+        toolCalls: artifacts.executionToolCalls,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -546,6 +502,180 @@ class AgentExecutorService {
       channelKey: payload.channelKey,
       metadata: {},
     };
+  }
+
+  private buildToolExecutionContext(
+    task: Task,
+    deliveryTarget: DeliveryTarget | undefined,
+    resolvedSubagentConfig?: {
+      allowedSkills?: string[];
+      allowedTools?: string[];
+      maxToolInvocations?: number;
+    },
+  ) {
+    return {
+      agentId: task.agentId,
+      taskId: task.id,
+      taskType: task.type,
+      sessionId: task.sessionId,
+      parentTaskId: task.parentTaskId ?? undefined,
+      deliveryTarget,
+      spawnDepth: task.spawnDepth ?? 0,
+      allowedSkills: resolvedSubagentConfig?.allowedSkills,
+      allowedTools: resolvedSubagentConfig?.allowedTools,
+      maxToolInvocations: resolvedSubagentConfig?.maxToolInvocations,
+      toolInvocationCount: { count: 0 },
+    };
+  }
+
+  private parseExecutionArtifacts(result: { text: string; steps: Array<{ toolCalls?: Array<{ toolCallId: string; toolName: string; input: unknown }>; toolResults?: Array<{ toolCallId: string; toolName: string; output?: unknown }> }> }): ParsedExecutionArtifacts {
+    const response = result.text;
+    const toolCalls = result.steps.flatMap(step => step.toolCalls ?? []);
+    const toolResults = result.steps.flatMap(step => step.toolResults ?? []);
+    const surfaces = collectSurfaceDirectives(toolResults);
+    const toolResultMap = new Map(toolResults.map(toolResult => [toolResult.toolCallId, toolResult]));
+    const executionToolCalls = toolCalls.map((toolCall) => {
+      const toolResult = toolResultMap.get(toolCall.toolCallId);
+      const output = toolResult?.output;
+
+      return {
+        tool: toolCall.toolName,
+        params: toolCall.input as Record<string, unknown>,
+        result:
+          output && typeof output === 'object'
+            ? (output as ToolResult)
+            : ({ success: false, error: 'Tool result missing' } satisfies ToolResult),
+      };
+    });
+    const actions: Record<string, unknown>[] = toolResults.map((toolResult) => {
+      const output = toolResult.output;
+      const typedOutput = output && typeof output === 'object' ? output as ToolResult : undefined;
+
+      return {
+        type: 'tool_call',
+        tool: toolResult.toolName,
+        success: typedOutput?.success ?? false,
+        data: typedOutput?.data,
+      };
+    });
+
+    return { response, surfaces, executionToolCalls, actions };
+  }
+
+  private buildCompletedTaskResult(
+    task: Task,
+    response: string,
+    executionToolCalls: NonNullable<ExecutionResult['toolCalls']>,
+    surfaces: SurfaceDirective[],
+  ): CompletedTaskResult {
+    return {
+      response,
+      taskType: task.type,
+      toolCalls: executionToolCalls.map(tc => ({ tool: tc.tool, success: tc.result.success })),
+      ...(surfaces.length > 0 ? { surfaces } : {}),
+    };
+  }
+
+  private async finalizeTaskExecution(input: {
+    task: Task;
+    response: string;
+    deliveryTarget?: DeliveryTarget;
+    executionToolCalls: NonNullable<ExecutionResult['toolCalls']>;
+    surfaces: SurfaceDirective[];
+    responseDedupeKey?: string;
+    extraDeliveries?: Array<{ text: string; dedupeKey: string }>;
+  }): Promise<void> {
+    const { task, response, deliveryTarget, executionToolCalls, surfaces, responseDedupeKey, extraDeliveries = [] } = input;
+    const taskResult = this.buildCompletedTaskResult(task, response, executionToolCalls, surfaces);
+    const shouldDeliverResponse = task.type === 'message' && response.trim().length > 0 && !!deliveryTarget && !!responseDedupeKey;
+    const shouldDeliverSurfaces = task.type === 'message' && !!deliveryTarget && surfaces.length > 0;
+    const shouldDeliverExtras = task.type === 'message' && !!deliveryTarget && extraDeliveries.length > 0;
+
+    if (deliveryTarget && (shouldDeliverResponse || shouldDeliverSurfaces || shouldDeliverExtras)) {
+      await db.$transaction(async (tx) => {
+        await taskQueue.completeTaskTx(tx, task.id, taskResult);
+        await this.enqueueSurfaceDeliveries(tx, task.id, deliveryTarget, surfaces);
+
+        if (shouldDeliverResponse && responseDedupeKey) {
+          await enqueueDeliveryTx(
+            tx,
+            task.id,
+            deliveryTarget.channel,
+            deliveryTarget.channelKey,
+            JSON.stringify(deliveryTarget),
+            response,
+            responseDedupeKey,
+          );
+        }
+
+        for (const extraDelivery of extraDeliveries) {
+          await enqueueDeliveryTx(
+            tx,
+            task.id,
+            deliveryTarget.channel,
+            deliveryTarget.channelKey,
+            JSON.stringify(deliveryTarget),
+            extraDelivery.text,
+            extraDelivery.dedupeKey,
+          );
+        }
+      });
+      taskQueue.completeTaskSideEffects(task.agentId, task.id, task.type, taskResult);
+    } else {
+      await taskQueue.completeTask(task.id, taskResult);
+    }
+
+    await this.runPostCommitSideEffects(task.agentId, task.id, task, response, executionToolCalls);
+  }
+
+  private async enqueueSurfaceDeliveries(
+    tx: Prisma.TransactionClient,
+    taskId: string,
+    deliveryTarget: DeliveryTarget,
+    surfaces: SurfaceDirective[],
+  ): Promise<void> {
+    const targetJson = JSON.stringify(deliveryTarget);
+
+    for (let index = 0; index < surfaces.length; index += 1) {
+      const surface = surfaces[index]!;
+      const dedupeKey = `task:${taskId}:surface:${index}`;
+
+      if (surface.type === 'text') {
+        if (!surface.content || surface.content.length === 0) {
+          continue;
+        }
+
+        await enqueueDeliveryTx(
+          tx,
+          taskId,
+          deliveryTarget.channel,
+          deliveryTarget.channelKey,
+          targetJson,
+          surface.content,
+          dedupeKey,
+        );
+        continue;
+      }
+
+      if (surface.type !== 'file') {
+        continue;
+      }
+
+      if (!surface.filePath || surface.filePath.length === 0) {
+        continue;
+      }
+
+      await enqueueFileDeliveryTx(
+        tx,
+        taskId,
+        deliveryTarget.channel,
+        deliveryTarget.channelKey,
+        targetJson,
+        surface.filePath,
+        surface.caption ?? '',
+        dedupeKey,
+      );
+    }
   }
 
   private async runPostCommitSideEffects(

@@ -1,9 +1,10 @@
 /// <reference types="bun-types" />
 
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, it, beforeAll, beforeEach, afterAll, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import { tmpdir } from 'os';
+import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture, writeRuntimeConfig } from './runtime-config-fixture';
 import {
   parseCommand,
   getBinaryBasename,
@@ -13,6 +14,29 @@ import {
 
 const TEST_AGENT_ID = 'exec-test-agent';
 let TEST_SANDBOX_ROOT: string;
+let runtimeConfigFixture: RuntimeConfigFixture | null = null;
+
+beforeAll(async () => {
+  process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? 'test-key';
+  process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? 'test-key';
+  process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? 'test-key';
+  process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
+  runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-exec-command-');
+  process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
+  const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
+  initializeProviderRegistry();
+});
+
+afterAll(async () => {
+  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
+  delete process.env.OPENCLAW_CONFIG_PATH;
+  if (runtimeConfigFixture) {
+    cleanupRuntimeConfigFixture(runtimeConfigFixture.dir);
+    runtimeConfigFixture = null;
+  }
+});
 
 beforeEach(() => {
   TEST_SANDBOX_ROOT = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-exec-'));
@@ -327,5 +351,85 @@ describe('sandbox integration', () => {
     
     expect(fs.existsSync(testFile)).toBe(true);
     expect(fs.readFileSync(testFile, 'utf-8')).toBe('Hello, sandbox!');
+  });
+});
+
+describe('exec_command tool surface output', () => {
+  beforeEach(async () => {
+    if (!runtimeConfigFixture) {
+      throw new Error('Runtime config fixture not initialized');
+    }
+
+    writeRuntimeConfig(runtimeConfigFixture.configPath, {
+      runtime: {
+        exec: {
+          enabled: true,
+          allowlist: ['echo', 'printf'],
+          maxTimeout: 30,
+          maxOutputSize: 10000,
+        },
+      },
+    });
+
+    const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+    resetProviderRegistryForTests();
+    initializeProviderRegistry();
+
+    const { setSandboxRootForTests } = await import('../src/lib/services/sandbox-service');
+    setSandboxRootForTests(TEST_SANDBOX_ROOT);
+  });
+
+  afterEach(async () => {
+    const { setSandboxRootForTests } = await import('../src/lib/services/sandbox-service');
+    setSandboxRootForTests(null);
+  });
+
+  it('adds a text surface when surfaceOutput is true and stdout is non-empty', async () => {
+    const { getTool } = await import('../src/lib/tools');
+    const execTool = getTool('exec_command');
+    if (!execTool?.execute) {
+      throw new Error('exec_command tool is not registered');
+    }
+
+    const result = await execTool.execute(
+      { agentId: TEST_AGENT_ID, command: 'echo surfaced output', surfaceOutput: true },
+      { toolCallId: 'exec-surface', messages: [] },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.surface).toEqual([{ type: 'text', content: 'surfaced output\n' }]);
+  });
+
+  it('does not add a surface when surfaceOutput is false', async () => {
+    const { getTool } = await import('../src/lib/tools');
+    const execTool = getTool('exec_command');
+    if (!execTool?.execute) {
+      throw new Error('exec_command tool is not registered');
+    }
+
+    const result = await execTool.execute(
+      { agentId: TEST_AGENT_ID, command: 'echo ordinary output', surfaceOutput: false },
+      { toolCallId: 'exec-no-surface', messages: [] },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.surface).toBeUndefined();
+  });
+
+  it('does not add a surface when stdout is empty', async () => {
+    const { getTool } = await import('../src/lib/tools');
+    const execTool = getTool('exec_command');
+    if (!execTool?.execute) {
+      throw new Error('exec_command tool is not registered');
+    }
+
+    const result = await execTool.execute(
+      { agentId: TEST_AGENT_ID, command: 'printf ""', surfaceOutput: true },
+      { toolCallId: 'exec-empty-surface', messages: [] },
+    );
+
+    expect(result.success).toBe(true);
+    expect((result.data as { stdout?: string } | undefined)?.stdout).toBe('');
+    expect(result.surface).toBeUndefined();
   });
 });

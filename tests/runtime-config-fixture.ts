@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
+import type { RuntimeSectionConfig } from '../src/lib/config/schema';
 
 interface RuntimeProviderConfig {
   apiType: string;
@@ -18,6 +19,7 @@ interface RuntimeAgentConfig {
 interface RuntimeConfigFixtureData {
   providers: Record<string, RuntimeProviderConfig>;
   agent: RuntimeAgentConfig;
+  runtime?: RuntimeSectionConfig;
   mcp?: {
     servers: Record<string, Record<string, unknown>>;
   };
@@ -64,6 +66,7 @@ function mergeRuntimeConfig(overrides: Partial<RuntimeConfigFixtureData> = {}): 
       ...DEFAULT_RUNTIME_CONFIG.agent,
       ...overrides.agent,
     },
+    ...(overrides.runtime ? { runtime: overrides.runtime } : {}),
     ...(overrides.mcp ? { mcp: overrides.mcp } : {}),
   };
 }

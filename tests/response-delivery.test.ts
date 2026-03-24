@@ -9,9 +9,10 @@ import type { PrismaClient } from '@prisma/client';
 import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture } from './runtime-config-fixture';
 
 let mockResponseText = 'stub response';
+let mockGenerateTextSteps: Array<Record<string, unknown>> = [];
 
 mock.module('ai', () => ({
-  generateText: async () => ({ text: mockResponseText, steps: [] }),
+  generateText: async () => ({ text: mockResponseText, steps: mockGenerateTextSteps }),
   stepCountIs: () => () => true,
 }));
 
@@ -43,6 +44,8 @@ type DeliveryRecord = {
   sentAt: Date | null;
   externalMessageId: string | null;
   dedupeKey: string;
+  deliveryType?: string;
+  filePath?: string | null;
 };
 type DeliveryModel = {
   deleteMany(): Promise<unknown>;
@@ -100,6 +103,25 @@ async function createPendingTask(agentId: string, overrides?: Partial<{ type: st
       source: 'test',
     },
   });
+}
+
+function makeToolStep(definitions: Array<{
+  toolName: string;
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown>;
+}>): Record<string, unknown> {
+  return {
+    toolCalls: definitions.map((definition, index) => ({
+      toolCallId: `tool-call-${index}`,
+      toolName: definition.toolName,
+      input: definition.input ?? {},
+    })),
+    toolResults: definitions.map((definition, index) => ({
+      toolCallId: `tool-call-${index}`,
+      toolName: definition.toolName,
+      output: definition.output ?? { success: true },
+    })),
+  };
 }
 
 function captureInitialMemoryDirs() {
@@ -162,9 +184,11 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();
+  initializeProviderRegistry();
   mockResponseText = 'stub response';
+  mockGenerateTextSteps = [];
   global.fetch = originalFetch;
   delete process.env.TELEGRAM_WEBHOOK_SECRET;
   delete process.env.TELEGRAM_BOT_TOKEN;
@@ -430,6 +454,162 @@ test('message executor creates outbound deliveries, non-message tasks do not, em
   expect(emptyExec.success).toBe(true);
   const emptyDeliveryCount = await deliveryModel().count({ where: { taskId: emptyResult.taskId } });
   expect(emptyDeliveryCount).toBe(0);
+});
+
+test('message executor persists and orders surface deliveries before the response', async () => {
+  const agent = await createDefaultAgent();
+  mockResponseText = 'agent commentary';
+  mockGenerateTextSteps = [
+    makeToolStep([
+      {
+        toolName: 'emit_to_chat',
+        output: {
+          success: true,
+          data: { emitted: true },
+          surface: [{ type: 'text', content: 'first surfaced text' }],
+        },
+      },
+    ]),
+    makeToolStep([
+      {
+        toolName: 'send_file_to_chat',
+        output: {
+          success: true,
+          data: { filePath: '/tmp/report.txt' },
+          surface: [{ type: 'file', filePath: '/tmp/report.txt', caption: 'Report file' }],
+        },
+      },
+      {
+        toolName: 'exec_command',
+        output: {
+          success: true,
+          data: { stdout: 'second surfaced text', stderr: '', exitCode: 0 },
+          surface: [{ type: 'text', content: 'second surfaced text' }],
+        },
+      },
+    ]),
+  ];
+
+  const messageResult = await inputManagerModule.inputManager.processInput({
+    type: 'message',
+    channel: 'telegram',
+    channelKey: 'chat-surface-order',
+    content: 'show me the output',
+  });
+
+  if (!messageResult.taskId) {
+    throw new Error(`Expected message task id, got: ${messageResult.error ?? 'unknown error'}`);
+  }
+
+  const execResult = await agentExecutorModule.agentExecutor.executeTask(messageResult.taskId);
+  expect(execResult.success).toBe(true);
+
+  const deliveries = await deliveryModel().findMany();
+  expect(deliveries).toHaveLength(4);
+  expect(deliveries.map(delivery => delivery.dedupeKey)).toEqual([
+    `task:${messageResult.taskId}:surface:0`,
+    `task:${messageResult.taskId}:surface:1`,
+    `task:${messageResult.taskId}:surface:2`,
+    `task:${messageResult.taskId}`,
+  ]);
+  expect(deliveries.map(delivery => delivery.deliveryType ?? 'text')).toEqual(['text', 'file', 'text', 'text']);
+  expect(deliveries[0]?.text).toBe('first surfaced text');
+  expect(deliveries[1]?.filePath).toBe('/tmp/report.txt');
+  expect(deliveries[1]?.text).toBe('Report file');
+  expect(deliveries[2]?.text).toBe('second surfaced text');
+  expect(deliveries[3]?.text).toBe('agent commentary');
+
+  const completedTask = await taskQueueModule.taskQueue.getTask(messageResult.taskId);
+  expect(completedTask?.result).toMatchObject({
+    response: 'agent commentary',
+    surfaces: [
+      { type: 'text', content: 'first surfaced text' },
+      { type: 'file', filePath: '/tmp/report.txt', caption: 'Report file' },
+      { type: 'text', content: 'second surfaced text' },
+    ],
+  });
+});
+
+test('surface deliveries are skipped for non-message tasks but still stored on the task result', async () => {
+  const agent = await createDefaultAgent();
+  mockResponseText = 'heartbeat summary';
+  mockGenerateTextSteps = [
+    makeToolStep([
+      {
+        toolName: 'emit_to_chat',
+        output: {
+          success: true,
+          surface: [{ type: 'text', content: 'heartbeat surface' }],
+        },
+      },
+    ]),
+  ];
+
+  const heartbeatTask = await taskQueueModule.taskQueue.createTask({
+    agentId: agent.id,
+    type: 'heartbeat',
+    priority: 4,
+    payload: { triggerId: 'surface-heartbeat', timestamp: new Date().toISOString() },
+    source: 'heartbeat:test',
+  });
+
+  const execResult = await agentExecutorModule.agentExecutor.executeTask(heartbeatTask.id);
+  expect(execResult.success).toBe(true);
+
+  const deliveryCount = await deliveryModel().count({ where: { taskId: heartbeatTask.id } });
+  expect(deliveryCount).toBe(0);
+
+  const completedTask = await taskQueueModule.taskQueue.getTask(heartbeatTask.id);
+  expect(completedTask?.result).toMatchObject({
+    response: 'heartbeat summary',
+    surfaces: [{ type: 'text', content: 'heartbeat surface' }],
+  });
+});
+
+test('send_file_to_chat returns a file surface using the current execution context', async () => {
+  const agent = await createDefaultAgent();
+  const sandboxService = await import('../src/lib/services/sandbox-service');
+  const toolsModule = await import('../src/lib/tools');
+  const sandboxRoot = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-send-file-surface-'));
+
+  sandboxService.setSandboxRootForTests(sandboxRoot);
+
+  try {
+    const sandboxDir = sandboxService.getSandboxDir(agent.id);
+    const reportPath = path.join(sandboxDir, 'report.txt');
+    fs.writeFileSync(reportPath, 'surface me', 'utf-8');
+
+    const sendFileTool = toolsModule.getTool('send_file_to_chat');
+    if (!sendFileTool?.execute) {
+      throw new Error('send_file_to_chat tool is not registered');
+    }
+
+    const result = await toolsModule.withToolExecutionContext(
+      {
+        agentId: agent.id,
+        taskId: 'task-send-file-surface',
+        taskType: 'message',
+        deliveryTarget: { channel: 'telegram', channelKey: 'chat-file', metadata: { chatId: 'chat-file' } },
+      },
+      () => sendFileTool.execute?.({ agentId: agent.id, filePath: 'report.txt', caption: 'Report ready' }, { toolCallId: 'send-file', messages: [] }),
+    );
+
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        filePath: reportPath,
+        caption: 'Report ready',
+        deliveryTarget: { channel: 'telegram', channelKey: 'chat-file', metadata: { chatId: 'chat-file' } },
+      },
+      surface: [{ type: 'file', filePath: reportPath, caption: 'Report ready', mimeType: 'text/plain' }],
+    });
+
+    const deliveries = await deliveryModel().findMany();
+    expect(deliveries).toHaveLength(0);
+  } finally {
+    sandboxService.setSandboxRootForTests(null);
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
 });
 
 test('telegram adapter sends text, splits long messages, and classifies errors', async () => {
