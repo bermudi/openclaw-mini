@@ -183,3 +183,5 @@ Latency from poll interval (not event-driven).
 2. **observability** — Structured logging + OpenTelemetry
 3. **resilience** — Timeouts, rate limiting, circuit breakers
 4. **graceful-shutdown** — Signal handlers for main app
+
+One note: running multiple Bun test files together still shows some suite-level interference from shared global/runtime state in existing tests, but the affected refactor suites pass when run individually, and typecheck passes. If you want, the next cleanup would be isolating provider/runtime globals across test files so multi-file Bun runs are fully stable.
