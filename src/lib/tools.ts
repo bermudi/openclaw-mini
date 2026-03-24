@@ -19,6 +19,7 @@ import { enqueueFileDeliveryTx } from '@/lib/services/delivery-service';
 import { parseCommand, getBinaryBasename, capCombinedOutput } from '@/lib/utils/exec-helpers';
 import { existsSync } from 'fs';
 import type { ChannelType } from '@/lib/types';
+import { SearchService, getSearchProvider } from '@/lib/services/search-service';
 
 export interface ToolParameter {
   name: string;
@@ -538,7 +539,7 @@ registerTool(
   { riskLevel: 'low' },
 );
 
-// Web search placeholder
+// Web search using configured provider (Brave, Tavily, or DuckDuckGo fallback)
 registerTool(
   'web_search',
   tool({
@@ -550,10 +551,133 @@ registerTool(
         .optional()
         .describe('Number of results to return (default: 5)'),
     }),
-    execute: async (): Promise<ToolResult> => ({
-      success: false,
-      error: 'Web search not configured',
+    execute: async ({ query, numResults }): Promise<ToolResult> => {
+      try {
+        const provider = getSearchProvider();
+        const searchService = new SearchService(provider);
+        const results = await searchService.search(query, numResults ?? 5);
+
+        return {
+          success: true,
+          data: {
+            query,
+            provider: provider.name,
+            results,
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown search error';
+        return {
+          success: false,
+          error: `Search failed: ${message}`,
+        };
+      }
+    },
+  }),
+  { riskLevel: 'medium' },
+);
+
+function stripHtmlToText(content: string): string {
+  const noScript = content.replace(/<script[\s\S]*?<\/script>/gi, ' ');
+  const noStyle = noScript.replace(/<style[\s\S]*?<\/style>/gi, ' ');
+  const noTags = noStyle.replace(/<[^>]+>/g, ' ');
+  return noTags
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function fetchWithTimeoutAndRedirects(url: string, timeoutMs: number, maxRedirects: number): Promise<Response> {
+  let currentUrl = url;
+
+  for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(currentUrl, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: controller.signal,
+      });
+
+      if (response.status >= 300 && response.status < 400) {
+        if (redirectCount === maxRedirects) {
+          throw new Error(`Too many redirects (max ${maxRedirects})`);
+        }
+
+        const location = response.headers.get('location');
+        if (!location) {
+          throw new Error('Redirect missing location header');
+        }
+
+        currentUrl = new URL(location, currentUrl).toString();
+        continue;
+      }
+
+      return response;
+    } catch (error) {
+      if ((error as { name?: string }).name === 'AbortError') {
+        throw new Error(`Fetch timed out after ${Math.floor(timeoutMs / 1000)}s`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  throw new Error('Too many redirects');
+}
+
+registerTool(
+  'web_fetch',
+  tool({
+    description: 'Fetch a URL and return extracted text content',
+    inputSchema: z.object({
+      url: z.string().url().describe('The URL to fetch'),
     }),
+    execute: async ({ url }): Promise<ToolResult> => {
+      try {
+        let parsedUrl: URL;
+        try {
+          parsedUrl = new URL(url);
+        } catch {
+          return { success: false, error: 'Invalid URL' };
+        }
+
+        const response = await fetchWithTimeoutAndRedirects(parsedUrl.toString(), 15_000, 5);
+        if (!response.ok) {
+          return { success: false, error: `Fetch failed: HTTP ${response.status}` };
+        }
+
+        const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
+        const rawText = await response.text();
+        const isHtml = contentType.includes('text/html') || /<html[\s>]/i.test(rawText);
+        const extracted = isHtml ? stripHtmlToText(rawText) : rawText;
+        const truncated = extracted.length > 10_000;
+        const content = truncated ? extracted.slice(0, 10_000) : extracted;
+
+        return {
+          success: true,
+          data: {
+            url: response.url || parsedUrl.toString(),
+            content,
+            truncated,
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown fetch error';
+        return {
+          success: false,
+          error: message,
+        };
+      }
+    },
   }),
   { riskLevel: 'medium' },
 );

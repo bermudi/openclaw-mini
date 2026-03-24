@@ -74,6 +74,11 @@ export interface ExecConfig {
   maxOutputSize?: number;
 }
 
+export interface SearchConfig {
+  braveApiKey?: string;
+  tavilyApiKey?: string;
+}
+
 export interface RuntimeSectionConfig {
   safety?: RuntimeSafetyConfig;
   retention?: RuntimeRetentionConfig;
@@ -81,6 +86,11 @@ export interface RuntimeSectionConfig {
   performance?: RuntimePerformanceConfig;
   exec?: ExecConfig;
 }
+
+const searchConfigSchema = z.object({
+  braveApiKey: z.string().trim().min(1).optional(),
+  tavilyApiKey: z.string().trim().min(1).optional(),
+});
 
 export const providerApiTypeSchema = z.enum([
   'openai-chat',
@@ -134,6 +144,7 @@ export const runtimeConfigSchema = z.object({
   providers: providersSchema,
   agent: agentConfigSchema,
   runtime: runtimeSectionSchema.optional(),
+  search: searchConfigSchema.optional(),
 }).strict().superRefine((config, context) => {
   if (!(config.agent.provider in config.providers)) {
     context.addIssue({
@@ -170,6 +181,7 @@ export interface RuntimeConfig {
   providers: Record<string, ProviderDefinition>;
   agent: AgentConfig;
   runtime?: RuntimeSectionConfig;
+  search?: SearchConfig;
 }
 
 export function normalizeRuntimeConfig(input: z.infer<typeof runtimeConfigSchema>): RuntimeConfig {
@@ -192,5 +204,6 @@ export function normalizeRuntimeConfig(input: z.infer<typeof runtimeConfigSchema
       fallbackModel: input.agent.fallbackModel,
     },
     runtime: input.runtime,
+    search: input.search,
   };
 }

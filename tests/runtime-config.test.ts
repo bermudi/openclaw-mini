@@ -548,6 +548,52 @@ describe('runtimeSectionSchema exec section', () => {
   });
 });
 
+describe('runtimeConfigSchema search section', () => {
+  test('accepts config with valid search API keys', async () => {
+    const { runtimeConfigSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeConfigSchema.safeParse({
+      providers: {
+        openai: { apiType: 'openai-chat', apiKey: 'test-key' },
+      },
+      agent: { provider: 'openai', model: 'gpt-4.1-mini' },
+      search: {
+        braveApiKey: 'brave-key',
+        tavilyApiKey: 'tavily-key',
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts config with empty search section', async () => {
+    const { runtimeConfigSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeConfigSchema.safeParse({
+      providers: {
+        openai: { apiType: 'openai-chat', apiKey: 'test-key' },
+      },
+      agent: { provider: 'openai', model: 'gpt-4.1-mini' },
+      search: {},
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts config with missing search section', async () => {
+    const { runtimeConfigSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeConfigSchema.safeParse({
+      providers: {
+        openai: { apiType: 'openai-chat', apiKey: 'test-key' },
+      },
+      agent: { provider: 'openai', model: 'gpt-4.1-mini' },
+    });
+
+    expect(result.success).toBe(true);
+  });
+});
+
 describe('getRuntimeConfig() exec defaults', () => {
   test('returns default exec values when no exec section is configured', async () => {
     mock.module('../src/lib/services/provider-registry', () => ({
