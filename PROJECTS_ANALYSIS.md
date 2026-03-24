@@ -6,6 +6,8 @@
 
 Analysis of 8 AI assistant projects in the "Claws" ecosystem. All share the same core concept: **self-hosted AI assistant that connects to messaging platforms**. The differentiator is **architectural philosophy** and **target use case**.
 
+Code for all is located at `/home/daniel/build/testing/the_claws`
+
 ---
 
 ## Quick Comparison Table
