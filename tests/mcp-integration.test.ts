@@ -5,7 +5,8 @@ import fs from 'fs';
 import path from 'path';
 import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture } from './runtime-config-fixture';
 
-const TEST_SERVER_DIR = path.join(process.cwd(), 'tests', '.tmp');
+const TESTS_DIR = path.dirname(new URL(import.meta.url).pathname);
+const TEST_SERVER_DIR = path.join(TESTS_DIR, '.tmp');
 const TEST_SERVER_SCRIPT = path.join(TEST_SERVER_DIR, 'openclaw-mini-mcp-mock-server.cjs');
 
 let runtimeConfigFixture: RuntimeConfigFixture | null = null;

@@ -1,13 +1,13 @@
-import { callOnce, createRuntime, type Runtime, type ServerDefinition, type ServerToolInfo } from 'mcporter';
+import { createRuntime, type Runtime, type ServerDefinition, type ServerToolInfo } from 'mcporter';
 import type { McpServerConfig } from '@/lib/config/schema';
 import { getMcpServers } from '@/lib/config/runtime';
 
+const MCP_CONNECT_TIMEOUT_MS = 30_000;
 const MCP_TOOL_TIMEOUT_MS = 30_000;
 
 interface McpServiceDependencies {
   getServers: () => Record<string, McpServerConfig>;
   createRuntime: typeof createRuntime;
-  callOnce: typeof callOnce;
   rootDir: string;
 }
 
@@ -33,6 +33,25 @@ function isStdioServerConfig(config: McpServerConfig): config is Extract<McpServ
   return 'command' in config;
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('Timeout'));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 function toServerDefinition(name: string, config: McpServerConfig, rootDir: string): ServerDefinition {
   if (isStdioServerConfig(config)) {
     return {
@@ -48,12 +67,19 @@ function toServerDefinition(name: string, config: McpServerConfig, rootDir: stri
     };
   }
 
+  let url: URL;
+  try {
+    url = new URL(config.url);
+  } catch {
+    throw new Error(`Invalid MCP server URL for '${name}': ${config.url}`);
+  }
+
   return {
     name,
     description: config.description,
     command: {
       kind: 'http',
-      url: new URL(config.url),
+      url,
       headers: config.headers,
     },
   };
@@ -148,13 +174,17 @@ export class McpService {
     return {
       getServers: this.overrides.getServers ?? getMcpServers,
       createRuntime: this.overrides.createRuntime ?? createRuntime,
-      callOnce: this.overrides.callOnce ?? callOnce,
       rootDir: this.overrides.rootDir ?? process.cwd(),
     };
   }
 
   private getServerDefinition(serverName: string): ServerDefinition {
     const normalized = serverName.trim();
+
+    if (!normalized) {
+      throw new Error('MCP server name cannot be empty');
+    }
+
     const serverConfig = this.resolveDependencies().getServers()[normalized];
 
     if (!serverConfig) {
@@ -174,13 +204,15 @@ export class McpService {
     try {
       return await operation(runtime);
     } finally {
-      await runtime.close(serverName).catch(() => undefined);
+      await runtime.close(serverName).catch((error) => {
+        console.error(`[McpService] Failed to close MCP server '${serverName}':`, error);
+      });
     }
   }
 
   private async connect(runtime: Runtime, serverName: string): Promise<void> {
     try {
-      await runtime.connect(serverName);
+      await withTimeout(runtime.connect(serverName), MCP_CONNECT_TIMEOUT_MS);
     } catch (error) {
       if (isTimeoutError(error)) {
         throw new Error(`Connecting to MCP server '${serverName}' timed out after 30s`);

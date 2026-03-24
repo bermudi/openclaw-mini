@@ -28,7 +28,6 @@ function createService(options: {
 }) {
   const runtime = options.runtime ?? createRuntimeStub();
   const createRuntimeMock = mock(async () => runtime);
-  const callOnceMock = mock(async () => ({ ok: true }));
 
   const service = new McpService({
     getServers: () => (options.servers ?? {
@@ -39,11 +38,10 @@ function createService(options: {
       },
     }),
     createRuntime: createRuntimeMock,
-    callOnce: callOnceMock,
     rootDir: process.cwd(),
   });
 
-  return { service, runtime, createRuntimeMock, callOnceMock };
+  return { service, runtime, createRuntimeMock };
 }
 
 describe('McpService', () => {
@@ -110,6 +108,24 @@ describe('McpService', () => {
     await expect(service.listTools('missing')).rejects.toThrow("MCP server 'missing' is not configured");
   });
 
+  test('rejects empty server names clearly', async () => {
+    const { service } = createService({});
+
+    await expect(service.listTools('   ')).rejects.toThrow('MCP server name cannot be empty');
+  });
+
+  test('surfaces invalid HTTP server URLs with server context', async () => {
+    const { service } = createService({
+      servers: {
+        broken: { url: 'not-a-url' } as McpServerConfig,
+      },
+    });
+
+    await expect(service.listTools('broken')).rejects.toThrow(
+      "Invalid MCP server URL for 'broken': not-a-url",
+    );
+  });
+
   test('wraps connection failures with descriptive error', async () => {
     const runtime = createRuntimeStub({
       connect: mock(async () => {
@@ -137,6 +153,40 @@ describe('McpService', () => {
     expect((runtime.close as ReturnType<typeof mock>).mock.calls).toHaveLength(1);
   });
 
+  test('reports connect timeout after 30s', async () => {
+    const runtime = createRuntimeStub({
+      connect: mock(async () => {
+        throw new Error('Timeout');
+      }),
+    });
+    const { service } = createService({ runtime });
+
+    await expect(service.listTools('github')).rejects.toThrow(
+      "Connecting to MCP server 'github' timed out after 30s",
+    );
+  });
+
+  test('logs cleanup failures instead of swallowing them silently', async () => {
+    const runtime = createRuntimeStub({
+      close: mock(async () => {
+        throw new Error('close failed');
+      }),
+    });
+    const { service } = createService({ runtime });
+    const errorSpy = mock((..._args: unknown[]) => undefined);
+    const originalError = console.error;
+    console.error = errorSpy as typeof console.error;
+
+    try {
+      await service.listTools('github');
+    } finally {
+      console.error = originalError;
+    }
+
+    expect(errorSpy.mock.calls).toHaveLength(1);
+    expect(String(errorSpy.mock.calls[0]?.[0])).toContain("[McpService] Failed to close MCP server 'github':");
+  });
+
   test('builds MCP directory or returns empty string', () => {
     const { service } = createService({
       servers: {
@@ -154,7 +204,6 @@ describe('McpService', () => {
     const emptyService = new McpService({
       getServers: () => ({}),
       createRuntime: mock(async () => createRuntimeStub()),
-      callOnce: mock(async () => ({})),
       rootDir: process.cwd(),
     });
 
