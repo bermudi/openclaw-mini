@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 
-import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -15,14 +15,20 @@ function restoreEnv(): void {
   }
 }
 
-function makeMinimalConfig(runtime?: object) {
+function makeMinimalConfig(runtime?: object, extra?: Record<string, unknown>) {
   return {
     providers: {
       openai: { id: 'openai', apiType: 'openai-chat' as const, apiKey: 'test-key' },
     },
     agent: { provider: 'openai', model: 'gpt-4.1-mini' },
     ...(runtime !== undefined ? { runtime } : {}),
+    ...(extra ?? {}),
   };
+}
+
+async function setProviderRegistryState(config: ReturnType<typeof makeMinimalConfig> = makeMinimalConfig()): Promise<void> {
+  const { providerRegistry } = await import('../src/lib/services/provider-registry');
+  providerRegistry.setState({ config, configPath: '/test' });
 }
 
 beforeEach(() => {
@@ -167,12 +173,7 @@ describe('getRuntimeConfig() defaults', () => {
   }
 
   test('returns all default values when no runtime section is configured', async () => {
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState();
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -207,15 +208,7 @@ describe('getRuntimeConfig() defaults', () => {
       },
     };
 
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({
-          config: makeMinimalConfig(runtimeSection),
-          configPath: '/test',
-        }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState(makeMinimalConfig(runtimeSection));
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -237,15 +230,7 @@ describe('getRuntimeConfig() defaults', () => {
   });
 
   test('fills in defaults for missing nested sections', async () => {
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({
-          config: makeMinimalConfig({ safety: { subagentTimeout: 60 } }),
-          configPath: '/test',
-        }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState(makeMinimalConfig({ safety: { subagentTimeout: 60 } }));
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -265,12 +250,7 @@ describe('getRuntimeConfig() defaults', () => {
 
 describe('getRuntimeConfig() deprecation warnings', () => {
   test('emits deprecation warning for OPENCLAW_MAX_SPAWN_DEPTH', async () => {
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState();
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -288,12 +268,7 @@ describe('getRuntimeConfig() deprecation warnings', () => {
   });
 
   test('uses OPENCLAW_MAX_SPAWN_DEPTH value as fallback when not in config', async () => {
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState();
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -305,12 +280,7 @@ describe('getRuntimeConfig() deprecation warnings', () => {
   });
 
   test('emits deprecation warning for OPENCLAW_SUBAGENT_TIMEOUT', async () => {
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState();
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -328,12 +298,7 @@ describe('getRuntimeConfig() deprecation warnings', () => {
   });
 
   test('uses OPENCLAW_SUBAGENT_TIMEOUT value as fallback when not in config', async () => {
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState();
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -345,12 +310,7 @@ describe('getRuntimeConfig() deprecation warnings', () => {
   });
 
   test('emits deprecation warning for OPENCLAW_SESSION_TOKEN_THRESHOLD', async () => {
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState();
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -368,12 +328,7 @@ describe('getRuntimeConfig() deprecation warnings', () => {
   });
 
   test('uses OPENCLAW_SESSION_TOKEN_THRESHOLD as fallback when not in config', async () => {
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState();
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -385,15 +340,7 @@ describe('getRuntimeConfig() deprecation warnings', () => {
   });
 
   test('config file value takes precedence over env var', async () => {
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({
-          config: makeMinimalConfig({ safety: { subagentTimeout: 120 } }),
-          configPath: '/test',
-        }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState(makeMinimalConfig({ safety: { subagentTimeout: 120 } }));
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -405,12 +352,7 @@ describe('getRuntimeConfig() deprecation warnings', () => {
   });
 
   test('deprecation warning is emitted only once per env var', async () => {
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState();
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -594,14 +536,84 @@ describe('runtimeConfigSchema search section', () => {
   });
 });
 
+describe('runtimeConfigSchema browser section', () => {
+  test('accepts config with valid browser settings', async () => {
+    const { runtimeConfigSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeConfigSchema.safeParse({
+      providers: {
+        openai: { apiType: 'openai-chat', apiKey: 'test-key' },
+      },
+      agent: { provider: 'openai', model: 'gpt-4.1-mini' },
+      browser: {
+        headless: false,
+        viewport: { width: 1920, height: 1080 },
+        navigationTimeout: 45000,
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts config without browser section', async () => {
+    const { runtimeConfigSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeConfigSchema.safeParse({
+      providers: {
+        openai: { apiType: 'openai-chat', apiKey: 'test-key' },
+      },
+      agent: { provider: 'openai', model: 'gpt-4.1-mini' },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  test('applies browser defaults for partial config', async () => {
+    await setProviderRegistryState(makeMinimalConfig(undefined, {
+      browser: { headless: false },
+    }));
+
+    const { getBrowserConfig } = await import('../src/lib/config/runtime');
+    const config = getBrowserConfig();
+
+    expect(config.headless).toBe(false);
+    expect(config.viewport).toEqual({ width: 1280, height: 720 });
+    expect(config.navigationTimeout).toBe(30000);
+  });
+
+  test('returns browser defaults when config omits browser section', async () => {
+    await setProviderRegistryState();
+
+    const { getBrowserConfig } = await import('../src/lib/config/runtime');
+    const config = getBrowserConfig();
+
+    expect(config).toEqual({
+      headless: true,
+      viewport: { width: 1280, height: 720 },
+      navigationTimeout: 30000,
+    });
+  });
+
+  test('rejects invalid browser viewport values', async () => {
+    const { runtimeConfigSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeConfigSchema.safeParse({
+      providers: {
+        openai: { apiType: 'openai-chat', apiKey: 'test-key' },
+      },
+      agent: { provider: 'openai', model: 'gpt-4.1-mini' },
+      browser: {
+        viewport: { width: 0, height: 720 },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
+
 describe('getRuntimeConfig() exec defaults', () => {
   test('returns default exec values when no exec section is configured', async () => {
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({ config: makeMinimalConfig(), configPath: '/test' }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState();
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -624,15 +636,7 @@ describe('getRuntimeConfig() exec defaults', () => {
       },
     };
 
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({
-          config: makeMinimalConfig(runtimeSection),
-          configPath: '/test',
-        }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState(makeMinimalConfig(runtimeSection));
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -650,15 +654,7 @@ describe('getRuntimeConfig() exec defaults', () => {
       exec: { enabled: true },
     };
 
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({
-          config: makeMinimalConfig(runtimeSection),
-          configPath: '/test',
-        }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState(makeMinimalConfig(runtimeSection));
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();
@@ -676,15 +672,7 @@ describe('getRuntimeConfig() exec defaults', () => {
       exec: { enabled: true, maxTimeout: 120 },
     };
 
-    mock.module('../src/lib/services/provider-registry', () => ({
-      providerRegistry: {
-        getState: () => ({
-          config: makeMinimalConfig(runtimeSection),
-          configPath: '/test',
-        }),
-      },
-      resetProviderRegistryForTests: () => {},
-    }));
+    await setProviderRegistryState(makeMinimalConfig(runtimeSection));
 
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
     resetRuntimeWarningsForTests();

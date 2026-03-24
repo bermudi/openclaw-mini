@@ -12,6 +12,7 @@ import { initializeWorkspace } from '@/lib/services/workspace-service';
 import { initializeAdapters } from '@/lib/adapters';
 import { hookSubscriptionManager } from '@/lib/services/hook-subscription-manager';
 import { watchConfig } from '@/lib/config/watcher';
+import { registerOptionalTools } from '@/lib/tools';
 
 let initialized = false;
 let initResult: InitResult | null = null;
@@ -140,6 +141,15 @@ export async function initialize(): Promise<InitResult> {
 
     // Initialize adapters
     initializeAdapters();
+
+    try {
+      await registerOptionalTools();
+    } catch (error) {
+      result.softWarnings.push({
+        type: 'browser-tool',
+        warning: `Browser tool registration skipped: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
 
     // Initialize hook subscriptions
     let hookTriggerCount = 0;

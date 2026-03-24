@@ -35,6 +35,17 @@ const runtimeExecSchema = z.object({
   maxOutputSize: z.number().int().positive().optional(),
 });
 
+const browserViewportSchema = z.object({
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+});
+
+const browserConfigSchema = z.object({
+  headless: z.boolean().optional(),
+  viewport: browserViewportSchema.optional(),
+  navigationTimeout: z.number().int().positive().optional(),
+});
+
 export const runtimeSectionSchema = z.object({
   safety: runtimeSafetySchema.optional(),
   retention: runtimeRetentionSchema.optional(),
@@ -72,6 +83,17 @@ export interface ExecConfig {
   allowlist?: string[];
   maxTimeout?: number;
   maxOutputSize?: number;
+}
+
+export interface BrowserViewportConfig {
+  width: number;
+  height: number;
+}
+
+export interface BrowserConfig {
+  headless?: boolean;
+  viewport?: BrowserViewportConfig;
+  navigationTimeout?: number;
 }
 
 export interface SearchConfig {
@@ -144,6 +166,7 @@ export const runtimeConfigSchema = z.object({
   providers: providersSchema,
   agent: agentConfigSchema,
   runtime: runtimeSectionSchema.optional(),
+  browser: browserConfigSchema.optional(),
   search: searchConfigSchema.optional(),
 }).strict().superRefine((config, context) => {
   if (!(config.agent.provider in config.providers)) {
@@ -181,6 +204,7 @@ export interface RuntimeConfig {
   providers: Record<string, ProviderDefinition>;
   agent: AgentConfig;
   runtime?: RuntimeSectionConfig;
+  browser?: BrowserConfig;
   search?: SearchConfig;
 }
 
@@ -204,6 +228,7 @@ export function normalizeRuntimeConfig(input: z.infer<typeof runtimeConfigSchema
       fallbackModel: input.agent.fallbackModel,
     },
     runtime: input.runtime,
+    browser: input.browser,
     search: input.search,
   };
 }

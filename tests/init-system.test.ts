@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import fs from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -292,5 +292,39 @@ describe('init system - soft warnings', () => {
 
     expect(result.success).toBe(true);
     expect(result.softWarnings.some(w => w.type === 'whatsapp-adapter')).toBe(true);
+  });
+
+  test('continues initialization when optional browser tool registration fails', async () => {
+    const configPath = path.join(createTempDir(), 'openclaw.json');
+    writeConfig(configPath, `{
+      providers: {
+        openai: {
+          apiType: 'openai-chat',
+          apiKey: '\${OPENAI_API_KEY}',
+        },
+      },
+      agent: {
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
+      },
+    }`);
+    process.env.OPENCLAW_CONFIG_PATH = configPath;
+    process.env.DATABASE_URL = 'file:./db/custom.db';
+
+    const toolsModule = await import('../src/lib/tools');
+    const registerOptionalToolsSpy = spyOn(toolsModule, 'registerOptionalTools');
+    registerOptionalToolsSpy.mockImplementation(async () => {
+      throw new Error('boom');
+    });
+
+    const { initialize, resetInitForTests } = await import('../src/lib/init');
+    resetInitForTests();
+
+    const result = await initialize();
+
+    expect(result.success).toBe(true);
+    expect(result.softWarnings.some(w => w.type === 'browser-tool' && w.warning.includes('boom'))).toBe(true);
+
+    registerOptionalToolsSpy.mockRestore();
   });
 });

@@ -20,6 +20,11 @@ import { parseCommand, getBinaryBasename, capCombinedOutput } from '@/lib/utils/
 import { existsSync } from 'fs';
 import type { ChannelType } from '@/lib/types';
 import { SearchService, getSearchProvider } from '@/lib/services/search-service';
+import { browserService } from '@/lib/services/browser-service';
+
+function assertNever(value: never): never {
+  throw new Error(`Unsupported browser action: ${String(value)}`);
+}
 
 export interface ToolParameter {
   name: string;
@@ -116,6 +121,11 @@ export function registerTool(name: string, registeredTool: CoreTool, meta: ToolM
   toolMeta.set(name, meta);
 }
 
+export function unregisterTool(name: string): void {
+  tools.delete(name);
+  toolMeta.delete(name);
+}
+
 export function getTool(name: string): CoreTool | undefined {
   return tools.get(name);
 }
@@ -209,6 +219,83 @@ export function getToolsByNames(names: string[]): Record<string, CoreTool> {
       .filter(({ name }) => allowed.has(name.toLowerCase()))
       .map(({ name, tool: registeredTool }) => [name, registeredTool]),
   );
+}
+
+const browserActionSchema = z.discriminatedUnion('action', [
+  z.object({
+    action: z.literal('navigate'),
+    url: z.string().url().describe('The URL to navigate to'),
+  }),
+  z.object({
+    action: z.literal('click'),
+    url: z.string().url().describe('The URL to navigate to before clicking'),
+    selector: z.string().min(1).describe('CSS selector for the element to click'),
+  }),
+  z.object({
+    action: z.literal('type'),
+    url: z.string().url().describe('The URL to navigate to before typing'),
+    selector: z.string().min(1).describe('CSS selector for the input element'),
+    text: z.string().describe('Text to type into the element'),
+  }),
+  z.object({
+    action: z.literal('screenshot'),
+    url: z.string().url().describe('The URL to capture'),
+    fullPage: z.boolean().optional().describe('Capture the full scrollable page'),
+  }),
+  z.object({
+    action: z.literal('get_text'),
+    url: z.string().url().describe('The URL to extract text from'),
+    selector: z.string().min(1).optional().describe('Optional CSS selector to scope text extraction'),
+  }),
+  z.object({
+    action: z.literal('evaluate'),
+    url: z.string().url().describe('The URL to evaluate JavaScript on'),
+    script: z.string().min(1).describe('JavaScript expression to evaluate in the page context'),
+  }),
+  z.object({
+    action: z.literal('pdf'),
+    url: z.string().url().describe('The URL to render as PDF'),
+    agentId: z.string().min(1).describe('Agent ID used to resolve the sandbox output directory'),
+  }),
+]);
+
+export async function registerOptionalTools(): Promise<void> {
+  const browserAvailable = await browserService.checkAvailability();
+
+  if (browserAvailable) {
+    registerTool(
+      'browser_action',
+      tool({
+        description: 'Control a Playwright browser to navigate, interact, extract content, capture screenshots, and generate PDFs.',
+        inputSchema: browserActionSchema,
+        execute: async (input): Promise<ToolResult> => {
+          switch (input.action) {
+            case 'navigate':
+              return browserService.executeAction('navigate', { url: input.url });
+            case 'click':
+              return browserService.executeAction('click', { url: input.url, selector: input.selector });
+            case 'type':
+              return browserService.executeAction('type', { url: input.url, selector: input.selector, text: input.text });
+            case 'screenshot':
+              return browserService.executeAction('screenshot', { url: input.url, fullPage: input.fullPage });
+            case 'get_text':
+              return browserService.executeAction('get_text', { url: input.url, selector: input.selector });
+            case 'evaluate':
+              return browserService.executeAction('evaluate', { url: input.url, script: input.script });
+            case 'pdf':
+              return browserService.executeAction('pdf', { url: input.url, agentId: input.agentId });
+            default:
+              assertNever(input);
+          }
+        },
+      }),
+      { riskLevel: 'high' },
+    );
+  }
+
+  if (!browserAvailable) {
+    unregisterTool('browser_action');
+  }
 }
 
 registerTool(

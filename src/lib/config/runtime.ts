@@ -1,5 +1,5 @@
 import { providerRegistry } from '@/lib/services/provider-registry';
-import type { PrismaLogLevel } from '@/lib/config/schema';
+import type { BrowserConfig, BrowserViewportConfig, PrismaLogLevel } from '@/lib/config/schema';
 
 export interface RuntimeBehaviorConfig {
   safety: {
@@ -28,6 +28,12 @@ export interface RuntimeBehaviorConfig {
     maxTimeout: number;
     maxOutputSize: number;
   };
+}
+
+export interface ResolvedBrowserConfig {
+  headless: boolean;
+  viewport: BrowserViewportConfig;
+  navigationTimeout: number;
 }
 
 const warnedEnvVars = new Set<string>();
@@ -72,6 +78,30 @@ function getDefaults(): RuntimeBehaviorConfig {
       maxTimeout: 30,
       maxOutputSize: 10000,
     },
+  };
+}
+
+function getBrowserDefaults(): ResolvedBrowserConfig {
+  return {
+    headless: true,
+    viewport: {
+      width: 1280,
+      height: 720,
+    },
+    navigationTimeout: 30000,
+  };
+}
+
+function resolveBrowserConfig(config?: BrowserConfig): ResolvedBrowserConfig {
+  const defaults = getBrowserDefaults();
+
+  return {
+    headless: config?.headless ?? defaults.headless,
+    viewport: {
+      width: config?.viewport?.width ?? defaults.viewport.width,
+      height: config?.viewport?.height ?? defaults.viewport.height,
+    },
+    navigationTimeout: config?.navigationTimeout ?? defaults.navigationTimeout,
   };
 }
 
@@ -144,6 +174,21 @@ export function getRuntimeConfig(): RuntimeBehaviorConfig {
       maxOutputSize: runtime?.exec?.maxOutputSize ?? defaults.exec.maxOutputSize,
     },
   };
+}
+
+export function getBrowserConfig(config?: BrowserConfig): ResolvedBrowserConfig {
+  if (config) {
+    return resolveBrowserConfig(config);
+  }
+
+  let state: ReturnType<typeof providerRegistry.getState> | null = null;
+  try {
+    state = providerRegistry.getState();
+  } catch {
+    return getBrowserDefaults();
+  }
+
+  return resolveBrowserConfig(state.config.browser);
 }
 
 export function getPrismaLogConfig(): PrismaLogLevel[] {
