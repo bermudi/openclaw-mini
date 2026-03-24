@@ -7,7 +7,7 @@ export interface CheckResult {
   guidance?: string;
 }
 
-export type HardRequirement = 'config-file' | 'provider-keys' | 'database' | 'provider-configured';
+export type HardRequirement = 'config-file' | 'provider-keys' | 'database' | 'provider-configured' | 'agent';
 
 export type SoftRequirement = 'telegram-adapter' | 'whatsapp-adapter' | 'workspace-dir' | 'hook-triggers';
 

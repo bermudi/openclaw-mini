@@ -4,6 +4,17 @@
 import { db } from '@/lib/db';
 import type { CheckResult } from '../types';
 
+const DB_CHECK_TIMEOUT_MS = 10000; // 10 seconds
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, context: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${context} timed out after ${timeoutMs}ms`)), timeoutMs)
+    ),
+  ]);
+}
+
 export async function checkDatabase(): Promise<CheckResult> {
   const databaseUrl = process.env.DATABASE_URL;
 
@@ -15,24 +26,45 @@ export async function checkDatabase(): Promise<CheckResult> {
     };
   }
 
+  // Only SQLite is supported at this time - fail fast with clear guidance for other databases
+  if (!databaseUrl.startsWith('file:') && !databaseUrl.startsWith('sqlite:')) {
+    return {
+      success: false,
+      error: 'Only SQLite is supported at this time',
+      guidance: 'Use a file-based SQLite database (e.g., DATABASE_URL="file:./dev.db")',
+    };
+  }
+
   try {
-    // Test connection by running a simple query
-    await db.$queryRaw`SELECT 1`;
+    // Test connection by running a simple query with timeout
+    await withTimeout(
+      db.$queryRaw`SELECT 1`,
+      DB_CHECK_TIMEOUT_MS,
+      'Database connection check'
+    );
 
     // Check if migrations have been applied by looking for _prisma_migrations table
     // For SQLite, we can check if the table exists
-    const migrationCheck = await db.$queryRaw<Array<{ name: string }>>`
-      SELECT name FROM sqlite_master 
-      WHERE type='table' AND name='_prisma_migrations'
-    `;
+    const migrationCheck = await withTimeout(
+      db.$queryRaw<Array<{ name: string }>>`
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='_prisma_migrations'
+      `,
+      DB_CHECK_TIMEOUT_MS,
+      'Migration table check'
+    );
 
     if (migrationCheck.length === 0) {
       // No migrations table - database might be fresh
       // Check if any of our tables exist
-      const tablesCheck = await db.$queryRaw<Array<{ name: string }>>`
-        SELECT name FROM sqlite_master 
-        WHERE type='table' AND name IN ('agents', 'tasks', 'sessions')
-      `;
+      const tablesCheck = await withTimeout(
+        db.$queryRaw<Array<{ name: string }>>`
+          SELECT name FROM sqlite_master
+          WHERE type='table' AND name IN ('agents', 'tasks', 'sessions')
+        `,
+        DB_CHECK_TIMEOUT_MS,
+        'Tables existence check'
+      );
 
       if (tablesCheck.length === 0) {
         return {

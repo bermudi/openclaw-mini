@@ -20,6 +20,16 @@ export async function checkDefaultAgent(): Promise<CheckResult> {
     const provider = state.config.agent.provider;
     const model = state.config.agent.model;
 
+    // Verify provider exists in registry
+    const providerDef = providerRegistry.get(provider);
+    if (!providerDef) {
+      return {
+        success: false,
+        error: `Provider '${provider}' is not registered in the provider registry`,
+        guidance: `Check your openclaw.json configuration. Provider '${provider}' must be defined in the 'providers' section.`,
+      };
+    }
+
     // Create default agent
     await db.agent.create({
       data: {

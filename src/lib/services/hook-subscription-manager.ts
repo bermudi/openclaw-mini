@@ -8,7 +8,7 @@ import { inputManager } from './input-manager';
 class HookSubscriptionManager {
   private readonly unsubscribers = new Map<string, () => void>();
 
-  async initialize(): Promise<void> {
+  async initialize(): Promise<number> {
     const triggers = await db.trigger.findMany({
       where: { type: 'hook', enabled: true },
     });
@@ -18,6 +18,7 @@ class HookSubscriptionManager {
     }
 
     console.log(`[HookSubscriptionManager] Initialized with ${triggers.length} hook trigger(s)`);
+    return triggers.length;
   }
 
   async subscribeHookTrigger(triggerId: string): Promise<void> {

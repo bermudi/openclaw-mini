@@ -68,9 +68,13 @@ export async function initialize(): Promise<InitResult> {
   if (result.hardFailures.length === 0) {
     try {
       const runtimeState = initializeProviderRegistry();
-      
+
       // Start config watcher
-      watchConfig({ configPath: runtimeState.configPath });
+      try {
+        watchConfig({ configPath: runtimeState.configPath });
+      } catch (error) {
+        console.error('[Init] Config watcher failed:', error);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       result.hardFailures.push({
@@ -98,7 +102,7 @@ export async function initialize(): Promise<InitResult> {
     const agentCheck = await checkDefaultAgent();
     if (!agentCheck.success) {
       result.hardFailures.push({
-        type: 'database', // Reuse database type since it's DB-related
+        type: 'agent',
         error: agentCheck.error!,
         guidance: agentCheck.guidance!,
       });
@@ -125,19 +129,35 @@ export async function initialize(): Promise<InitResult> {
     }
 
     // Check workspace directory
-    const workspaceResult = initializeWorkspace();
-    if (workspaceResult.created) {
-      console.log(`[Init] Created workspace directory: ${workspaceResult.workspaceDir}`);
+    try {
+      initializeWorkspace();
+    } catch (error) {
+      result.softWarnings.push({
+        type: 'workspace-dir',
+        warning: `Workspace directory could not be created: ${error instanceof Error ? error.message : String(error)}`,
+      });
     }
 
     // Initialize adapters
     initializeAdapters();
 
     // Initialize hook subscriptions
+    let hookTriggerCount = 0;
     try {
-      await hookSubscriptionManager.initialize();
+      hookTriggerCount = await hookSubscriptionManager.initialize();
     } catch (error) {
       console.error('[Init] Hook subscription manager failed:', error);
+      result.softWarnings.push({
+        type: 'hook-triggers',
+        warning: `Hook triggers could not be initialized: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+
+    if (hookTriggerCount === 0) {
+      result.softWarnings.push({
+        type: 'hook-triggers',
+        warning: 'No hook triggers configured',
+      });
     }
   }
 

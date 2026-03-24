@@ -13,6 +13,11 @@ export interface LoadConfigResult {
   configPath: string;
 }
 
+interface MissingEnvVarError {
+  providerId: string;
+  envVarName: string;
+}
+
 function replaceApiKeyEnvReference(apiKey: string, providerId: string): string {
   const match = apiKey.trim().match(/^\$\{([A-Z0-9_]+)\}$/);
   if (!match) {
@@ -29,9 +34,11 @@ function replaceApiKeyEnvReference(apiKey: string, providerId: string): string {
   return value;
 }
 
-function substituteEnvVarsInApiKeys(rawConfig: unknown): unknown {
+function substituteEnvVarsInApiKeys(rawConfig: unknown): { config: unknown; missingEnvVars: MissingEnvVarError[] } {
+  const missingEnvVars: MissingEnvVarError[] = [];
+
   if (!rawConfig || typeof rawConfig !== 'object') {
-    return rawConfig;
+    return { config: rawConfig, missingEnvVars };
   }
 
   const config = rawConfig as {
@@ -39,14 +46,21 @@ function substituteEnvVarsInApiKeys(rawConfig: unknown): unknown {
   };
 
   if (!config.providers || typeof config.providers !== 'object') {
-    return rawConfig;
+    return { config: rawConfig, missingEnvVars };
   }
 
   const clonedProviders = Object.entries(config.providers).reduce<Record<string, Record<string, unknown>>>((accumulator, [providerId, providerConfig]) => {
     const nextProviderConfig = { ...(providerConfig as Record<string, unknown>) };
 
     if (typeof nextProviderConfig.apiKey === 'string') {
-      nextProviderConfig.apiKey = replaceApiKeyEnvReference(nextProviderConfig.apiKey, providerId);
+      try {
+        nextProviderConfig.apiKey = replaceApiKeyEnvReference(nextProviderConfig.apiKey, providerId);
+      } catch (error) {
+        const envVarMatch = error instanceof Error ? error.message.match(/environment variable '([A-Z0-9_]+)'/) : null;
+        if (envVarMatch) {
+          missingEnvVars.push({ providerId, envVarName: envVarMatch[1] });
+        }
+      }
     }
 
     accumulator[providerId] = nextProviderConfig;
@@ -54,9 +68,19 @@ function substituteEnvVarsInApiKeys(rawConfig: unknown): unknown {
   }, {});
 
   return {
-    ...(rawConfig as Record<string, unknown>),
-    providers: clonedProviders,
+    config: {
+      ...(rawConfig as Record<string, unknown>),
+      providers: clonedProviders,
+    },
+    missingEnvVars,
   };
+}
+
+function buildMissingEnvVarsError(missingEnvVars: MissingEnvVarError[]): Error {
+  const details = missingEnvVars
+    .map(({ providerId, envVarName }) => `  - Provider '${providerId}' needs ${envVarName}`)
+    .join('\n');
+  return new Error(`Multiple missing environment variables:\n${details}`);
 }
 
 export function getConfigPath(): string {
@@ -71,12 +95,12 @@ export function getConfigPath(): string {
   return path.join(baseDirectory, 'openclaw.json');
 }
 
-function parseConfigFile(configPath: string): RuntimeConfig {
+function parseConfigFile(configPath: string): { config: RuntimeConfig; missingEnvVars: MissingEnvVarError[] } {
   const fileContents = fs.readFileSync(configPath, 'utf-8');
   const parsed = JSON5.parse(fileContents) as unknown;
-  const substituted = substituteEnvVarsInApiKeys(parsed);
+  const { config: substituted, missingEnvVars } = substituteEnvVarsInApiKeys(parsed);
   const validated = runtimeConfigSchema.parse(substituted);
-  return normalizeRuntimeConfig(validated);
+  return { config: normalizeRuntimeConfig(validated), missingEnvVars };
 }
 
 function buildMissingConfigFileError(configPath: string): Error {
@@ -107,8 +131,14 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadConfigResult {
     throw buildMissingConfigFileError(configPath);
   }
 
+  const { config, missingEnvVars } = parseConfigFile(configPath);
+
+  if (missingEnvVars.length > 0) {
+    throw buildMissingEnvVarsError(missingEnvVars);
+  }
+
   return {
-    config: parseConfigFile(configPath),
+    config,
     configPath,
   };
 }

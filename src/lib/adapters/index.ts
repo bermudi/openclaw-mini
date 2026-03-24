@@ -2,7 +2,6 @@ import { registerAdapter } from '@/lib/services/delivery-service';
 import { TelegramAdapter } from '@/lib/adapters/telegram-adapter';
 import { WhatsAppAdapter } from '@/lib/adapters/whatsapp-adapter';
 import { WebChatAdapter } from '@/lib/adapters/webchat-adapter';
-import { hookSubscriptionManager } from '@/lib/services/hook-subscription-manager';
 import type { ChannelAdapter } from '@/lib/types';
 
 let initialized = false;
@@ -35,10 +34,6 @@ export function initializeAdapters(): ChannelAdapter[] {
   const webchat = new WebChatAdapter();
   registerAdapter(webchat);
   adapters.push(webchat);
-
-  hookSubscriptionManager.initialize().catch((error: unknown) => {
-    console.error('[Adapters] Failed to initialize hook subscriptions:', error);
-  });
 
   registeredAdapters = adapters;
   initialized = true;
