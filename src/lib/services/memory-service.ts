@@ -5,6 +5,7 @@ import { db } from '@/lib/db';
 import { Memory, MemoryCategory } from '@/lib/types';
 import { MemoryGit, type GitCommit } from '@/lib/services/memory-git';
 import { eventBus } from '@/lib/services/event-bus';
+import { memoryIndexingService, type AutomaticRecallResult } from '@/lib/services/memory-indexing';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -49,11 +50,20 @@ export interface CreateMemoryInput {
   confidence?: number;
   _commitAction?: 'Create' | 'Update' | 'Append';
   _preserveConfidence?: boolean;
+  _skipIndexing?: boolean;
 }
 
 export interface UpdateMemoryInput {
   value: string;
   category?: MemoryCategory;
+}
+
+export interface MemoryPromptContext {
+  pinnedSection: string;
+  recalledSection: string;
+  omittedCount: number;
+  estimatedTokens: number;
+  logId: string | null;
 }
 
 class MemoryService {
@@ -128,9 +138,46 @@ class MemoryService {
     const action = input._commitAction ?? (existing ? 'Update' : 'Create');
     await this.saveToFile(input.agentId, input.key, input.value, action);
 
+    if (!input._skipIndexing) {
+      await memoryIndexingService.markMemoryForIndexing(memory.id, input.agentId, 'write');
+    }
+
     eventBus.emit('memory:updated', { agentId: input.agentId, key: input.key });
+    if (!input._skipIndexing) {
+      eventBus.emit('memory:index-requested', {
+        agentId: input.agentId,
+        memoryId: memory.id,
+        key: input.key,
+        reason: 'write',
+      });
+    }
 
     return this.mapMemory(memory);
+  }
+
+  async processPendingIndexing(limit = 20): Promise<{ processed: number; failed: number }> {
+    const states = await memoryIndexingService.getPendingIndexStates(limit);
+    let processed = 0;
+    let failed = 0;
+
+    for (const state of states) {
+      const result = await memoryIndexingService.indexMemory(state.memoryId);
+      if (result.state?.status === 'indexed') {
+        processed += 1;
+      } else {
+        failed += 1;
+      }
+    }
+
+    return { processed, failed };
+  }
+
+  async reindexAgentMemories(agentId: string, force = false): Promise<{ indexed: number; failed: number }> {
+    const result = await memoryIndexingService.reindexAgentMemories(agentId, { force });
+    return {
+      indexed: result.indexed,
+      failed: result.failed,
+    };
   }
 
   /**
@@ -185,6 +232,8 @@ class MemoryService {
       where: { id: memory.id },
     });
 
+    await memoryIndexingService.purgeMemoryIndex(memory.id);
+
     // Also delete file
     await this.deleteFile(agentId, key);
 
@@ -213,16 +262,40 @@ class MemoryService {
   /**
    * Load agent context (all memories combined)
    */
-  async loadAgentContext(agentId: string): Promise<string> {
-    const memories = await this.getAgentMemories(agentId);
+  async loadAgentContext(agentId: string, query = ''): Promise<string> {
+    const promptContext = await this.buildPromptContext(agentId, Number.MAX_SAFE_INTEGER, query);
+    const sections = [promptContext.pinnedSection, promptContext.recalledSection]
+      .filter(section => section.trim().length > 0)
+      .join('\n\n');
 
-    const sections = memories
-      .filter(memory => memory.category !== 'archived')
-      .map(memory => {
-        return `## ${memory.key}\n\n${memory.value}\n\n---\n`;
-      });
+    return sections ? `# Agent Context\n\n${sections}` : '# Agent Context';
+  }
 
-    return `# Agent Context\n\n${sections.join('')}`;
+  async buildPromptContext(agentId: string, availableTokenBudget: number, query: string): Promise<MemoryPromptContext> {
+    const recall = await memoryIndexingService.buildAutomaticRecall(agentId, {
+      query,
+      availableTokenBudget,
+    });
+
+    return this.formatPromptContext(recall);
+  }
+
+  async searchMemories(agentId: string, query: string, limit?: number): Promise<{
+    results: Awaited<ReturnType<typeof memoryIndexingService.searchMemories>>['results'];
+    logId: string;
+  }> {
+    const search = await memoryIndexingService.searchMemories(agentId, { query, limit });
+    return {
+      results: search.results,
+      logId: search.logEntry.id,
+    };
+  }
+
+  async getExactMemory(agentId: string, key: string): Promise<{
+    memory: Memory | null;
+    retrievalMethod: 'exact';
+  }> {
+    return memoryIndexingService.exactGet(agentId, key);
   }
 
   /**
@@ -482,6 +555,23 @@ class MemoryService {
       lastReinforcedAt: memory.lastReinforcedAt,
       createdAt: memory.createdAt,
       updatedAt: memory.updatedAt,
+    };
+  }
+
+  private formatPromptContext(recall: AutomaticRecallResult): MemoryPromptContext {
+    const pinnedBody = recall.pinned.entries
+      .map(memory => `## ${memory.key}\n\n${memory.value}`)
+      .join('\n\n---\n\n');
+    const recalledBody = recall.recalled.entries
+      .map(memory => `## ${memory.key}\n\n${memory.value}\n\nRetrieval: ${memory.retrievalMethod} | Confidence: ${memory.confidence.toFixed(2)}`)
+      .join('\n\n---\n\n');
+
+    return {
+      pinnedSection: pinnedBody ? `PINNED MEMORY (omitted: ${recall.pinned.omittedCount}):\n${pinnedBody}` : '',
+      recalledSection: recalledBody ? `RECALLED MEMORY (omitted: ${recall.recalled.omittedCount}):\n${recalledBody}` : '',
+      omittedCount: recall.pinned.omittedCount + recall.recalled.omittedCount,
+      estimatedTokens: recall.pinned.estimatedTokens + recall.recalled.estimatedTokens,
+      logId: recall.logEntry.id,
     };
   }
 

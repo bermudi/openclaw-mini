@@ -13,7 +13,7 @@ import { auditService } from '@/lib/services/audit-service';
 import { getSkillForSubAgent } from '@/lib/services/skill-service';
 import { getOverrideFieldsApplied } from '@/lib/subagent-config';
 import { getRuntimeConfig } from '@/lib/config/runtime';
-import { getMemoryDir } from '@/lib/services/memory-service';
+import { getMemoryDir, memoryService } from '@/lib/services/memory-service';
 import { getSandboxDir, resolveSandboxPath } from '@/lib/services/sandbox-service';
 import { parseCommand, getBinaryBasename, capCombinedOutput } from '@/lib/utils/exec-helpers';
 import { existsSync } from 'fs';
@@ -667,6 +667,82 @@ registerTool(
         return { success: true, data: { filename, path: filePath } };
       } catch (error) {
         return { success: false, error: `Failed to write note: ${error}` };
+      }
+    },
+  }),
+  { riskLevel: 'low' },
+);
+
+registerTool(
+  'memory_search',
+  tool({
+    description: 'Search the agent memory store using exact, keyword, and vector-backed recall',
+    inputSchema: z.object({
+      query: z.string().describe('Search query or memory key hint'),
+      limit: z.number().int().positive().max(20).optional().describe('Maximum number of ranked results'),
+    }),
+    execute: async ({ query, limit }): Promise<ToolResult> => {
+      const context = getToolExecutionContext();
+      if (!context) {
+        return { success: false, error: 'memory_search called without task context' };
+      }
+
+      try {
+        await memoryService.processPendingIndexing();
+        const result = await memoryService.searchMemories(context.agentId, query, limit);
+        return {
+          success: true,
+          data: {
+            query,
+            results: result.results,
+            recallLogId: result.logId,
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Memory search failed',
+        };
+      }
+    },
+  }),
+  { riskLevel: 'low' },
+);
+
+registerTool(
+  'memory_get',
+  tool({
+    description: 'Get a canonical memory record by exact hierarchical key',
+    inputSchema: z.object({
+      key: z.string().describe('Exact memory key, e.g. user/name or system/preferences'),
+    }),
+    execute: async ({ key }): Promise<ToolResult> => {
+      const context = getToolExecutionContext();
+      if (!context) {
+        return { success: false, error: 'memory_get called without task context' };
+      }
+
+      try {
+        const result = await memoryService.getExactMemory(context.agentId, key);
+        if (!result.memory) {
+          return {
+            success: false,
+            error: `Memory not found: ${key}`,
+          };
+        }
+
+        return {
+          success: true,
+          data: {
+            memory: result.memory,
+            retrievalMethod: result.retrievalMethod,
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Memory lookup failed',
+        };
       }
     },
   }),

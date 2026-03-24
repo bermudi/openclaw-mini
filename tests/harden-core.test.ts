@@ -106,8 +106,9 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();
+  initializeProviderRegistry();
   await resetDb();
   cleanupAgentMemoryDirs();
   process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '40';
@@ -515,7 +516,7 @@ test('token budgeting preserves summaries, drops oldest regular messages first, 
         payload: { channel: string; sender: string; content: string };
       },
       input: {
-        context: string;
+        recallQuery: string;
         sessionMessages: Array<{
           role: 'user' | 'assistant' | 'system';
           content: string;
@@ -546,7 +547,7 @@ test('token budgeting preserves summaries, drops oldest regular messages first, 
         model: 'gpt-4',
         contextWindowOverride: null,
       },
-      context: 'MEMORY'.repeat(600),
+      recallQuery: 'memory query',
       sessionMessages: [
         {
           role: 'system',
@@ -569,8 +570,11 @@ test('token budgeting preserves summaries, drops oldest regular messages first, 
   expect(prompt).toContain('message-11-');
   expect(prompt).not.toContain('message-0-');
   expect(prompt).toContain('CURRENT SESSION CONTEXT');
-  if (prompt.includes('RUNTIME MEMORY SNAPSHOT')) {
-    expect(prompt.indexOf('CURRENT SESSION CONTEXT')).toBeLessThan(prompt.indexOf('RUNTIME MEMORY SNAPSHOT'));
+  if (prompt.includes('PINNED MEMORY') || prompt.includes('PINNED AND RECALLED MEMORY')) {
+    const memoryIndex = prompt.includes('PINNED MEMORY')
+      ? prompt.indexOf('PINNED MEMORY')
+      : prompt.indexOf('PINNED AND RECALLED MEMORY');
+    expect(prompt.indexOf('CURRENT SESSION CONTEXT')).toBeLessThan(memoryIndex);
   }
 
   const warnings: string[] = [];

@@ -60,7 +60,7 @@ export async function checkDatabase(): Promise<CheckResult> {
       const tablesCheck = await withTimeout(
         db.$queryRaw<Array<{ name: string }>>`
           SELECT name FROM sqlite_master
-          WHERE type='table' AND name IN ('agents', 'tasks', 'sessions')
+          WHERE type='table' AND name IN ('agents', 'tasks', 'sessions', 'memory_chunks', 'memory_index_states')
         `,
         DB_CHECK_TIMEOUT_MS,
         'Tables existence check'

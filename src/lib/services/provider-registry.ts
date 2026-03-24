@@ -200,6 +200,11 @@ export function ensureProviderRegistryInitialized(): ProviderRegistryState {
   return providerRegistry.getState();
 }
 
+export function setProviderRegistryStateForTests(state: ProviderRegistryState): void {
+  providerRegistry.setState(state);
+  initialized = true;
+}
+
 export function resetProviderRegistryForTests(): void {
   providerRegistry.reset();
   initialized = false;

@@ -28,6 +28,24 @@ const runtimePerformanceSchema = z.object({
   compactionThreshold: z.number().min(0).max(1).optional(),
 });
 
+const embeddingProviderSchema = z.enum(['disabled', 'openai', 'google', 'anthropic', 'ollama', 'mock']);
+const vectorRetrievalModeSchema = z.enum(['disabled', 'auto', 'sqlite-vec', 'in-process']);
+
+export type EmbeddingProvider = z.infer<typeof embeddingProviderSchema>;
+export type VectorRetrievalMode = z.infer<typeof vectorRetrievalModeSchema>;
+
+const runtimeMemorySchema = z.object({
+  embeddingProvider: embeddingProviderSchema.optional(),
+  embeddingModel: z.string().trim().min(1).optional(),
+  embeddingVersion: z.string().trim().min(1).optional(),
+  embeddingDimensions: z.number().int().positive().optional(),
+  chunkingThreshold: z.number().int().positive().optional(),
+  chunkOverlap: z.number().int().nonnegative().optional(),
+  vectorRetrievalMode: vectorRetrievalModeSchema.optional(),
+  recallConfidenceThreshold: z.number().min(0).max(1).optional(),
+  maxSearchResults: z.number().int().positive().optional(),
+}).strict();
+
 const runtimeExecSchema = z.object({
   enabled: z.boolean().optional(),
   allowlist: z.array(z.string().trim().min(1)).optional(),
@@ -73,6 +91,7 @@ export const runtimeSectionSchema = z.object({
   logging: runtimeLoggingSchema.optional(),
   performance: runtimePerformanceSchema.optional(),
   exec: runtimeExecSchema.optional(),
+  memory: runtimeMemorySchema.optional(),
 });
 
 export interface RuntimeSafetyConfig {
@@ -97,6 +116,18 @@ export interface RuntimePerformanceConfig {
   deliveryBatchSize?: number;
   contextWindow?: number;
   compactionThreshold?: number;
+}
+
+export interface RuntimeMemoryConfig {
+  embeddingProvider?: EmbeddingProvider;
+  embeddingModel?: string;
+  embeddingVersion?: string;
+  embeddingDimensions?: number;
+  chunkingThreshold?: number;
+  chunkOverlap?: number;
+  vectorRetrievalMode?: VectorRetrievalMode;
+  recallConfidenceThreshold?: number;
+  maxSearchResults?: number;
 }
 
 export interface ExecConfig {
@@ -134,6 +165,7 @@ export interface RuntimeSectionConfig {
   logging?: RuntimeLoggingConfig;
   performance?: RuntimePerformanceConfig;
   exec?: ExecConfig;
+  memory?: RuntimeMemoryConfig;
 }
 
 const searchConfigSchema = z.object({

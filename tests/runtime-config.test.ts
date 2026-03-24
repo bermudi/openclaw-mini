@@ -27,8 +27,8 @@ function makeMinimalConfig(runtime?: object, extra?: Record<string, unknown>) {
 }
 
 async function setProviderRegistryState(config: ReturnType<typeof makeMinimalConfig> = makeMinimalConfig()): Promise<void> {
-  const { providerRegistry } = await import('../src/lib/services/provider-registry');
-  providerRegistry.setState({ config, configPath: '/test' });
+  const { setProviderRegistryStateForTests } = await import('../src/lib/services/provider-registry');
+  setProviderRegistryStateForTests({ config, configPath: '/test' });
 }
 
 beforeEach(() => {
@@ -164,14 +164,6 @@ describe('runtimeSectionSchema', () => {
 // ============================================================
 
 describe('getRuntimeConfig() defaults', () => {
-  function setupRegistry(runtime?: object) {
-    const { providerRegistry } = require('../src/lib/services/provider-registry');
-    providerRegistry.reload(makeMinimalConfig(runtime));
-    // mark as initialized
-    const providerRegistryModule = require('../src/lib/services/provider-registry');
-    providerRegistryModule.initialized = true;
-  }
-
   test('returns all default values when no runtime section is configured', async () => {
     await setProviderRegistryState();
 

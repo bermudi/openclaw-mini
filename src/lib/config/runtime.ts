@@ -1,5 +1,12 @@
-import { providerRegistry } from '@/lib/services/provider-registry';
-import type { BrowserConfig, BrowserViewportConfig, McpServerConfig, PrismaLogLevel } from '@/lib/config/schema';
+import { ensureProviderRegistryInitialized, providerRegistry } from '@/lib/services/provider-registry';
+import type {
+  BrowserConfig,
+  BrowserViewportConfig,
+  EmbeddingProvider,
+  McpServerConfig,
+  PrismaLogLevel,
+  VectorRetrievalMode,
+} from '@/lib/config/schema';
 
 export interface RuntimeBehaviorConfig {
   safety: {
@@ -27,6 +34,17 @@ export interface RuntimeBehaviorConfig {
     allowlist: string[];
     maxTimeout: number;
     maxOutputSize: number;
+  };
+  memory: {
+    embeddingProvider: EmbeddingProvider;
+    embeddingModel: string;
+    embeddingVersion: string;
+    embeddingDimensions: number;
+    chunkingThreshold: number;
+    chunkOverlap: number;
+    vectorRetrievalMode: VectorRetrievalMode;
+    recallConfidenceThreshold: number;
+    maxSearchResults: number;
   };
 }
 
@@ -78,6 +96,17 @@ function getDefaults(): RuntimeBehaviorConfig {
       maxTimeout: 30,
       maxOutputSize: 10000,
     },
+    memory: {
+      embeddingProvider: 'disabled',
+      embeddingModel: 'text-embedding-3-small',
+      embeddingVersion: 'v1',
+      embeddingDimensions: 1536,
+      chunkingThreshold: 600,
+      chunkOverlap: 120,
+      vectorRetrievalMode: 'auto',
+      recallConfidenceThreshold: 0.4,
+      maxSearchResults: 20,
+    },
   };
 }
 
@@ -106,12 +135,11 @@ function resolveBrowserConfig(config?: BrowserConfig): ResolvedBrowserConfig {
 }
 
 export function getRuntimeConfig(): RuntimeBehaviorConfig {
-  // Handle uninitialized registry - return defaults
   let state: ReturnType<typeof providerRegistry.getState> | null = null;
   try {
-    state = providerRegistry.getState();
+    state = ensureProviderRegistryInitialized();
   } catch {
-    // Registry not initialized yet
+    // Fall back to defaults when config cannot be loaded yet.
   }
   
   if (!state) {
@@ -173,6 +201,17 @@ export function getRuntimeConfig(): RuntimeBehaviorConfig {
       maxTimeout: runtime?.exec?.maxTimeout ?? defaults.exec.maxTimeout,
       maxOutputSize: runtime?.exec?.maxOutputSize ?? defaults.exec.maxOutputSize,
     },
+    memory: {
+      embeddingProvider: runtime?.memory?.embeddingProvider ?? defaults.memory.embeddingProvider,
+      embeddingModel: runtime?.memory?.embeddingModel ?? defaults.memory.embeddingModel,
+      embeddingVersion: runtime?.memory?.embeddingVersion ?? defaults.memory.embeddingVersion,
+      embeddingDimensions: runtime?.memory?.embeddingDimensions ?? defaults.memory.embeddingDimensions,
+      chunkingThreshold: runtime?.memory?.chunkingThreshold ?? defaults.memory.chunkingThreshold,
+      chunkOverlap: runtime?.memory?.chunkOverlap ?? defaults.memory.chunkOverlap,
+      vectorRetrievalMode: runtime?.memory?.vectorRetrievalMode ?? defaults.memory.vectorRetrievalMode,
+      recallConfidenceThreshold: runtime?.memory?.recallConfidenceThreshold ?? defaults.memory.recallConfidenceThreshold,
+      maxSearchResults: runtime?.memory?.maxSearchResults ?? defaults.memory.maxSearchResults,
+    },
   };
 }
 
@@ -183,7 +222,7 @@ export function getBrowserConfig(config?: BrowserConfig): ResolvedBrowserConfig 
 
   let state: ReturnType<typeof providerRegistry.getState> | null = null;
   try {
-    state = providerRegistry.getState();
+    state = ensureProviderRegistryInitialized();
   } catch {
     return getBrowserDefaults();
   }
@@ -194,7 +233,7 @@ export function getBrowserConfig(config?: BrowserConfig): ResolvedBrowserConfig 
 export function getMcpServers(): Record<string, McpServerConfig> {
   let state: ReturnType<typeof providerRegistry.getState> | null = null;
   try {
-    state = providerRegistry.getState();
+    state = ensureProviderRegistryInitialized();
   } catch {
     return {};
   }

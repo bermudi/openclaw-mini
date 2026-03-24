@@ -157,6 +157,78 @@ export interface Memory {
   updatedAt: Date;
 }
 
+export type MemoryRetrievalMethod = 'exact' | 'keyword' | 'vector' | 'hybrid' | 'pinned';
+export type MemoryRecallMode = 'automatic' | 'search' | 'get';
+export type MemoryIndexStatus = 'pending' | 'indexed' | 'failed' | 'stale';
+
+export interface MemoryChunk {
+  id: string;
+  memoryId: string;
+  agentId: string;
+  memoryKey: string;
+  chunkIndex: number;
+  content: string;
+  normalizedContent: string;
+  contentHash: string;
+  tokenEstimate: number;
+  charCount: number;
+  embeddingProvider: string | null;
+  embeddingModel: string | null;
+  embeddingVersion: string | null;
+  embeddingDimensions: number | null;
+  embedding: number[] | null;
+  indexedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface MemoryIndexState {
+  id: string;
+  memoryId: string;
+  agentId: string;
+  status: MemoryIndexStatus;
+  lastContentHash: string | null;
+  lastIndexedAt: Date | null;
+  lastError: string | null;
+  attempts: number;
+  embeddingProvider: string | null;
+  embeddingModel: string | null;
+  embeddingVersion: string | null;
+  embeddingDimensions: number | null;
+  vectorMode: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface MemoryRecallCandidate {
+  key: string;
+  memoryId: string;
+  value: string;
+  snippet: string;
+  confidence: number;
+  category: MemoryCategory;
+  retrievalMethod: MemoryRetrievalMethod;
+  score: number;
+  tokenEstimate: number;
+  chunkId?: string;
+}
+
+export interface MemoryRecallLogEntry {
+  id: string;
+  agentId: string;
+  mode: MemoryRecallMode;
+  query: string | null;
+  retrievalMode: string;
+  candidateCounts: Record<string, number>;
+  selectedKeys: string[];
+  omittedKeys: string[];
+  selectedCount: number;
+  omittedCount: number;
+  estimatedTokens: number;
+  details: Record<string, unknown>;
+  createdAt: Date;
+}
+
 // Attachment Types
 export interface Attachment {
   channelFileId: string;

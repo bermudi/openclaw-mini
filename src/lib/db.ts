@@ -14,3 +14,10 @@ export const db =
   })
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = db
+
+export async function resetDbClientForTests(): Promise<void> {
+  if (globalForPrisma.prisma) {
+    await globalForPrisma.prisma.$disconnect()
+    globalForPrisma.prisma = undefined
+  }
+}

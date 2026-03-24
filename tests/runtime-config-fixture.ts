@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import type { RuntimeSectionConfig } from '../src/lib/config/schema';
+import type { RuntimeConfig, RuntimeSectionConfig } from '../src/lib/config/schema';
 
 interface RuntimeProviderConfig {
   apiType: string;
@@ -30,6 +30,15 @@ export interface RuntimeConfigFixture {
   dir: string;
 }
 
+export type RuntimeConfigFixtureOverrides = Partial<RuntimeConfig> & {
+  providers?: Record<string, RuntimeProviderConfig>;
+  agent?: RuntimeAgentConfig;
+  runtime?: RuntimeSectionConfig;
+  mcp?: {
+    servers: Record<string, Record<string, unknown>>;
+  };
+};
+
 const DEFAULT_RUNTIME_CONFIG: RuntimeConfigFixtureData = {
   providers: {
     openai: {
@@ -56,7 +65,7 @@ const DEFAULT_RUNTIME_CONFIG: RuntimeConfigFixtureData = {
   },
 };
 
-function mergeRuntimeConfig(overrides: Partial<RuntimeConfigFixtureData> = {}): RuntimeConfigFixtureData {
+function mergeRuntimeConfig(overrides: RuntimeConfigFixtureOverrides = {}): RuntimeConfigFixtureData {
   return {
     providers: {
       ...DEFAULT_RUNTIME_CONFIG.providers,
@@ -73,7 +82,7 @@ function mergeRuntimeConfig(overrides: Partial<RuntimeConfigFixtureData> = {}): 
 
 export function writeRuntimeConfig(
   configPath: string,
-  overrides: Partial<RuntimeConfigFixtureData> = {},
+  overrides: RuntimeConfigFixtureOverrides = {},
 ): void {
   const config = mergeRuntimeConfig(overrides);
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -82,7 +91,7 @@ export function writeRuntimeConfig(
 
 export function createRuntimeConfigFixture(
   prefix: string,
-  overrides: Partial<RuntimeConfigFixtureData> = {},
+  overrides: RuntimeConfigFixtureOverrides = {},
 ): RuntimeConfigFixture {
   const dir = fs.mkdtempSync(path.join(tmpdir(), prefix));
   const configPath = path.join(dir, 'openclaw.json');

@@ -26,6 +26,7 @@ model Agent {
   
   tasks       Task[]
   memories    Memory[]
+  recallLogs  MemoryRecallLog[]
   sessions    Session[]
   triggers    Trigger[]
   channelBindings ChannelBinding[]
@@ -171,10 +172,117 @@ model Memory {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   
-  agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  
+   agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+   chunks      MemoryChunk[]
+   indexState  MemoryIndexState?
+   
   @@unique([agentId, key])
   @@map("memories")
+}
+
+model MemoryChunk {
+  id                  String          @id @default(cuid())
+  memoryId            String
+  agentId             String
+  memoryKey           String
+  chunkIndex          Int
+  content             String
+  normalizedContent   String
+  contentHash         String
+  tokenEstimate       Int
+  charCount           Int
+  embeddingCacheId    String?
+  embeddingProvider   String?
+  embeddingModel      String?
+  embeddingVersion    String?
+  embeddingDimensions Int?
+  embeddingJson       String?
+  indexedAt           DateTime?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  memory         Memory         @relation(fields: [memoryId], references: [id], onDelete: Cascade)
+  embeddingCache EmbeddingCache? @relation(fields: [embeddingCacheId], references: [id], onDelete: SetNull)
+
+  @@unique([memoryId, chunkIndex])
+  @@index([agentId, memoryKey])
+  @@index([embeddingCacheId])
+  @@map("memory_chunks")
+}
+
+model MemoryIndexState {
+  id                  String    @id @default(cuid())
+  memoryId            String    @unique
+  agentId             String
+  status              String    @default("pending")
+  lastContentHash     String?
+  lastIndexedAt       DateTime?
+  lastError           String?
+  attempts            Int       @default(0)
+  embeddingProvider   String?
+  embeddingModel      String?
+  embeddingVersion    String?
+  embeddingDimensions Int?
+  vectorMode          String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  memory Memory @relation(fields: [memoryId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, status])
+  @@map("memory_index_states")
+}
+
+model EmbeddingCache {
+  id         String    @id @default(cuid())
+  contentHash String
+  normalizedContent String
+  provider   String
+  model      String
+  version    String
+  dimensions Int
+  embedding  String
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  chunks MemoryChunk[]
+
+  @@unique([contentHash, provider, model, version, dimensions])
+  @@map("embedding_cache")
+}
+
+model MemoryIndexMetadata {
+  id        String   @id @default(cuid())
+  indexName String
+  scopeKey  String   @default("global")
+  status    String   @default("pending")
+  details   String   @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([indexName, scopeKey])
+  @@map("memory_index_metadata")
+}
+
+model MemoryRecallLog {
+  id             String   @id @default(cuid())
+  agentId        String
+  mode           String
+  query          String?
+  retrievalMode  String
+  candidateCounts String  @default("{}")
+  selectedKeys   String   @default("[]")
+  omittedKeys    String   @default("[]")
+  selectedCount  Int      @default(0)
+  omittedCount   Int      @default(0)
+  estimatedTokens Int     @default(0)
+  details        String   @default("{}")
+  createdAt      DateTime @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, createdAt])
+  @@map("memory_recall_logs")
 }
 
 // WebhookLog - Track incoming webhooks

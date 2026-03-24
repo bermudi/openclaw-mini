@@ -9,7 +9,7 @@ export interface CheckResult {
 
 export type HardRequirement = 'config-file' | 'provider-keys' | 'database' | 'provider-configured' | 'agent';
 
-export type SoftRequirement = 'telegram-adapter' | 'whatsapp-adapter' | 'workspace-dir' | 'hook-triggers' | 'browser-tool';
+export type SoftRequirement = 'telegram-adapter' | 'whatsapp-adapter' | 'workspace-dir' | 'hook-triggers' | 'browser-tool' | 'memory-index';
 
 export interface HardRequirementCheck {
   type: HardRequirement;

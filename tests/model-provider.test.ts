@@ -38,6 +38,12 @@ function restoreEnv(): void {
   }
 }
 
+async function reloadProviderRegistry(): Promise<void> {
+  const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+  resetProviderRegistryForTests();
+  initializeProviderRegistry();
+}
+
 beforeEach(async () => {
   restoreEnv();
   process.env.OPENAI_API_KEY = 'openai-test-key';
@@ -49,6 +55,8 @@ beforeEach(async () => {
 
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();
+  const { initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+  initializeProviderRegistry();
 });
 
 afterEach(async () => {
@@ -211,6 +219,7 @@ describe('model fallback', () => {
         fallbackModel: 'gpt-4.1-mini',
       },
     });
+    await reloadProviderRegistry();
 
     const { runWithModelFallback } = await import('../src/lib/services/model-provider');
     const attemptedModels: string[] = [];
@@ -244,6 +253,7 @@ describe('model fallback', () => {
         fallbackModel: 'claude-opus-4.6',
       },
     });
+    await reloadProviderRegistry();
 
     const { runWithModelFallback } = await import('../src/lib/services/model-provider');
     const attemptedModels: string[] = [];
@@ -271,6 +281,7 @@ describe('model fallback', () => {
         fallbackModel: 'claude-haiku-4.5',
       },
     });
+    await reloadProviderRegistry();
 
     const { runWithModelFallback } = await import('../src/lib/services/model-provider');
 
@@ -308,8 +319,7 @@ describe('agent context resolution helpers', () => {
         model: 'gpt-4.1-mini',
       },
     });
-    const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
-    resetProviderRegistryForTests();
+    await reloadProviderRegistry();
 
     const withGlobalModel = await resolveAgentContextWindow({
       contextWindowOverride: null,
@@ -323,7 +333,7 @@ describe('agent context resolution helpers', () => {
         model: 'totally-unknown-model-id',
       },
     });
-    resetProviderRegistryForTests();
+    await reloadProviderRegistry();
 
     const withFallbackDefault = await resolveAgentContextWindow({
       contextWindowOverride: null,

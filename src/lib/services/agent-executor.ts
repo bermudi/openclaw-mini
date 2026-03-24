@@ -33,6 +33,13 @@ import { supportsVision } from './model-catalog';
 import { handleVisionInput, buildFallbackDeliveryTarget as buildFallbackDeliveryTargetUtil, type VisionHandlerContext } from './vision-handler';
 import { mcpService } from './mcp-service';
 
+interface PromptContextSection {
+  body: string;
+  omittedCount: number;
+  estimatedTokens: number;
+  logId: string | null;
+}
+
 export interface ExecutionResult {
   success: boolean;
   response?: string;
@@ -101,14 +108,13 @@ class AgentExecutorService {
     });
 
     try {
-      // Load agent context
-      const context = await memoryService.loadAgentContext(task.agentId);
-
       // Load session context if available
       let sessionMessages: SessionContext['messages'] = [];
       if (task.sessionId) {
         sessionMessages = await sessionService.getSessionMessages(task.sessionId);
       }
+
+      const recallQuery = this.buildRecallQuery(task, sessionMessages);
 
       const isSubagent = task.type === 'subagent';
 
@@ -169,7 +175,7 @@ class AgentExecutorService {
         : await this.getSystemPrompt(agent, task);
 
       const prompt = await this.buildPrompt(task, {
-        context,
+        recallQuery,
         sessionMessages,
         systemPrompt,
         agent: {
@@ -773,7 +779,7 @@ class AgentExecutorService {
   private async buildPrompt(
     task: Task,
     input: {
-      context: string;
+      recallQuery: string;
       sessionMessages: SessionContext['messages'];
       systemPrompt: string;
       agent: {
@@ -796,9 +802,32 @@ class AgentExecutorService {
       remainingBudget = Math.max(remainingBudget - countTokens(sessionSection), 0);
     }
 
-    const memorySection = this.buildBudgetedSection('RUNTIME MEMORY SNAPSHOT', input.context, remainingBudget);
-    if (memorySection) {
-      contextSections.push(memorySection);
+    const memoryContext = task.agentId
+      ? await memoryService.buildPromptContext(task.agentId, remainingBudget, input.recallQuery)
+      : {
+          pinnedSection: '',
+          recalledSection: '',
+          omittedCount: 0,
+          estimatedTokens: 0,
+          logId: null,
+        };
+    const memorySections = this.buildMemorySections(memoryContext, remainingBudget);
+    if (memorySections.body) {
+      contextSections.push(memorySections.body);
+      remainingBudget = Math.max(remainingBudget - memorySections.estimatedTokens, 0);
+      if (memorySections.logId) {
+        await auditService.log({
+          action: 'memory_recall_prompt_context',
+          entityType: 'task',
+          entityId: task.id,
+          details: {
+            agentId: task.agentId,
+            recallLogId: memorySections.logId,
+            omittedCount: memorySections.omittedCount,
+            estimatedTokens: memorySections.estimatedTokens,
+          },
+        });
+      }
     }
 
     const contextSection = contextSections.length > 0
@@ -890,6 +919,78 @@ ${payload.task ?? 'No task provided.'}`;
         return `Task received: ${task.type}
 ${contextSection}`;
     }
+  }
+
+  private buildRecallQuery(task: Task, sessionMessages: SessionContext['messages']): string {
+    const latestSessionText = sessionMessages
+      .slice(-4)
+      .map(message => message.content)
+      .join('\n');
+
+    switch (task.type) {
+      case 'message':
+        return [
+          String((task.payload as { content?: string }).content ?? ''),
+          latestSessionText,
+        ].filter(Boolean).join('\n');
+      case 'webhook':
+        return JSON.stringify((task.payload as { payload?: unknown }).payload ?? {});
+      case 'hook':
+        return [
+          String((task.payload as { event?: string }).event ?? ''),
+          JSON.stringify((task.payload as { data?: unknown }).data ?? {}),
+        ].join('\n');
+      case 'a2a':
+        return [
+          String((task.payload as { message?: string }).message ?? ''),
+          JSON.stringify((task.payload as { data?: unknown }).data ?? {}),
+        ].join('\n');
+      case 'subagent':
+        return String((task.payload as { task?: string }).task ?? '');
+      case 'cron':
+        return String((task.payload as { scheduledTime?: Date }).scheduledTime ?? '');
+      case 'heartbeat':
+        return 'heartbeat maintenance status review';
+      default:
+        return latestSessionText;
+    }
+  }
+
+  private buildMemorySections(context: {
+    pinnedSection: string;
+    recalledSection: string;
+    omittedCount: number;
+    estimatedTokens: number;
+    logId: string | null;
+  }, budget: number): PromptContextSection {
+    const sections = [context.pinnedSection, context.recalledSection].filter(section => section.trim().length > 0);
+    if (sections.length === 0 || budget <= 0) {
+      return {
+        body: '',
+        omittedCount: context.omittedCount,
+        estimatedTokens: 0,
+        logId: context.logId,
+      };
+    }
+
+    const body = sections.join('\n\n');
+    const sectionTokens = countTokens(body);
+    if (sectionTokens <= budget) {
+      return {
+        body,
+        omittedCount: context.omittedCount,
+        estimatedTokens: sectionTokens,
+        logId: context.logId,
+      };
+    }
+
+    const trimmed = this.buildBudgetedSection('PINNED AND RECALLED MEMORY', body, budget);
+    return {
+      body: trimmed,
+      omittedCount: context.omittedCount,
+      estimatedTokens: trimmed ? countTokens(trimmed) : 0,
+      logId: context.logId,
+    };
   }
 
   private buildBudgetedSection(label: string, content: string, budget: number): string {

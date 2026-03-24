@@ -9,6 +9,7 @@ export type EventMap = {
   'task:created': { taskId: string; agentId: string; taskType: string; priority: number };
   'session:created': { sessionId: string; agentId: string; channel: string; channelKey: string };
   'memory:updated': { agentId: string; key: string };
+  'memory:index-requested': { agentId: string; memoryId: string; key: string; reason: 'write' | 'delete' | 'reindex' };
   'subagent:completed': { taskId: string; parentTaskId: string; skillName: string; agentId: string };
   'subagent:failed': { taskId: string; parentTaskId: string; skillName: string; agentId: string; error: string };
 };

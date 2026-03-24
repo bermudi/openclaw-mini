@@ -133,6 +133,42 @@ describe('loadConfig', () => {
 
     expect(() => loadConfig({ configPath })).toThrow("agent provider 'missing' is not defined in providers");
   });
+
+  test('accepts memory recall runtime configuration', async () => {
+    const configPath = path.join(createTempDir(), 'openclaw.json');
+    writeConfig(configPath, `{
+      providers: {
+        openai: {
+          apiType: 'openai-chat',
+          apiKey: '\${OPENAI_API_KEY}',
+        },
+      },
+      agent: {
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
+      },
+      runtime: {
+        memory: {
+          embeddingProvider: 'mock',
+          embeddingModel: 'hash-embed',
+          embeddingVersion: 'v2',
+          embeddingDimensions: 64,
+          chunkingThreshold: 320,
+          chunkOverlap: 48,
+          vectorRetrievalMode: 'in-process',
+          recallConfidenceThreshold: 0.35,
+          maxSearchResults: 12,
+        },
+      },
+    }`);
+
+    const { loadConfig } = await import('../src/lib/config/loader');
+    const result = loadConfig({ configPath });
+
+    expect(result.config.runtime?.memory?.embeddingProvider).toBe('mock');
+    expect(result.config.runtime?.memory?.embeddingDimensions).toBe(64);
+    expect(result.config.runtime?.memory?.vectorRetrievalMode).toBe('in-process');
+  });
 });
 
 describe('ProviderRegistry', () => {
