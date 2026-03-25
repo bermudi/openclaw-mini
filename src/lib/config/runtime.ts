@@ -59,6 +59,7 @@ export interface RuntimeBehaviorConfig {
     defaultBackground: boolean;
     ptyCols: number;
     ptyRows: number;
+    forcePtyFallback: boolean;
   };
   memory: {
     embeddingProvider: EmbeddingProvider;
@@ -141,6 +142,7 @@ function getDefaults(): RuntimeBehaviorConfig {
       defaultBackground: false,
       ptyCols: 120,
       ptyRows: 30,
+      forcePtyFallback: false,
     },
     memory: {
       embeddingProvider: 'disabled',
@@ -260,6 +262,7 @@ export function getRuntimeConfig(): RuntimeBehaviorConfig {
       defaultBackground: configuredExec?.defaultBackground ?? defaults.exec.defaultBackground,
       ptyCols: configuredExec?.ptyCols ?? defaults.exec.ptyCols,
       ptyRows: configuredExec?.ptyRows ?? defaults.exec.ptyRows,
+      forcePtyFallback: configuredExec?.forcePtyFallback ?? defaults.exec.forcePtyFallback,
     },
     memory: {
       embeddingProvider: runtime?.memory?.embeddingProvider ?? defaults.memory.embeddingProvider,

@@ -577,13 +577,43 @@ function buildContainerSpawnInput(input: {
   };
 }
 
+function findExecutableOnPath(name: string): string | null {
+  const pathEnv = process.env.PATH ?? '';
+  for (const dir of pathEnv.split(path.delimiter)) {
+    if (!dir) {
+      continue;
+    }
+
+    const candidate = path.join(dir, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // Keep searching.
+    }
+  }
+
+  return null;
+}
+
 function buildHostShellArgv(command: string): string[] {
   if (process.platform === 'win32') {
     return ['cmd.exe', '/d', '/s', '/c', command];
   }
 
-  const shellPath = process.env.SHELL?.trim() || '/bin/sh';
-  const shellName = path.basename(shellPath);
+  let shellPath = process.env.SHELL?.trim() || '';
+  let shellName = shellPath ? path.basename(shellPath) : '';
+
+  if (!shellPath || !fs.existsSync(shellPath)) {
+    shellPath = findExecutableOnPath(shellName) ?? findExecutableOnPath('bash') ?? findExecutableOnPath('sh') ?? '/bin/sh';
+    shellName = path.basename(shellPath);
+  }
+
+  if (shellName === 'fish') {
+    shellPath = findExecutableOnPath('bash') ?? findExecutableOnPath('sh') ?? '/bin/sh';
+    shellName = path.basename(shellPath);
+  }
+
   const wrappedCommand = shellName === 'zsh' ? `setopt nonomatch; ${command}` : command;
   return [shellPath, '-lc', wrappedCommand];
 }

@@ -1303,6 +1303,10 @@ registerTool(
         return { success: false, error: toErrorMessage(error, 'Failed to prepare exec launch') };
       }
 
+      const spawnInput = prepared.spawn.mode === 'pty'
+        ? { ...prepared.spawn, forceFallback: config.forcePtyFallback }
+        : prepared.spawn;
+
       let session;
       try {
         session = await processSupervisor.spawnSession({
@@ -1312,13 +1316,46 @@ registerTool(
           launchMode: resolvedLaunchMode,
           bufferSize: sessionBufferSize,
           sessionTimeoutMs: maxTimeoutSeconds * 1000,
-          spawn: prepared.spawn,
+          spawn: spawnInput,
         });
       } catch (error) {
         return { success: false, error: toErrorMessage(error, 'Failed to start process session') };
       }
 
-      if (resolvedBackground) {
+      if (session.status === 'failed' || session.status === 'cancelled' || session.status === 'timed_out') {
+        const failedSession = await processSupervisor.waitForSession(session.sessionId);
+
+        if (failedSession?.reason === 'spawn-error') {
+          return {
+            success: false,
+            error: failedSession.stderr.trim() || 'Failed to launch command',
+          };
+        }
+
+        if (failedSession?.status === 'timed_out') {
+          return {
+            success: false,
+            error: `Command timed out after ${maxTimeoutSeconds} seconds`,
+          };
+        }
+
+        if (failedSession?.reason === 'manual-cancel') {
+          return {
+            success: false,
+            error: 'Command was cancelled before completion',
+          };
+        }
+
+        if (failedSession?.reason === 'signal') {
+          return {
+            success: false,
+            error: `Command exited due to signal ${String(failedSession.signal ?? 'unknown')}`,
+          };
+        }
+      }
+
+      const shouldHandOffImmediately = resolvedBackground || resolvedLaunchMode === 'pty';
+      if (shouldHandOffImmediately) {
         return {
           success: true,
           data: buildProcessHandleData({

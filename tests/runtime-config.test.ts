@@ -400,6 +400,7 @@ describe('runtimeSectionSchema exec section', () => {
         defaultBackground: true,
         ptyCols: 180,
         ptyRows: 50,
+        forcePtyFallback: true,
       },
     });
 
@@ -428,6 +429,7 @@ describe('runtimeSectionSchema exec section', () => {
       expect(result.data.exec?.defaultBackground).toBe(true);
       expect(result.data.exec?.ptyCols).toBe(180);
       expect(result.data.exec?.ptyRows).toBe(50);
+      expect(result.data.exec?.forcePtyFallback).toBe(true);
     }
   });
 
@@ -849,6 +851,7 @@ describe('getRuntimeConfig() exec defaults', () => {
     expect(config.exec.defaultBackground).toBe(false);
     expect(config.exec.ptyCols).toBe(120);
     expect(config.exec.ptyRows).toBe(30);
+    expect(config.exec.forcePtyFallback).toBe(false);
   });
 
   test('returns configured exec values from runtime section', async () => {
@@ -877,6 +880,7 @@ describe('getRuntimeConfig() exec defaults', () => {
         defaultBackground: true,
         ptyCols: 160,
         ptyRows: 44,
+        forcePtyFallback: true,
       },
     };
 
@@ -912,6 +916,7 @@ describe('getRuntimeConfig() exec defaults', () => {
     expect(config.exec.defaultBackground).toBe(true);
     expect(config.exec.ptyCols).toBe(160);
     expect(config.exec.ptyRows).toBe(44);
+    expect(config.exec.forcePtyFallback).toBe(true);
   });
 
   test('fills in defaults for partial exec section', async () => {
@@ -941,6 +946,7 @@ describe('getRuntimeConfig() exec defaults', () => {
     expect(config.exec.defaultBackground).toBe(false);
     expect(config.exec.ptyCols).toBe(120);
     expect(config.exec.ptyRows).toBe(30);
+    expect(config.exec.forcePtyFallback).toBe(false);
   });
 
   test('uses defaults for missing allowlist', async () => {

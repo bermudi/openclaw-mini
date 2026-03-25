@@ -53,6 +53,25 @@ afterEach(async () => {
   }
 });
 
+function findExecutableOnPath(name: string): string | null {
+  const pathEnv = process.env.PATH ?? '';
+  for (const dir of pathEnv.split(path.delimiter)) {
+    if (!dir) {
+      continue;
+    }
+
+    const candidate = path.join(dir, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // Keep searching.
+    }
+  }
+
+  return null;
+}
+
 describe('parseCommand', () => {
   it('parses simple command with no arguments', () => {
     const result = parseCommand('ls');
@@ -443,6 +462,22 @@ describe('exec_command tool surface output', () => {
 });
 
 describe('exec_command tool advanced runtime behavior', () => {
+  async function reloadExecRuntime(overrides: Record<string, unknown>) {
+    if (!runtimeConfigFixture) {
+      throw new Error('Runtime config fixture not initialized');
+    }
+
+    writeRuntimeConfig(runtimeConfigFixture.configPath, {
+      runtime: {
+        exec: overrides,
+      },
+    });
+
+    const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+    resetProviderRegistryForTests();
+    initializeProviderRegistry();
+  }
+
   beforeEach(async () => {
     if (!runtimeConfigFixture) {
       throw new Error('Runtime config fixture not initialized');
@@ -513,6 +548,35 @@ describe('exec_command tool advanced runtime behavior', () => {
     expect(killResult.success).toBe(true);
   });
 
+  it('hands off PTY launches immediately even when background is not explicitly requested', async () => {
+    const { getTool } = await import('../src/lib/tools');
+    const { processSupervisor } = await import('../src/lib/services/process-supervisor');
+    const execTool = getTool('exec_command');
+    if (!execTool?.execute) {
+      throw new Error('exec_command tool is not registered');
+    }
+
+    const launchResult = await execTool.execute(
+      {
+        agentId: TEST_AGENT_ID,
+        command: 'printf pty-handoff-contract',
+        launchMode: 'pty',
+        commandMode: 'direct',
+      },
+      { toolCallId: 'exec-pty-handoff', messages: [] },
+    );
+
+    expect(launchResult.success).toBe(true);
+    const data = launchResult.data as { sessionId?: string; background?: boolean; launchMode?: string; stdout?: string } | undefined;
+    expect(data?.sessionId).toBeTruthy();
+    expect(data?.background).toBe(true);
+    expect(data?.launchMode).toBe('pty');
+    expect(data?.stdout).toBeUndefined();
+
+    const completed = await processSupervisor.waitForSession(data!.sessionId!);
+    expect(completed?.status).toBe('completed');
+  });
+
   it('supports PTY launches with process.write and process.poll', async () => {
     const { getTool } = await import('../src/lib/tools');
     const execTool = getTool('exec_command');
@@ -561,6 +625,283 @@ describe('exec_command tool advanced runtime behavior', () => {
       { action: 'kill', sessionId: sessionId! },
       { toolCallId: 'process-kill-pty', messages: [] },
     );
+  });
+
+  it('supports mount-aware PTY working directories for interactive sessions', async () => {
+    if (!runtimeConfigFixture) {
+      throw new Error('Runtime config fixture not initialized');
+    }
+
+    const workspaceDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-pty-mount-cwd-'));
+
+    try {
+      await reloadExecRuntime({
+        enabled: true,
+        allowlist: ['cat'],
+        maxTimeout: 30,
+        maxOutputSize: 10000,
+        foregroundYieldMs: 100,
+        mounts: [
+          {
+            alias: 'workspace',
+            hostPath: workspaceDir,
+            permissions: 'read-write',
+            createIfMissing: false,
+          },
+        ],
+      });
+
+      const { getTool } = await import('../src/lib/tools');
+      const { processSupervisor } = await import('../src/lib/services/process-supervisor');
+      const execTool = getTool('exec_command');
+      const processTool = getTool('process');
+      if (!execTool?.execute || !processTool?.execute) {
+        throw new Error('exec_command or process tool is not registered');
+      }
+
+      const launchResult = await execTool.execute(
+        {
+          agentId: TEST_AGENT_ID,
+          command: 'cat',
+          launchMode: 'pty',
+          commandMode: 'direct',
+          cwd: 'mount:workspace',
+        },
+        { toolCallId: 'exec-pty-mount-cwd', messages: [] },
+      );
+
+      expect(launchResult.success).toBe(true);
+      const sessionId = (launchResult.data as { sessionId?: string } | undefined)?.sessionId;
+      expect(sessionId).toBeTruthy();
+
+      const snapshot = processSupervisor.getSessionSnapshot(sessionId!);
+      expect(snapshot.pid).toBeTruthy();
+      const resolvedCwd = fs.realpathSync(path.join('/proc', String(snapshot.pid), 'cwd'));
+      expect(resolvedCwd).toBe(workspaceDir);
+
+      await processTool.execute(
+        { action: 'kill', sessionId: sessionId! },
+        { toolCallId: 'process-kill-mount-cwd', messages: [] },
+      );
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves PTY polling offsets across multiple reads without duplicating data', async () => {
+    const { getTool } = await import('../src/lib/tools');
+    const execTool = getTool('exec_command');
+    const processTool = getTool('process');
+    if (!execTool?.execute || !processTool?.execute) {
+      throw new Error('exec_command or process tool is not registered');
+    }
+
+    const launchResult = await execTool.execute(
+      {
+        agentId: TEST_AGENT_ID,
+        command: 'cat',
+        launchMode: 'pty',
+        commandMode: 'shell',
+      },
+      { toolCallId: 'exec-pty-poll-offsets', messages: [] },
+    );
+
+    expect(launchResult.success).toBe(true);
+    const sessionId = (launchResult.data as { sessionId?: string } | undefined)?.sessionId;
+    expect(sessionId).toBeTruthy();
+
+    const payload = 'offset-window-1234567890\n';
+    const writeResult = await processTool.execute(
+      { action: 'write', sessionId: sessionId!, input: payload },
+      { toolCallId: 'process-write-offset-seed', messages: [] },
+    );
+    expect(writeResult.success).toBe(true);
+
+    let fullOutput = '';
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const logResult = await processTool.execute(
+        { action: 'log', sessionId: sessionId!, offset: 0, limit: 4000 },
+        { toolCallId: 'process-log-offset-full', messages: [] },
+      );
+      expect(logResult.success).toBe(true);
+      fullOutput = (logResult.data as { output?: string } | undefined)?.output ?? '';
+      if (fullOutput.includes('offset-window-1234567890')) {
+        break;
+      }
+    }
+
+    expect(fullOutput).toContain('offset-window-1234567890');
+
+    const firstPoll = await processTool.execute(
+      { action: 'poll', sessionId: sessionId!, offset: 0, limit: 10 },
+      { toolCallId: 'process-poll-offset-1', messages: [] },
+    );
+    expect(firstPoll.success).toBe(true);
+    const firstWindow = firstPoll.data as { output: string; nextOffset: number };
+
+    const secondPoll = await processTool.execute(
+      { action: 'poll', sessionId: sessionId!, offset: firstWindow.nextOffset, limit: 10 },
+      { toolCallId: 'process-poll-offset-2', messages: [] },
+    );
+    expect(secondPoll.success).toBe(true);
+    const secondWindow = secondPoll.data as { output: string; nextOffset: number };
+
+    expect(firstWindow.output.length).toBe(10);
+    expect(secondWindow.output.length).toBe(10);
+    expect(secondWindow.nextOffset).toBeGreaterThan(firstWindow.nextOffset);
+    expect(firstWindow.output + secondWindow.output).toBe(fullOutput.slice(0, 20));
+
+    await processTool.execute(
+      { action: 'kill', sessionId: sessionId! },
+      { toolCallId: 'process-kill-offset-session', messages: [] },
+    );
+  });
+
+  it('uses the fallback PTY backend when runtime.exec.forcePtyFallback is enabled and warns operators', async () => {
+    const warnMessages: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnMessages.push(args.map(value => String(value)).join(' '));
+    };
+
+    try {
+      await reloadExecRuntime({
+        enabled: true,
+        allowlist: ['printf'],
+        maxTimeout: 30,
+        maxOutputSize: 10000,
+        foregroundYieldMs: 100,
+        forcePtyFallback: true,
+      });
+
+      const { getTool } = await import('../src/lib/tools');
+      const { processSupervisor } = await import('../src/lib/services/process-supervisor');
+      const execTool = getTool('exec_command');
+      if (!execTool?.execute) {
+        throw new Error('exec_command tool is not registered');
+      }
+
+      const result = await execTool.execute(
+        {
+          agentId: TEST_AGENT_ID,
+          command: 'printf forced-backend',
+          launchMode: 'pty',
+          commandMode: 'shell',
+          background: true,
+        },
+        { toolCallId: 'exec-force-fallback', messages: [] },
+      );
+
+      expect(result.success).toBe(true);
+      const sessionId = (result.data as { sessionId?: string } | undefined)?.sessionId;
+      expect(sessionId).toBeTruthy();
+      expect(processSupervisor.getPtyBackendForSession(sessionId!)).toBe('fallback');
+      expect(warnMessages.some(message => message.includes('forcePtyFallback'))).toBe(true);
+
+      const completed = await processSupervisor.waitForSession(sessionId!);
+      expect(completed?.status).toBe('completed');
+      expect(completed?.stdout).toContain('forced-backend');
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it('runs zsh shell-mode commands without nonomatch glob errors', async () => {
+    const zshPath = findExecutableOnPath('zsh');
+    if (!zshPath) {
+      expect(true).toBe(true);
+      return;
+    }
+
+    const originalShell = process.env.SHELL;
+    process.env.SHELL = zshPath;
+
+    try {
+      const { getTool } = await import('../src/lib/tools');
+      const execTool = getTool('exec_command');
+      if (!execTool?.execute) {
+        throw new Error('exec_command tool is not registered');
+      }
+
+      const result = await execTool.execute(
+        {
+          agentId: TEST_AGENT_ID,
+          command: 'printf https://example.com?foo[]=bar',
+          commandMode: 'shell',
+          launchMode: 'child',
+        },
+        { toolCallId: 'exec-zsh-nonomatch', messages: [] },
+      );
+
+      expect(result.success).toBe(true);
+      const data = result.data as { stdout?: string; stderr?: string } | undefined;
+      expect(data?.stdout).toContain('https://example.com?foo[]=bar');
+      expect(data?.stderr ?? '').not.toContain('no matches found');
+    } finally {
+      process.env.SHELL = originalShell;
+    }
+  });
+
+  it('prefers a bash-compatible shell when SHELL points to fish', async () => {
+    const fishPath = findExecutableOnPath('fish');
+    const bashPath = findExecutableOnPath('bash');
+    if (!fishPath || !bashPath) {
+      expect(true).toBe(true);
+      return;
+    }
+
+    const originalShell = process.env.SHELL;
+    process.env.SHELL = fishPath;
+
+    try {
+      const { getTool } = await import('../src/lib/tools');
+      const execTool = getTool('exec_command');
+      if (!execTool?.execute) {
+        throw new Error('exec_command tool is not registered');
+      }
+
+      const result = await execTool.execute(
+        {
+          agentId: TEST_AGENT_ID,
+          command: "[[ 'x' == 'x' ]] && printf fish-shell-compatible",
+          commandMode: 'shell',
+          launchMode: 'child',
+        },
+        { toolCallId: 'exec-fish-shell-compat', messages: [] },
+      );
+
+      expect(result.success).toBe(true);
+      const data = result.data as { stdout?: string; stderr?: string } | undefined;
+      expect(data?.stdout).toContain('fish-shell-compatible');
+      expect(data?.stderr ?? '').toBe('');
+    } finally {
+      process.env.SHELL = originalShell;
+    }
+  });
+
+  it('returns a clear exec_command error when no PTY backend is available', async () => {
+    const { getTool } = await import('../src/lib/tools');
+    const { processSupervisor } = await import('../src/lib/services/process-supervisor');
+    const execTool = getTool('exec_command');
+    if (!execTool?.execute) {
+      throw new Error('exec_command tool is not registered');
+    }
+
+    processSupervisor.setPlatformForTests('win32');
+
+    const result = await execTool.execute(
+      {
+        agentId: TEST_AGENT_ID,
+        command: 'printf impossible-pty',
+        launchMode: 'pty',
+        commandMode: 'shell',
+      },
+      { toolCallId: 'exec-no-pty-backend', messages: [] },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('No supported PTY backend available');
   });
 
   it('applies shell-mode policy by tier', async () => {
@@ -737,6 +1078,69 @@ describe('exec_command tool advanced runtime behavior', () => {
     await processTool.execute(
       { action: 'kill', sessionId: sessionId! },
       { toolCallId: 'process-authorized-kill', messages: [] },
+    );
+  });
+
+  it('allows a later task for the same agent to resume a PTY session via process.write and process.poll', async () => {
+    const toolsModule = await import('../src/lib/tools');
+    const execTool = toolsModule.getTool('exec_command');
+    const processTool = toolsModule.getTool('process');
+    if (!execTool?.execute || !processTool?.execute) {
+      throw new Error('exec_command or process tool is not registered');
+    }
+
+    const launchResult = await toolsModule.withToolExecutionContext(
+      { agentId: TEST_AGENT_ID, taskId: 'task-launch-pty', taskType: 'message' },
+      () => execTool.execute?.(
+        {
+          agentId: TEST_AGENT_ID,
+          command: 'cat',
+          launchMode: 'pty',
+          commandMode: 'shell',
+        },
+        { toolCallId: 'exec-follow-up-launch', messages: [] },
+      ),
+    );
+
+    expect(launchResult?.success).toBe(true);
+    const sessionId = (launchResult?.data as { sessionId?: string } | undefined)?.sessionId;
+    expect(sessionId).toBeTruthy();
+
+    const writeResult = await toolsModule.withToolExecutionContext(
+      { agentId: TEST_AGENT_ID, taskId: 'task-resume-pty', taskType: 'message' },
+      () => processTool.execute?.(
+        { action: 'write', sessionId: sessionId!, input: 'follow-up task handoff\n' },
+        { toolCallId: 'process-follow-up-write', messages: [] },
+      ),
+    );
+    expect(writeResult?.success).toBe(true);
+
+    let combinedOutput = '';
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const pollResult = await toolsModule.withToolExecutionContext(
+        { agentId: TEST_AGENT_ID, taskId: 'task-resume-poll', taskType: 'message' },
+        () => processTool.execute?.(
+          { action: 'poll', sessionId: sessionId!, offset: 0, limit: 4000 },
+          { toolCallId: 'process-follow-up-poll', messages: [] },
+        ),
+      );
+
+      expect(pollResult?.success).toBe(true);
+      combinedOutput = (pollResult?.data as { output?: string } | undefined)?.output ?? '';
+      if (combinedOutput.includes('follow-up task handoff')) {
+        break;
+      }
+    }
+
+    expect(combinedOutput).toContain('follow-up task handoff');
+
+    await toolsModule.withToolExecutionContext(
+      { agentId: TEST_AGENT_ID, taskId: 'task-resume-kill', taskType: 'message' },
+      () => processTool.execute?.(
+        { action: 'kill', sessionId: sessionId! },
+        { toolCallId: 'process-follow-up-kill', messages: [] },
+      ),
     );
   });
 

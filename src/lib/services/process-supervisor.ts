@@ -1,5 +1,8 @@
 import { randomUUID } from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { spawn, type ChildProcess } from 'child_process';
+import { parseCommand } from '@/lib/utils/exec-helpers';
 
 export type ProcessTerminationReason =
   | 'manual-cancel'
@@ -16,6 +19,8 @@ export type ProcessSessionStatus =
   | 'failed'
   | 'timed_out'
   | 'cancelled';
+
+export type PtyBackendKind = 'native' | 'fallback';
 
 export interface SpawnChildInput {
   mode: 'child';
@@ -37,6 +42,7 @@ export interface SpawnPtyInput {
   noOutputTimeoutMs?: number;
   cols?: number;
   rows?: number;
+  forceFallback?: boolean;
 }
 
 export type SpawnInput = SpawnChildInput | SpawnPtyInput;
@@ -85,6 +91,24 @@ export interface ProcessSessionOutputWindow {
   truncatedBeforeOffset: boolean;
 }
 
+interface SessionInputWriter {
+  write(data: string): void;
+  end(): void;
+  destroyed?: boolean;
+}
+
+interface SpawnedSessionProcess {
+  pid?: number;
+  stdin?: SessionInputWriter;
+  ptyBackend?: PtyBackendKind;
+  onSpawn(listener: () => void): void;
+  onStdout(listener: (chunk: string) => void): void;
+  onStderr(listener: (chunk: string) => void): void;
+  onError(listener: (error: Error) => void): void;
+  onClose(listener: (outcome: { exitCode: number | null; signal: string | number | null }) => void): void;
+  terminate(graceMs: number): void;
+}
+
 interface InternalSession {
   sessionId: string;
   agentId: string;
@@ -106,12 +130,9 @@ interface InternalSession {
   waitPromise: Promise<ProcessSessionResult>;
   resolveWait: (value: ProcessSessionResult) => void;
   rejectWait: (reason?: unknown) => void;
-  stdin?: {
-    write(data: string): void;
-    end(): void;
-    destroyed?: boolean;
-  };
-  child?: ChildProcess;
+  stdin?: SessionInputWriter;
+  process?: SpawnedSessionProcess;
+  ptyBackend?: PtyBackendKind;
   timeoutTimer?: ReturnType<typeof setTimeout>;
   noOutputTimer?: ReturnType<typeof setTimeout>;
   forcedReason?: ProcessTerminationReason;
@@ -119,9 +140,29 @@ interface InternalSession {
   bufferSize: number;
 }
 
+type NativePtyModule = typeof import('@lydell/node-pty');
+type NativePtyLoader = () => Promise<NativePtyModule> | NativePtyModule;
+
+interface PtyShellResolution {
+  name: string;
+  path: string;
+  args: string[];
+}
+
 const DEFAULT_FORCE_KILL_WAIT_FALLBACK_MS = 4000;
 const DEFAULT_TERMINATION_GRACE_MS = 3000;
 const MAX_LOG_WINDOW = 20000;
+const DEFAULT_PTY_COLS = 120;
+const DEFAULT_PTY_ROWS = 30;
+
+const defaultNativePtyLoader: NativePtyLoader = () => import('@lydell/node-pty');
+
+let nativePtyLoader: NativePtyLoader = defaultNativePtyLoader;
+let platformOverrideForTests: NodeJS.Platform | undefined;
+
+function getPlatform(): NodeJS.Platform {
+  return platformOverrideForTests ?? process.platform;
+}
 
 function clampPositiveInt(value: number | undefined): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
@@ -257,7 +298,7 @@ function killProcessTreeWindows(pid: number, graceMs: number): void {
 }
 
 function killProcessTree(pid: number, graceMs: number): void {
-  if (process.platform === 'win32') {
+  if (getPlatform() === 'win32') {
     killProcessTreeWindows(pid, graceMs);
     return;
   }
@@ -265,26 +306,108 @@ function killProcessTree(pid: number, graceMs: number): void {
   killProcessTreeUnix(pid, graceMs);
 }
 
-function createPtyWrapperProcess(input: SpawnPtyInput): ChildProcess {
-  if (process.platform === 'win32') {
-    throw new Error('PTY launch mode is not supported on Windows in this build');
+function findExecutable(name: string): string | undefined {
+  const pathEnv = process.env.PATH || '';
+  for (const dir of pathEnv.split(path.delimiter)) {
+    if (!dir) {
+      continue;
+    }
+
+    const candidate = path.join(dir, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // Keep searching.
+    }
   }
 
-  const cols = clampPositiveInt(input.cols) ?? 120;
-  const rows = clampPositiveInt(input.rows) ?? 30;
-  const env = {
-    ...toStringEnv(input.env),
-    TERM: input.env?.TERM ?? 'xterm-256color',
-    COLUMNS: String(cols),
-    LINES: String(rows),
-  };
+  return undefined;
+}
 
-  return spawn('script', ['-qefc', input.command, '/dev/null'], {
-    cwd: input.cwd,
-    env,
-    detached: process.platform !== 'win32',
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+function resolvePtyShell(): PtyShellResolution {
+  const configuredShell = process.env.SHELL?.trim();
+  const configuredShellName = configuredShell ? path.basename(configuredShell) : undefined;
+  const configuredShellExists = configuredShell && fs.existsSync(configuredShell);
+
+  if (configuredShellName === 'fish') {
+    const compatibleShell = findExecutable('bash') ?? findExecutable('sh');
+    if (compatibleShell) {
+      return {
+        name: path.basename(compatibleShell),
+        path: compatibleShell,
+        args: ['-lc'],
+      };
+    }
+  }
+
+  if (configuredShell && configuredShellExists) {
+    return {
+      name: path.basename(configuredShell),
+      path: configuredShell,
+      args: ['-lc'],
+    };
+  }
+
+  const fallbackShell = findExecutable(configuredShellName || '') ?? findExecutable('bash') ?? findExecutable('sh');
+  if (fallbackShell) {
+    return {
+      name: path.basename(fallbackShell),
+      path: fallbackShell,
+      args: ['-lc'],
+    };
+  }
+
+  return {
+    name: 'sh',
+    path: '/bin/sh',
+    args: ['-lc'],
+  };
+}
+
+function wrapPtyCommand(command: string, shellName: string): string {
+  if (shellName === 'zsh') {
+    return `setopt nonomatch; ${command}`;
+  }
+
+  return command;
+}
+
+function shellJoinArgv(argv: string[]): string {
+  return argv.map(shellQuoteArg).join(' ');
+}
+
+function shellQuoteArg(value: string): string {
+  if (/^[A-Za-z0-9_./:-]+$/.test(value)) {
+    return value;
+  }
+
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function resolvePtyCommand(command: string): {
+  file: string;
+  args: string[];
+  fallbackWrapperCommand: string;
+} {
+  const parsed = parseCommand(command);
+  if (!('error' in parsed)) {
+    return {
+      file: parsed.binary,
+      args: parsed.args,
+      fallbackWrapperCommand: shellJoinArgv([parsed.binary, ...parsed.args]),
+    };
+  }
+
+  const shell = resolvePtyShell();
+  const wrappedCommand = wrapPtyCommand(command, shell.name);
+  const args = [...shell.args, wrappedCommand];
+
+  return {
+    file: shell.path,
+    args,
+    fallbackWrapperCommand: shellJoinArgv([shell.path, ...args]),
+  };
 }
 
 function createChildProcess(input: SpawnChildInput): ChildProcess {
@@ -302,10 +425,285 @@ function createChildProcess(input: SpawnChildInput): ChildProcess {
   return spawn(input.argv[0]!, input.argv.slice(1), {
     cwd: input.cwd,
     env: toStringEnv(input.env),
-    detached: process.platform !== 'win32',
+    detached: getPlatform() !== 'win32',
     stdio,
     windowsVerbatimArguments: input.windowsVerbatimArguments,
   });
+}
+
+function adaptChildProcess(child: ChildProcess, ptyBackend?: PtyBackendKind): SpawnedSessionProcess {
+  child.stdout?.setEncoding('utf8');
+  child.stderr?.setEncoding('utf8');
+
+  return {
+    pid: child.pid ?? undefined,
+    stdin: child.stdin
+      ? {
+          write: (data: string) => {
+            if (!child.stdin || child.stdin.destroyed) {
+              return;
+            }
+            child.stdin.write(data);
+          },
+          end: () => {
+            if (!child.stdin || child.stdin.destroyed) {
+              return;
+            }
+            child.stdin.end();
+          },
+          get destroyed() {
+            return child.stdin?.destroyed;
+          },
+        }
+      : undefined,
+    ptyBackend,
+    onSpawn: (listener) => {
+      child.once('spawn', listener);
+    },
+    onStdout: (listener) => {
+      child.stdout?.on('data', listener);
+    },
+    onStderr: (listener) => {
+      child.stderr?.on('data', listener);
+    },
+    onError: (listener) => {
+      child.once('error', listener);
+    },
+    onClose: (listener) => {
+      child.once('close', (exitCode, signal) => {
+        listener({
+          exitCode,
+          signal,
+        });
+      });
+    },
+    terminate: (graceMs) => {
+      if (child.pid) {
+        killProcessTree(child.pid, graceMs);
+        return;
+      }
+
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        // Process may already be gone.
+      }
+    },
+  };
+}
+
+function createPtyWrapperProcess(input: SpawnPtyInput): SpawnedSessionProcess {
+  if (getPlatform() === 'win32') {
+    throw new Error('Unix PTY fallback is not supported on Windows in this build');
+  }
+
+  const cols = clampPositiveInt(input.cols) ?? DEFAULT_PTY_COLS;
+  const rows = clampPositiveInt(input.rows) ?? DEFAULT_PTY_ROWS;
+  const env = {
+    ...toStringEnv(input.env),
+    TERM: input.env?.TERM ?? 'xterm-256color',
+    COLUMNS: String(cols),
+    LINES: String(rows),
+  };
+
+  const scriptPath = findExecutable('script');
+  if (!scriptPath) {
+    throw new Error('Unix PTY fallback requires the `script` binary to be available on PATH');
+  }
+
+  const resolvedCommand = resolvePtyCommand(input.command);
+
+  const child = spawn(scriptPath, ['-qefc', resolvedCommand.fallbackWrapperCommand, '/dev/null'], {
+    cwd: input.cwd,
+    env,
+    detached: getPlatform() !== 'win32',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  return adaptChildProcess(child, 'fallback');
+}
+
+async function createNativePtyProcess(input: SpawnPtyInput): Promise<SpawnedSessionProcess> {
+  if (getPlatform() === 'win32') {
+    throw new Error('Native PTY backend is not supported on Windows in this build');
+  }
+
+  const nativePty = await Promise.resolve(nativePtyLoader());
+  const cols = clampPositiveInt(input.cols) ?? DEFAULT_PTY_COLS;
+  const rows = clampPositiveInt(input.rows) ?? DEFAULT_PTY_ROWS;
+  const env = {
+    ...toStringEnv(input.env),
+    TERM: input.env?.TERM ?? 'xterm-256color',
+    COLUMNS: String(cols),
+    LINES: String(rows),
+  };
+  const resolvedCommand = resolvePtyCommand(input.command);
+
+  let closed = false;
+  let closeOutcome: { exitCode: number | null; signal: string | number | null } | null = null;
+  const closeListeners = new Set<(outcome: { exitCode: number | null; signal: string | number | null }) => void>();
+  const stdoutListeners = new Set<(chunk: string) => void>();
+  const bufferedStdoutChunks: string[] = [];
+
+  let ptyProcess: NativePtyModule['spawn'] extends (...args: any[]) => infer T ? T : never;
+  try {
+    ptyProcess = nativePty.spawn(resolvedCommand.file, resolvedCommand.args, {
+      name: env.TERM ?? 'xterm-256color',
+      cols,
+      rows,
+      cwd: input.cwd,
+      env,
+    });
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : String(error));
+  }
+
+  ptyProcess.onData((data) => {
+    if (stdoutListeners.size === 0) {
+      bufferedStdoutChunks.push(data);
+      return;
+    }
+
+    for (const listener of stdoutListeners) {
+      listener(data);
+    }
+  });
+
+  ptyProcess.onExit(({ exitCode, signal }) => {
+    closed = true;
+    closeOutcome = {
+      exitCode,
+      signal: exitCode !== null ? null : signal ?? null,
+    };
+
+    for (const listener of closeListeners) {
+      listener(closeOutcome);
+    }
+    closeListeners.clear();
+  });
+
+  return {
+    pid: ptyProcess.pid ?? undefined,
+    stdin: {
+      write: (data: string) => {
+        if (closed) {
+          return;
+        }
+        ptyProcess.write(data);
+      },
+      end: () => {
+        if (closed) {
+          return;
+        }
+        ptyProcess.write('\x04');
+      },
+      get destroyed() {
+        return closed;
+      },
+    },
+    ptyBackend: 'native',
+    onSpawn: (listener) => {
+      queueMicrotask(listener);
+    },
+    onStdout: (listener) => {
+      stdoutListeners.add(listener);
+      if (bufferedStdoutChunks.length > 0) {
+        for (const chunk of bufferedStdoutChunks) {
+          listener(chunk);
+        }
+        bufferedStdoutChunks.length = 0;
+      }
+    },
+    onStderr: () => {
+      // Native PTY output is merged into the terminal stream.
+    },
+    onError: () => {
+      // node-pty surfaces initialization errors synchronously; runtime output is delivered via onData/onExit.
+    },
+    onClose: (listener) => {
+      if (closeOutcome) {
+        listener(closeOutcome);
+        return;
+      }
+
+      closeListeners.add(listener);
+    },
+    terminate: (graceMs) => {
+      if (closed) {
+        return;
+      }
+
+      try {
+        ptyProcess.kill('SIGTERM');
+      } catch {
+        // Best effort only.
+      }
+
+      if (ptyProcess.pid) {
+        killProcessTree(ptyProcess.pid, graceMs);
+        return;
+      }
+
+      setTimeout(() => {
+        if (closed) {
+          return;
+        }
+
+        try {
+          ptyProcess.kill('SIGKILL');
+        } catch {
+          // Best effort only.
+        }
+      }, graceMs).unref();
+    },
+  };
+}
+
+function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function createPreferredPtyProcess(sessionId: string, input: SpawnPtyInput): Promise<SpawnedSessionProcess> {
+  if (input.forceFallback) {
+    console.warn(`[ProcessSupervisor] PTY native backend disabled by runtime.exec.forcePtyFallback; using fallback backend for session ${sessionId}`);
+
+    try {
+      const fallback = createPtyWrapperProcess(input);
+      console.info(`[ProcessSupervisor] PTY backend selected: fallback for session ${sessionId}`);
+      return fallback;
+    } catch (error) {
+      throw new Error(
+        `No supported PTY backend available: forced fallback is enabled and the Unix wrapper backend is unavailable (${formatErrorMessage(error)})`,
+      );
+    }
+  }
+
+  try {
+    const nativeProcess = await createNativePtyProcess(input);
+    console.info(`[ProcessSupervisor] PTY backend selected: native for session ${sessionId}`);
+    return nativeProcess;
+  } catch (nativeError) {
+    const nativeMessage = formatErrorMessage(nativeError);
+
+    try {
+      const fallback = createPtyWrapperProcess(input);
+      console.warn(`[ProcessSupervisor] Native PTY backend unavailable for session ${sessionId}: ${nativeMessage}. Falling back to the Unix wrapper backend.`);
+      console.info(`[ProcessSupervisor] PTY backend selected: fallback for session ${sessionId}`);
+      return fallback;
+    } catch (fallbackError) {
+      throw new Error(
+        `No supported PTY backend available: native PTY failed (${nativeMessage}); fallback wrapper failed (${formatErrorMessage(fallbackError)})`,
+      );
+    }
+  }
+}
+
+async function createSessionProcess(sessionId: string, input: SpawnInput): Promise<SpawnedSessionProcess> {
+  if (input.mode === 'pty') {
+    return createPreferredPtyProcess(sessionId, input);
+  }
+
+  return adaptChildProcess(createChildProcess(input));
 }
 
 class ProcessSupervisor {
@@ -341,31 +739,12 @@ class ProcessSupervisor {
     const noOutputTimeoutMs = clampPositiveInt(request.noOutputTimeoutMs ?? request.spawn.noOutputTimeoutMs);
 
     try {
-      const child = request.spawn.mode === 'pty'
-        ? createPtyWrapperProcess(request.spawn)
-        : createChildProcess(request.spawn);
+      const processHandle = await createSessionProcess(sessionId, request.spawn);
 
-      session.child = child;
-      session.pid = child.pid ?? undefined;
-      session.stdin = child.stdin
-        ? {
-            write: (data: string) => {
-              if (!child.stdin || child.stdin.destroyed) {
-                return;
-              }
-              child.stdin.write(data);
-            },
-            end: () => {
-              if (!child.stdin || child.stdin.destroyed) {
-                return;
-              }
-              child.stdin.end();
-            },
-            get destroyed() {
-              return child.stdin?.destroyed;
-            },
-          }
-        : undefined;
+      session.process = processHandle;
+      session.pid = processHandle.pid;
+      session.stdin = processHandle.stdin;
+      session.ptyBackend = processHandle.ptyBackend;
 
       const touchOutput = () => {
         if (!noOutputTimeoutMs || session.settled) {
@@ -391,26 +770,26 @@ class ProcessSupervisor {
         touchOutput();
       }
 
-      child.stdout?.setEncoding('utf8');
-      child.stderr?.setEncoding('utf8');
-
-      child.stdout?.on('data', (chunk: string) => {
+      processHandle.onStdout((chunk: string) => {
         session.stdout += chunk;
         appendMergedOutput(session, chunk);
         touchOutput();
       });
 
-      child.stderr?.on('data', (chunk: string) => {
+      processHandle.onStderr((chunk: string) => {
         session.stderr += chunk;
         appendMergedOutput(session, chunk);
         touchOutput();
       });
 
-      child.once('spawn', () => {
+      processHandle.onSpawn(() => {
+        if (session.settled) {
+          return;
+        }
         session.status = 'running';
       });
 
-      child.once('error', (error) => {
+      processHandle.onError((error) => {
         session.stderr += error.message;
         appendMergedOutput(session, error.message);
         this.finalizeSession(sessionId, {
@@ -420,9 +799,9 @@ class ProcessSupervisor {
         });
       });
 
-      child.once('close', (code, signal) => {
+      processHandle.onClose(({ exitCode, signal }) => {
         this.finalizeSession(sessionId, {
-          exitCode: code,
+          exitCode,
           signal,
           reason: session.forcedReason ?? (signal ? 'signal' : 'exit'),
         });
@@ -443,7 +822,7 @@ class ProcessSupervisor {
 
       return buildSnapshot(session);
     } catch (error) {
-      session.stderr += error instanceof Error ? error.message : String(error);
+      session.stderr += formatErrorMessage(error);
       appendMergedOutput(session, session.stderr);
       this.finalizeSession(sessionId, {
         exitCode: null,
@@ -479,6 +858,10 @@ class ProcessSupervisor {
     return buildSnapshot(this.requireSession(sessionId));
   }
 
+  getPtyBackendForSession(sessionId: string): PtyBackendKind | null {
+    return this.requireSession(sessionId).ptyBackend ?? null;
+  }
+
   pollSession(sessionId: string, offset = 0, limit = 4000): ProcessSessionOutputWindow {
     return this.readOutputWindow(sessionId, offset, limit);
   }
@@ -511,6 +894,19 @@ class ProcessSupervisor {
     return buildSnapshot(this.requireSession(sessionId));
   }
 
+  setNativePtyModuleLoaderForTests(loader?: NativePtyLoader): void {
+    nativePtyLoader = loader ?? defaultNativePtyLoader;
+  }
+
+  setPlatformForTests(platform?: NodeJS.Platform): void {
+    platformOverrideForTests = platform;
+  }
+
+  resetPtyBackendForTests(): void {
+    nativePtyLoader = defaultNativePtyLoader;
+    platformOverrideForTests = undefined;
+  }
+
   resetForTests(): void {
     for (const sessionId of this.sessions.keys()) {
       try {
@@ -520,6 +916,7 @@ class ProcessSupervisor {
       }
     }
     this.sessions.clear();
+    this.resetPtyBackendForTests();
   }
 
   private readOutputWindow(sessionId: string, offset = 0, limit = 4000): ProcessSessionOutputWindow {
@@ -552,8 +949,8 @@ class ProcessSupervisor {
 
     session.forcedReason = reason;
 
-    if (session.child?.pid) {
-      killProcessTree(session.child.pid, DEFAULT_TERMINATION_GRACE_MS);
+    if (session.process) {
+      session.process.terminate(DEFAULT_TERMINATION_GRACE_MS);
       return;
     }
 

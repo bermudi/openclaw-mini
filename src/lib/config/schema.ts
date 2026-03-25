@@ -100,6 +100,7 @@ const runtimeExecSchema = z.object({
   defaultBackground: z.boolean().optional(),
   ptyCols: z.number().int().positive().optional(),
   ptyRows: z.number().int().positive().optional(),
+  forcePtyFallback: z.boolean().optional(),
 }).strict().superRefine((execConfig, context) => {
   if (execConfig.defaultTier && execConfig.maxTier) {
     if (EXEC_TIER_RANK[execConfig.defaultTier] > EXEC_TIER_RANK[execConfig.maxTier]) {
@@ -231,6 +232,7 @@ export interface ExecConfig {
   defaultBackground?: boolean;
   ptyCols?: number;
   ptyRows?: number;
+  forcePtyFallback?: boolean;
 }
 
 export interface BrowserViewportConfig {
