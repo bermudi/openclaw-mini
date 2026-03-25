@@ -51,6 +51,7 @@ Each skill maps to a clear capability domain with specific tools:
 | `coder` | Script writing + execution | `exec_command`, `send_file_to_chat`, `write_note`, `read_file` | Capable (gpt-4.1) |
 | `browser` | Web interaction + screenshots | `browser_action` | Fast (gpt-4.1-mini) |
 | `planner` | Orchestration + delegation | `spawn_subagent`, `get_datetime`, `write_note` | Strong reasoning (gpt-4.1) |
+| `skill-manager` | Skill CRUD + iteration | `exec_command`, `read_file`, `spawn_subagent`, `write_note` | Capable (gpt-4.1) |
 
 **Alternative considered**: A single "swiss army knife" skill with all tools. Rejected because it violates least-privilege (code execution + browser in one agent is a security risk) and makes the sub-agent's system prompt unfocused.
 
@@ -76,6 +77,16 @@ Each SKILL.md body follows a consistent structure:
 
 This gives the LLM enough context to behave competently without being overly prescriptive.
 
+### Decision 6: Skill-manager uses new exec runtime to write to data/skills/
+
+The `skill-manager` skill needs to create and edit SKILL.md files in `data/skills/`. Rather than adding a bespoke `manage_skill` tool, it uses the new exec runtime from `exec-runtime-overhaul` to write files via standard commands (`mkdir`, `tee`, `cat`) inside an operator-approved writable mount. This keeps the tool surface small and gives the agent the same filesystem primitives a human operator would use.
+
+The skill-manager also uses `spawn_subagent` to test newly created skills — it spawns a sub-agent with the new skill and a test prompt, evaluates the result, and iterates. This adapts the eval loop from `.agents/skills/skill-creator` for runtime use.
+
+**Alternative considered**: A dedicated `manage_skill` tool with create/edit/delete/validate actions. Rejected because it's a narrow-purpose tool that duplicates what the new exec runtime already provides. The skill's instructions (SKILL.md body) encode the workflow — the tool just needs filesystem access.
+
+**Dependency**: Requires `exec-runtime-overhaul` to be implemented first. Without mount-aware execution, interactive process support, and `data/skills/` scanning, this skill has no way to write skills or have them discovered.
+
 ## Risks / Trade-offs
 
 **[Risk] Skills reference tools that don't exist yet** → The `researcher` skill needs `web_search`/`web_fetch` (from `web-search-providers` change) and `browser` needs `browser_action` (from `browser-control` change). Mitigation: skills that reference missing tools will fail gracefully at tool resolution time — the executor filters to available tools, so the sub-agent simply won't have the tool. We can gate `researcher` on env vars if needed, and `browser` is already gated on the binary.
@@ -84,4 +95,6 @@ This gives the LLM enough context to behave competently without being overly pre
 
 **[Risk] Instructions become stale as tools evolve** → If `exec_command` gains new flags or `browser_action` adds new actions, the skill instructions won't auto-update. Mitigation: skills are plain markdown — easy to update. The instructions describe patterns and strategy, not API signatures.
 
-**[Trade-off] Five skills = more files to maintain** → But each skill is self-contained markdown, no code dependencies, and covers a distinct domain. The alternative (fewer, broader skills) would compromise tool isolation and prompt clarity.
+**[Risk] Skill-manager creates skills with broad tool access** → An agent-created skill could declare `tools: [exec_command, browser_action]`, gaining more access than intended. Mitigation: the sub-agent executor still enforces the allowlist and mode ceiling from runtime config. Skills can declare tools, but the runtime decides which are actually available. Additionally, the planner's `allowedSkills` controls which skills can be spawned.
+
+**[Trade-off] Six skills = more files to maintain** → But each skill is self-contained markdown, no code dependencies, and covers a distinct domain. The alternative (fewer, broader skills) would compromise tool isolation and prompt clarity.

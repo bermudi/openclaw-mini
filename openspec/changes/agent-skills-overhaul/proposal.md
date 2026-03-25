@@ -14,6 +14,7 @@ This change replaces the two placeholder skills with a proper skill suite that c
 - **NEW** `skills/coder/SKILL.md` — writes and executes scripts (Python/TS) in the agent sandbox via `exec_command`, produces output files, can use `send_file_to_chat` to deliver results
 - **NEW** `skills/browser/SKILL.md` — web interaction via `browser_action` tool (navigate, click, type, screenshot, extract). Depends on the `browser-control` change. Gated on Playwright binary
 - **NEW** `skills/planner/SKILL.md` (rewrite) — orchestrator that decomposes complex multi-step tasks and delegates to the other skills via `spawn_subagent`. Understands the full skill roster and can chain them
+- **NEW** `skills/skill-manager/SKILL.md` — self-management skill that creates, edits, lists, and iterates on skills at runtime. Uses the new exec runtime to write SKILL.md files to `data/skills/`, `read_file` to inspect existing skills, and `spawn_subagent` to test new skills. Adapts the full skill-creator workflow (draft → test → evaluate → iterate → optimize description) for runtime use. Depends on `exec-runtime-overhaul` for mount-aware execution, interactive process support, and multi-directory skill scanning
 - **FIX** skill instruction pattern: body markdown becomes the real system prompt; remove `overrides.systemPrompt` duplication. Each SKILL.md body should contain substantive instructions (how to approach tasks, output format expectations, error handling, tool usage patterns) — not one-liners
 
 ## Capabilities
@@ -25,6 +26,7 @@ This change replaces the two placeholder skills with a proper skill suite that c
 - `skill-coder`: Skill definition for code execution sub-agent — script writing patterns, sandbox execution via `exec_command`, file output via `send_file_to_chat`, language selection
 - `skill-browser`: Skill definition for browser automation sub-agent — navigation patterns, form interaction, screenshot capture, data extraction from rendered pages
 - `skill-planner`: Skill definition for the orchestrator sub-agent — task decomposition, skill selection, result aggregation, multi-step chaining patterns
+- `skill-manager`: Skill definition for the self-management sub-agent — SKILL.md CRUD operations in `data/skills/`, frontmatter validation, skill testing via spawn_subagent, iterative improvement workflow, description optimization
 
 ### Modified Capabilities
 
@@ -32,7 +34,7 @@ This change replaces the two placeholder skills with a proper skill suite that c
 
 ## Impact
 
-- **Skills directory**: Remove 2 files, add 5 new SKILL.md files (net +3 skills)
+- **Skills directory**: Remove 2 files, add 6 new SKILL.md files (net +4 skills)
 - **Dependencies**: None — skills are pure markdown consumed by existing `skill-service.ts`. The tools they reference (`web_search`, `web_fetch`, `browser_action`) are provided by other changes
 - **Code**: No code changes needed — `skill-service.ts` already reads `name`, `description`, `tools`, `overrides`, `requires`, and body instructions correctly. The fix is in the skill *content*, not the loader
-- **Cross-change dependencies**: `researcher` skill needs `web-search-providers` change implemented first; `browser` skill needs `browser-control` change implemented first; `coder` skill uses existing `exec_command` and `send_file_to_chat` tools
+- **Cross-change dependencies**: `researcher` skill needs `web-search-providers` change implemented first; `browser` skill needs `browser-control` change implemented first; `coder` skill uses existing `exec_command` and `send_file_to_chat` tools; `skill-manager` skill needs `exec-runtime-overhaul` implemented first (for mount-aware execution, PTY/process support, and `data/skills/` multi-directory scanning)
