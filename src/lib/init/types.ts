@@ -7,9 +7,9 @@ export interface CheckResult {
   guidance?: string;
 }
 
-export type HardRequirement = 'config-file' | 'provider-keys' | 'database' | 'provider-configured' | 'agent';
+export type HardRequirement = 'config-file' | 'provider-keys' | 'database' | 'provider-configured' | 'agent' | 'exec-runtime';
 
-export type SoftRequirement = 'telegram-adapter' | 'whatsapp-adapter' | 'workspace-dir' | 'hook-triggers' | 'browser-tool' | 'memory-index';
+export type SoftRequirement = 'telegram-adapter' | 'whatsapp-adapter' | 'workspace-dir' | 'hook-triggers' | 'browser-tool' | 'memory-index' | 'exec-runtime';
 
 export interface HardRequirementCheck {
   type: HardRequirement;

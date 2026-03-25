@@ -42,7 +42,12 @@ beforeEach(() => {
   TEST_SANDBOX_ROOT = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-exec-'));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  const { processSupervisor } = await import('../src/lib/services/process-supervisor');
+  const { resetExecRuntimeStateForTests } = await import('../src/lib/services/exec-runtime');
+  processSupervisor.resetForTests();
+  resetExecRuntimeStateForTests();
+
   if (TEST_SANDBOX_ROOT && fs.existsSync(TEST_SANDBOX_ROOT)) {
     fs.rmSync(TEST_SANDBOX_ROOT, { recursive: true, force: true });
   }
@@ -367,12 +372,15 @@ describe('exec_command tool surface output', () => {
           allowlist: ['echo', 'printf'],
           maxTimeout: 30,
           maxOutputSize: 10000,
+          foregroundYieldMs: 100,
         },
       },
     });
 
     const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+    const { setDetectedContainerRuntimeForTests } = await import('../src/lib/services/exec-runtime');
     resetProviderRegistryForTests();
+    setDetectedContainerRuntimeForTests(null);
     initializeProviderRegistry();
 
     const { setSandboxRootForTests } = await import('../src/lib/services/sandbox-service');
@@ -431,5 +439,523 @@ describe('exec_command tool surface output', () => {
     expect(result.success).toBe(true);
     expect((result.data as { stdout?: string } | undefined)?.stdout).toBe('');
     expect(result.surface).toBeUndefined();
+  });
+});
+
+describe('exec_command tool advanced runtime behavior', () => {
+  beforeEach(async () => {
+    if (!runtimeConfigFixture) {
+      throw new Error('Runtime config fixture not initialized');
+    }
+
+    writeRuntimeConfig(runtimeConfigFixture.configPath, {
+      runtime: {
+        exec: {
+          enabled: true,
+          allowlist: ['echo', 'printf'],
+          maxTimeout: 30,
+          maxOutputSize: 10000,
+          foregroundYieldMs: 100,
+        },
+      },
+    });
+
+    const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+    const { setDetectedContainerRuntimeForTests } = await import('../src/lib/services/exec-runtime');
+    const { setSandboxRootForTests } = await import('../src/lib/services/sandbox-service');
+    resetProviderRegistryForTests();
+    setDetectedContainerRuntimeForTests(null);
+    initializeProviderRegistry();
+    setSandboxRootForTests(TEST_SANDBOX_ROOT);
+  });
+
+  afterEach(async () => {
+    const { setSandboxRootForTests } = await import('../src/lib/services/sandbox-service');
+    setSandboxRootForTests(null);
+  });
+
+  it('returns a supervised session handle for explicit background launches and exposes it through the process tool', async () => {
+    const { getTool } = await import('../src/lib/tools');
+    const execTool = getTool('exec_command');
+    const processTool = getTool('process');
+    if (!execTool?.execute || !processTool?.execute) {
+      throw new Error('exec_command or process tool is not registered');
+    }
+
+    const launchResult = await execTool.execute(
+      {
+        agentId: TEST_AGENT_ID,
+        command: 'sleep 2',
+        commandMode: 'shell',
+        background: true,
+      },
+      { toolCallId: 'exec-background', messages: [] },
+    );
+
+    expect(launchResult.success).toBe(true);
+    const sessionId = (launchResult.data as { sessionId?: string } | undefined)?.sessionId;
+    expect(sessionId).toBeTruthy();
+
+    const listResult = await processTool.execute(
+      { action: 'list', agentId: TEST_AGENT_ID },
+      { toolCallId: 'process-list', messages: [] },
+    );
+
+    expect(listResult.success).toBe(true);
+    const sessions = (listResult.data as { sessions?: Array<{ sessionId: string }> } | undefined)?.sessions ?? [];
+    expect(sessions.some(session => session.sessionId === sessionId)).toBe(true);
+
+    const killResult = await processTool.execute(
+      { action: 'kill', sessionId: sessionId! },
+      { toolCallId: 'process-kill', messages: [] },
+    );
+
+    expect(killResult.success).toBe(true);
+  });
+
+  it('supports PTY launches with process.write and process.poll', async () => {
+    const { getTool } = await import('../src/lib/tools');
+    const execTool = getTool('exec_command');
+    const processTool = getTool('process');
+    if (!execTool?.execute || !processTool?.execute) {
+      throw new Error('exec_command or process tool is not registered');
+    }
+
+    const launchResult = await execTool.execute(
+      {
+        agentId: TEST_AGENT_ID,
+        command: 'cat',
+        launchMode: 'pty',
+        commandMode: 'shell',
+      },
+      { toolCallId: 'exec-pty', messages: [] },
+    );
+
+    expect(launchResult.success).toBe(true);
+    const sessionId = (launchResult.data as { sessionId?: string } | undefined)?.sessionId;
+    expect(sessionId).toBeTruthy();
+
+    const writeResult = await processTool.execute(
+      { action: 'write', sessionId: sessionId!, input: 'hello through process tool\n' },
+      { toolCallId: 'process-write', messages: [] },
+    );
+    expect(writeResult.success).toBe(true);
+
+    let combinedOutput = '';
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const pollResult = await processTool.execute(
+        { action: 'poll', sessionId: sessionId!, offset: 0, limit: 4000 },
+        { toolCallId: 'process-poll', messages: [] },
+      );
+      expect(pollResult.success).toBe(true);
+      combinedOutput = (pollResult.data as { output?: string } | undefined)?.output ?? '';
+      if (combinedOutput.includes('hello through process tool')) {
+        break;
+      }
+    }
+
+    expect(combinedOutput).toContain('hello through process tool');
+
+    await processTool.execute(
+      { action: 'kill', sessionId: sessionId! },
+      { toolCallId: 'process-kill-pty', messages: [] },
+    );
+  });
+
+  it('applies shell-mode policy by tier', async () => {
+    const { getTool } = await import('../src/lib/tools');
+    const execTool = getTool('exec_command');
+    if (!execTool?.execute) {
+      throw new Error('exec_command tool is not registered');
+    }
+
+    const result = await execTool.execute(
+      {
+        agentId: TEST_AGENT_ID,
+        command: 'echo hello from locked-down shell',
+        tier: 'locked-down',
+        commandMode: 'shell',
+      },
+      { toolCallId: 'exec-locked-down-shell', messages: [] },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Shell mode is not allowed for locked-down execution');
+  });
+
+  it('rejects isolated launches clearly when no supported container runtime is available', async () => {
+    const { getTool } = await import('../src/lib/tools');
+    const execTool = getTool('exec_command');
+    if (!execTool?.execute) {
+      throw new Error('exec_command tool is not registered');
+    }
+
+    const result = await execTool.execute(
+      {
+        agentId: TEST_AGENT_ID,
+        command: 'echo hello',
+        tier: 'sandbox',
+      },
+      { toolCallId: 'exec-sandbox-missing-runtime', messages: [] },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('requires Docker or Podman');
+  });
+
+  it('copies surfaced files from approved mounted workspaces into sandbox output', async () => {
+    if (!runtimeConfigFixture) {
+      throw new Error('Runtime config fixture not initialized');
+    }
+
+    const workspaceDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-mounted-workspace-'));
+
+    try {
+      writeRuntimeConfig(runtimeConfigFixture.configPath, {
+        runtime: {
+          exec: {
+            enabled: true,
+            allowlist: ['echo', 'printf'],
+            maxTimeout: 30,
+            maxOutputSize: 10000,
+            foregroundYieldMs: 100,
+            mounts: [
+              {
+                alias: 'workspace',
+                hostPath: workspaceDir,
+                permissions: 'read-write',
+                createIfMissing: false,
+              },
+            ],
+          },
+        },
+      });
+
+      const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+      resetProviderRegistryForTests();
+      initializeProviderRegistry();
+
+      const { getTool } = await import('../src/lib/tools');
+      const execTool = getTool('exec_command');
+      if (!execTool?.execute) {
+        throw new Error('exec_command tool is not registered');
+      }
+
+      const result = await execTool.execute(
+        {
+          agentId: TEST_AGENT_ID,
+          command: "printf 'report from mount' > report.txt",
+          commandMode: 'shell',
+          cwd: 'mount:workspace',
+          surfaceFiles: ['report.txt'],
+        },
+        { toolCallId: 'exec-surface-file', messages: [] },
+      );
+
+      expect(result.success).toBe(true);
+      const surfaces = result.surface as Array<{ type: string; filePath?: string }> | undefined;
+      expect(surfaces).toBeTruthy();
+      expect(surfaces?.[0]?.type).toBe('file');
+      expect(surfaces?.[0]?.filePath).toBeTruthy();
+      expect(surfaces?.[0]?.filePath).not.toBe(path.join(workspaceDir, 'report.txt'));
+      expect(fs.readFileSync(surfaces?.[0]!.filePath!, 'utf-8')).toBe('report from mount');
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it('hands off long-running child-mode commands after the foreground yield window', async () => {
+    if (!runtimeConfigFixture) {
+      throw new Error('Runtime config fixture not initialized');
+    }
+
+    writeRuntimeConfig(runtimeConfigFixture.configPath, {
+      runtime: {
+        exec: {
+          enabled: true,
+          allowlist: ['sleep'],
+          maxTimeout: 30,
+          maxOutputSize: 10000,
+          foregroundYieldMs: 50,
+        },
+      },
+    });
+
+    const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+    const { getTool } = await import('../src/lib/tools');
+    const { processSupervisor } = await import('../src/lib/services/process-supervisor');
+    resetProviderRegistryForTests();
+    initializeProviderRegistry();
+
+    const execTool = getTool('exec_command');
+    if (!execTool?.execute) {
+      throw new Error('exec_command tool is not registered');
+    }
+
+    const result = await execTool.execute(
+      { agentId: TEST_AGENT_ID, command: 'sleep 1', launchMode: 'child' },
+      { toolCallId: 'exec-child-yield', messages: [] },
+    );
+
+    expect(result.success).toBe(true);
+    const sessionId = (result.data as { sessionId?: string } | undefined)?.sessionId;
+    expect(sessionId).toBeTruthy();
+    const completed = await processSupervisor.waitForSession(sessionId!);
+    expect(completed?.status === 'completed' || completed?.status === 'cancelled').toBe(true);
+  });
+
+  it('enforces process session ownership for poll/log/write/kill actions', async () => {
+    const toolsModule = await import('../src/lib/tools');
+    const execTool = toolsModule.getTool('exec_command');
+    const processTool = toolsModule.getTool('process');
+    if (!execTool?.execute || !processTool?.execute) {
+      throw new Error('exec_command or process tool is not registered');
+    }
+
+    const launchResult = await execTool.execute(
+      { agentId: 'agent-a', command: 'sleep 2', commandMode: 'shell', background: true },
+      { toolCallId: 'exec-owner-a', messages: [] },
+    );
+    const sessionId = (launchResult.data as { sessionId?: string } | undefined)?.sessionId;
+    expect(sessionId).toBeTruthy();
+
+    const unauthorizedPoll = await toolsModule.withToolExecutionContext(
+      { agentId: 'agent-b', taskId: 'task-b-poll', taskType: 'message' },
+      () => processTool.execute?.({ action: 'poll', sessionId: sessionId!, offset: 0, limit: 100 }, { toolCallId: 'process-unauthorized-poll', messages: [] }),
+    );
+    expect(unauthorizedPoll?.success).toBe(false);
+    expect(unauthorizedPoll?.error).toContain('not accessible');
+
+    const unauthorizedKill = await toolsModule.withToolExecutionContext(
+      { agentId: 'agent-b', taskId: 'task-b-kill', taskType: 'message' },
+      () => processTool.execute?.({ action: 'kill', sessionId: sessionId! }, { toolCallId: 'process-unauthorized-kill', messages: [] }),
+    );
+    expect(unauthorizedKill?.success).toBe(false);
+    expect(unauthorizedKill?.error).toContain('not accessible');
+
+    await processTool.execute(
+      { action: 'kill', sessionId: sessionId! },
+      { toolCallId: 'process-authorized-kill', messages: [] },
+    );
+  });
+
+  it('runs a gated real container smoke test when explicitly enabled and Docker or Podman is available', async () => {
+    if (!runtimeConfigFixture) {
+      throw new Error('Runtime config fixture not initialized');
+    }
+
+    if (process.env.OPENCLAW_RUN_CONTAINER_SMOKE_TESTS !== 'true') {
+      expect(true).toBe(true);
+      return;
+    }
+
+    const { detectContainerRuntime, resetExecRuntimeStateForTests } = await import('../src/lib/services/exec-runtime');
+    resetExecRuntimeStateForTests();
+    const availableRuntime = detectContainerRuntime();
+    if (!availableRuntime) {
+      expect(true).toBe(true);
+      return;
+    }
+
+    const workspaceDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-container-smoke-'));
+
+    try {
+      writeRuntimeConfig(runtimeConfigFixture.configPath, {
+        runtime: {
+          exec: {
+            enabled: true,
+            allowlist: ['touch'],
+            maxTimeout: 60,
+            maxOutputSize: 10000,
+            foregroundYieldMs: 100,
+            mounts: [
+              {
+                alias: 'workspace',
+                hostPath: workspaceDir,
+                permissions: 'read-write',
+                createIfMissing: false,
+              },
+            ],
+          },
+        },
+      });
+
+      const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+      const { getTool } = await import('../src/lib/tools');
+      const { processSupervisor } = await import('../src/lib/services/process-supervisor');
+      resetProviderRegistryForTests();
+      initializeProviderRegistry();
+
+      const execTool = getTool('exec_command');
+      if (!execTool?.execute) {
+        throw new Error('exec_command tool is not registered');
+      }
+
+      const sandboxResult = await execTool.execute(
+        {
+          agentId: TEST_AGENT_ID,
+          command: 'touch sandbox-smoke.txt',
+          tier: 'sandbox',
+          cwd: 'mount:workspace',
+          background: true,
+        },
+        { toolCallId: 'exec-sandbox-smoke', messages: [] },
+      );
+      const sandboxSessionId = (sandboxResult.data as { sessionId?: string } | undefined)?.sessionId;
+      expect(sandboxResult.success).toBe(true);
+      expect(sandboxSessionId).toBeTruthy();
+      const sandboxCompleted = await processSupervisor.waitForSession(sandboxSessionId!);
+      expect(sandboxCompleted?.exitCode).toBe(0);
+      expect(fs.existsSync(path.join(workspaceDir, 'sandbox-smoke.txt'))).toBe(true);
+
+      const lockedResult = await execTool.execute(
+        {
+          agentId: TEST_AGENT_ID,
+          command: 'touch locked-smoke.txt',
+          tier: 'locked-down',
+          cwd: 'mount:workspace',
+          background: true,
+        },
+        { toolCallId: 'exec-locked-smoke', messages: [] },
+      );
+      const lockedSessionId = (lockedResult.data as { sessionId?: string } | undefined)?.sessionId;
+      expect(lockedResult.success).toBe(true);
+      expect(lockedSessionId).toBeTruthy();
+      const lockedCompleted = await processSupervisor.waitForSession(lockedSessionId!);
+      expect((lockedCompleted?.exitCode ?? 0) !== 0).toBe(true);
+    } finally {
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it('retains finished background sessions for later inspection', async () => {
+    const { getTool } = await import('../src/lib/tools');
+    const { processSupervisor } = await import('../src/lib/services/process-supervisor');
+    const execTool = getTool('exec_command');
+    const processTool = getTool('process');
+    if (!execTool?.execute || !processTool?.execute) {
+      throw new Error('exec_command or process tool is not registered');
+    }
+
+    const launchResult = await execTool.execute(
+      {
+        agentId: TEST_AGENT_ID,
+        command: "sleep 0.1; echo background-finished",
+        commandMode: 'shell',
+        background: true,
+      },
+      { toolCallId: 'exec-background-finished', messages: [] },
+    );
+    const sessionId = (launchResult.data as { sessionId?: string } | undefined)?.sessionId;
+    expect(sessionId).toBeTruthy();
+
+    const completed = await processSupervisor.waitForSession(sessionId!);
+    expect(completed?.status).toBe('completed');
+
+    const logResult = await processTool.execute(
+      { action: 'log', sessionId: sessionId!, offset: 0, limit: 4000 },
+      { toolCallId: 'process-log-finished', messages: [] },
+    );
+    expect(logResult.success).toBe(true);
+    expect((logResult.data as { output?: string } | undefined)?.output).toContain('background-finished');
+  });
+
+  it('handles PTY unhappy paths like writes after exit and repeated kills', async () => {
+    const { getTool } = await import('../src/lib/tools');
+    const { processSupervisor } = await import('../src/lib/services/process-supervisor');
+    const execTool = getTool('exec_command');
+    const processTool = getTool('process');
+    if (!execTool?.execute || !processTool?.execute) {
+      throw new Error('exec_command or process tool is not registered');
+    }
+
+    const launchResult = await execTool.execute(
+      {
+        agentId: TEST_AGENT_ID,
+        command: 'printf done',
+        launchMode: 'pty',
+        commandMode: 'shell',
+        background: true,
+      },
+      { toolCallId: 'exec-pty-unhappy', messages: [] },
+    );
+    const sessionId = (launchResult.data as { sessionId?: string } | undefined)?.sessionId;
+    expect(sessionId).toBeTruthy();
+
+    const completed = await processSupervisor.waitForSession(sessionId!);
+    expect(completed?.status).toBe('completed');
+
+    const writeAfterExit = await processTool.execute(
+      { action: 'write', sessionId: sessionId!, input: 'still there?\n' },
+      { toolCallId: 'process-write-after-exit', messages: [] },
+    );
+    expect(writeAfterExit.success).toBe(false);
+    expect(writeAfterExit.error).toContain('is not running');
+
+    const firstKill = await processTool.execute(
+      { action: 'kill', sessionId: sessionId! },
+      { toolCallId: 'process-kill-once', messages: [] },
+    );
+    const secondKill = await processTool.execute(
+      { action: 'kill', sessionId: sessionId! },
+      { toolCallId: 'process-kill-twice', messages: [] },
+    );
+    expect(firstKill.success).toBe(true);
+    expect(secondKill.success).toBe(true);
+  });
+
+  it('enforces max session concurrency and frees capacity once a session finishes', async () => {
+    if (!runtimeConfigFixture) {
+      throw new Error('Runtime config fixture not initialized');
+    }
+
+    writeRuntimeConfig(runtimeConfigFixture.configPath, {
+      runtime: {
+        exec: {
+          enabled: true,
+          allowlist: ['echo'],
+          maxTimeout: 30,
+          maxOutputSize: 10000,
+          foregroundYieldMs: 50,
+          maxSessions: 1,
+        },
+      },
+    });
+
+    const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+    const { getTool } = await import('../src/lib/tools');
+    const { processSupervisor } = await import('../src/lib/services/process-supervisor');
+    resetProviderRegistryForTests();
+    initializeProviderRegistry();
+
+    const execTool = getTool('exec_command');
+    if (!execTool?.execute) {
+      throw new Error('exec_command tool is not registered');
+    }
+
+    const firstLaunch = await execTool.execute(
+      { agentId: TEST_AGENT_ID, command: 'sleep 2', commandMode: 'shell', background: true },
+      { toolCallId: 'exec-max-sessions-first', messages: [] },
+    );
+    const firstSessionId = (firstLaunch.data as { sessionId?: string } | undefined)?.sessionId;
+    expect(firstLaunch.success).toBe(true);
+    expect(firstSessionId).toBeTruthy();
+
+    const secondLaunch = await execTool.execute(
+      { agentId: TEST_AGENT_ID, command: 'sleep 2', commandMode: 'shell', background: true },
+      { toolCallId: 'exec-max-sessions-second', messages: [] },
+    );
+    expect(secondLaunch.success).toBe(false);
+    expect(secondLaunch.error).toContain('Maximum exec session limit reached');
+
+    await processSupervisor.killSession(firstSessionId!);
+    await processSupervisor.waitForSession(firstSessionId!);
+
+    const thirdLaunch = await execTool.execute(
+      { agentId: TEST_AGENT_ID, command: 'echo capacity-freed', background: true },
+      { toolCallId: 'exec-max-sessions-third', messages: [] },
+    );
+    expect(thirdLaunch.success).toBe(true);
   });
 });

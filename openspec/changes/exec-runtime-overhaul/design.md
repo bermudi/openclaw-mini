@@ -58,6 +58,12 @@ The `process` tool uses one verb set everywhere:
 - **direct argv mode**: command is parsed into binary + args and checked against the allowlist
 - **shell mode**: shell-capable execution for PTY or complex workflows, governed by tier policy
 
+For the first implementation, the shell policy is:
+
+- `host`: shell mode allowed
+- `sandbox`: shell mode allowed
+- `locked-down`: shell mode rejected to keep the strictest tier simpler and narrower in v1
+
 It also needs explicit fields for:
 
 - requested tier
@@ -80,12 +86,13 @@ If Docker/Podman is unavailable:
 
 Commands in mounted workspaces may produce files outside `data/sandbox/{agentId}`. The runtime therefore needs a defined handoff path for deliverable files.
 
-For the first iteration, the design assumes one of two explicit strategies:
+For the first iteration, the runtime copies surfaced files into a sandbox/output-compatible location before delivery.
 
-1. copy surfaced files into a sandbox/output-compatible location before delivery, or
-2. extend outbound file delivery to accept approved absolute paths
+Why this strategy first:
 
-This must be decided before implementation, not during it.
+1. it keeps outbound delivery restricted to the same sandbox-relative file model the system already understands,
+2. it avoids expanding the delivery trust boundary to arbitrary absolute paths, and
+3. it gives mounted-workspace commands a safe handoff path without changing every channel adapter.
 
 ### Decision 6: Runtime config needs explicit defaults and ordering
 
@@ -97,7 +104,7 @@ locked-down < sandbox < host
 
 That ordering must be encoded consistently in config validation and runtime checks.
 
-Safer defaults matter here; the prior draft's implicit `defaultTier: host` is too sharp for a first rollout.
+The implementation keeps `defaultTier: host` in v1 for compatibility with deployments that enable exec before Docker/Podman is installed, while still requiring explicit opt-in via `runtime.exec.enabled` and enforcing `maxTier` checks.
 
 ## Risks / Trade-offs
 
@@ -119,6 +126,5 @@ Safer defaults matter here; the prior draft's implicit `defaultTier: host` is to
 
 ## Open Questions
 
-- Which file-surfacing strategy should be used first: sandbox copy or absolute-path outbound delivery?
-- What container image baseline should isolated tiers use?
-- Should `defaultTier` default to `sandbox` rather than `host` once the runtime is implemented?
+- What container image baseline should isolated tiers use long-term?
+- Should the locked-down tier eventually gain a narrower shell/PTY policy instead of rejecting shell mode entirely?

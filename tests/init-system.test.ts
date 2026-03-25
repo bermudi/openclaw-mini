@@ -71,11 +71,13 @@ afterEach(async () => {
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   const { resetInitForTests } = await import('../src/lib/init');
   const { resetAdapterInitializationForTests } = await import('../src/lib/adapters');
+  const { resetExecRuntimeStateForTests } = await import('../src/lib/services/exec-runtime');
   
   stopWatchingConfig();
   resetProviderRegistryForTests();
   resetInitForTests();
   resetAdapterInitializationForTests();
+  resetExecRuntimeStateForTests();
   restoreEnv();
 
   for (const dir of createdDirs) {
@@ -236,6 +238,118 @@ describe('init system - successful initialization', () => {
     // Second call should return immediately without re-running checks
     const result2 = await initialize();
     expect(result2).toBe(result1);
+  });
+});
+
+describe('init system - exec runtime diagnostics', () => {
+  test('fails startup validation when default isolated tier requires containers but none are available', async () => {
+    const configPath = path.join(createTempDir(), 'openclaw.json');
+    writeConfig(configPath, `{
+      providers: {
+        openai: {
+          apiType: 'openai-chat',
+          apiKey: '\${OPENAI_API_KEY}',
+        },
+      },
+      agent: {
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
+      },
+      runtime: {
+        exec: {
+          enabled: true,
+          defaultTier: 'sandbox',
+        },
+      },
+    }`);
+    process.env.OPENCLAW_CONFIG_PATH = configPath;
+    process.env.DATABASE_URL = 'file:./db/custom.db';
+
+    const { setDetectedContainerRuntimeForTests } = await import('../src/lib/services/exec-runtime');
+    setDetectedContainerRuntimeForTests(null);
+
+    const { initialize, resetInitForTests } = await import('../src/lib/init');
+    resetInitForTests();
+
+    const result = await initialize();
+
+    expect(result.success).toBe(false);
+    expect(result.hardFailures.some(failure => failure.type === 'exec-runtime')).toBe(true);
+  });
+
+  test('emits a soft warning when exec is enabled with host default but containers are unavailable', async () => {
+    const configPath = path.join(createTempDir(), 'openclaw.json');
+    writeConfig(configPath, `{
+      providers: {
+        openai: {
+          apiType: 'openai-chat',
+          apiKey: '\${OPENAI_API_KEY}',
+        },
+      },
+      agent: {
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
+      },
+      runtime: {
+        exec: {
+          enabled: true,
+          defaultTier: 'host',
+        },
+      },
+    }`);
+    process.env.OPENCLAW_CONFIG_PATH = configPath;
+    process.env.DATABASE_URL = 'file:./db/custom.db';
+
+    const { setDetectedContainerRuntimeForTests } = await import('../src/lib/services/exec-runtime');
+    setDetectedContainerRuntimeForTests(null);
+
+    const { initialize, resetInitForTests } = await import('../src/lib/init');
+    resetInitForTests();
+
+    const result = await initialize();
+
+    expect(result.success).toBe(true);
+    expect(result.softWarnings.some(warning => warning.type === 'exec-runtime')).toBe(true);
+  });
+
+  test('logs startup diagnostics for container runtime availability and default-tier viability', async () => {
+    const configPath = path.join(createTempDir(), 'openclaw.json');
+    writeConfig(configPath, `{
+      providers: {
+        openai: {
+          apiType: 'openai-chat',
+          apiKey: '\${OPENAI_API_KEY}',
+        },
+      },
+      agent: {
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
+      },
+      runtime: {
+        exec: {
+          enabled: true,
+          defaultTier: 'host',
+        },
+      },
+    }`);
+    process.env.OPENCLAW_CONFIG_PATH = configPath;
+    process.env.DATABASE_URL = 'file:./db/custom.db';
+
+    const { setDetectedContainerRuntimeForTests } = await import('../src/lib/services/exec-runtime');
+    setDetectedContainerRuntimeForTests(null);
+
+    const infoSpy = spyOn(console, 'info');
+    const { initialize, resetInitForTests } = await import('../src/lib/init');
+    resetInitForTests();
+
+    const result = await initialize();
+
+    expect(result.success).toBe(true);
+    const infoMessages = infoSpy.mock.calls.map(call => String(call[0]));
+    expect(infoMessages.some(message => message.includes('Container runtime detected: none'))).toBe(true);
+    expect(infoMessages.some(message => message.includes("Default exec tier 'host' is viable at startup"))).toBe(true);
+
+    infoSpy.mockRestore();
   });
 });
 

@@ -6,7 +6,7 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { NextRequest } from 'next/server';
 import type { PrismaClient } from '@prisma/client';
-import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture } from './runtime-config-fixture';
+import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture, writeRuntimeConfig } from './runtime-config-fixture';
 
 let mockResponseText = 'stub response';
 let mockGenerateTextSteps: Array<Record<string, unknown>> = [];
@@ -609,6 +609,124 @@ test('send_file_to_chat returns a file surface using the current execution conte
   } finally {
     sandboxService.setSandboxRootForTests(null);
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
+});
+
+test('surfaces a mounted-workspace file through exec_command and delivers it end-to-end', async () => {
+  if (!runtimeConfigFixture) {
+    throw new Error('Runtime config fixture not initialized');
+  }
+
+  const agent = await createDefaultAgent();
+  const sandboxService = await import('../src/lib/services/sandbox-service');
+  const toolsModule = await import('../src/lib/tools');
+  const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+  const sandboxRoot = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-exec-surface-delivery-'));
+  const workspaceDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mounted-workspace-'));
+  const captured: Array<{ type: 'text' | 'file'; text?: string; filePath?: string }> = [];
+
+  sandboxService.setSandboxRootForTests(sandboxRoot);
+
+  try {
+    writeRuntimeConfig(runtimeConfigFixture.configPath, {
+      runtime: {
+        exec: {
+          enabled: true,
+          allowlist: ['echo', 'printf'],
+          maxTimeout: 30,
+          maxOutputSize: 10000,
+          foregroundYieldMs: 100,
+          mounts: [
+            {
+              alias: 'workspace',
+              hostPath: workspaceDir,
+              permissions: 'read-write',
+              createIfMissing: false,
+            },
+          ],
+        },
+      },
+    });
+    resetProviderRegistryForTests();
+    initializeProviderRegistry();
+
+    const execTool = toolsModule.getTool('exec_command');
+    if (!execTool?.execute) {
+      throw new Error('exec_command tool is not registered');
+    }
+
+    const execToolResult = await toolsModule.withToolExecutionContext(
+      {
+        agentId: agent.id,
+        taskId: 'task-exec-surface-delivery',
+        taskType: 'message',
+        deliveryTarget: { channel: 'telegram', channelKey: 'chat-surfaced', metadata: { chatId: 'chat-surfaced' } },
+      },
+      () => execTool.execute?.(
+        {
+          agentId: agent.id,
+          command: "printf 'mounted report' > report.txt",
+          commandMode: 'shell',
+          cwd: 'mount:workspace',
+          surfaceFiles: ['report.txt'],
+        },
+        { toolCallId: 'exec-surface-delivery', messages: [] },
+      ),
+    );
+
+    expect(execToolResult?.success).toBe(true);
+    const surfacedFilePath = (execToolResult?.surface as Array<{ filePath?: string }> | undefined)?.[0]?.filePath;
+    expect(surfacedFilePath).toBeTruthy();
+    expect(surfacedFilePath).not.toBe(path.join(workspaceDir, 'report.txt'));
+
+    mockResponseText = 'report delivered';
+    mockGenerateTextSteps = [
+      makeToolStep([
+        {
+          toolName: 'exec_command',
+          output: execToolResult as Record<string, unknown>,
+        },
+      ]),
+    ];
+
+    deliveryService.registerAdapter({
+      channel: 'telegram',
+      sendText: async (_target, text) => {
+        captured.push({ type: 'text', text });
+        return { externalMessageId: `text-${captured.length}` };
+      },
+      sendFile: async (_target, filePath, opts) => {
+        captured.push({ type: 'file', filePath, text: opts?.caption });
+        return { externalMessageId: `file-${captured.length}` };
+      },
+    });
+
+    const messageResult = await inputManagerModule.inputManager.processInput({
+      type: 'message',
+      channel: 'telegram',
+      channelKey: 'chat-surfaced',
+      content: 'deliver a mounted report',
+    });
+
+    if (!messageResult.taskId) {
+      throw new Error(`Expected message task id, got: ${messageResult.error ?? 'unknown error'}`);
+    }
+
+    const execResult = await agentExecutorModule.agentExecutor.executeTask(messageResult.taskId);
+    expect(execResult.success).toBe(true);
+
+    const pendingDeliveries = await deliveryModel().findMany();
+    expect(pendingDeliveries.some(delivery => (delivery.deliveryType ?? 'text') === 'file')).toBe(true);
+
+    const stats = await deliveryService.processPendingDeliveries();
+    expect(stats.sent).toBeGreaterThanOrEqual(2);
+    expect(captured.some(entry => entry.type === 'file' && entry.filePath === surfacedFilePath)).toBe(true);
+    expect(captured.some(entry => entry.type === 'text' && entry.text === 'report delivered')).toBe(true);
+    expect(fs.readFileSync(surfacedFilePath!, 'utf-8')).toBe('mounted report');
+  } finally {
+    sandboxService.setSandboxRootForTests(null);
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+    fs.rmSync(workspaceDir, { recursive: true, force: true });
   }
 });
 

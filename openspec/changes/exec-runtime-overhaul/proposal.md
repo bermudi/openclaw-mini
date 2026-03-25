@@ -30,4 +30,4 @@ We do want a fuller execution runtime, but the original draft left too many secu
 - **Security model**: current behavior is treated as a restricted legacy path, not as equivalent to unrestricted host execution
 - **Config schema**: `runtime.exec` grows substantially and now needs stronger validation/default rules
 - **Tool surface**: adds `process` and expands `exec_command`
-- **Dependencies**: PTY support is already present in `package.json`; implementation still needs container integration and session supervision code
+- **Dependencies**: implementation needs container integration plus session supervision and PTY handling; the first version can use a lightweight PTY wrapper instead of assuming a dedicated PTY package

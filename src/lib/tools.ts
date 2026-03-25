@@ -14,7 +14,14 @@ import { getSkillForSubAgent } from '@/lib/services/skill-service';
 import { getOverrideFieldsApplied } from '@/lib/subagent-config';
 import { getRuntimeConfig } from '@/lib/config/runtime';
 import { getMemoryDir, memoryService } from '@/lib/services/memory-service';
-import { getSandboxDir, resolveSandboxPath } from '@/lib/services/sandbox-service';
+import { resolveSandboxPath } from '@/lib/services/sandbox-service';
+import {
+  buildExecLaunch,
+  isExecTierAllowed,
+  surfaceExecFiles,
+  type ExecCommandMode,
+} from '@/lib/services/exec-runtime';
+import { processSupervisor } from '@/lib/services/process-supervisor';
 import { parseCommand, getBinaryBasename, capCombinedOutput } from '@/lib/utils/exec-helpers';
 import { existsSync } from 'fs';
 import type { DeliveryTarget, TaskType } from '@/lib/types';
@@ -1136,156 +1143,352 @@ registerTool(
 );
 
 // ============================================
-// exec_command tool (registered always; enabled check is inside execute)
+// exec_command / process tools
 // ============================================
 
 // Re-export helpers so callers can import from one place
 export { parseCommand, getBinaryBasename } from '@/lib/utils/exec-helpers';
 export { truncateOutput } from '@/lib/utils/exec-helpers';
 
-// Minimal safe environment to pass to sandboxed commands
-function buildSafeEnv(): NodeJS.ProcessEnv {
-  // NODE_ENV is included because bun-types requires it in ProcessEnv; it is not sensitive
-  const env: Record<string, string> = {
-    PATH: process.env.PATH ?? '/usr/bin:/bin',
-    HOME: process.env.HOME ?? '/tmp',
-    TERM: 'dumb',
-    NODE_ENV: process.env.NODE_ENV ?? 'production',
+const execTierSchema = z.enum(['host', 'sandbox', 'locked-down']);
+const execLaunchModeSchema = z.enum(['child', 'pty']);
+const execCommandModeSchema = z.enum(['direct', 'shell']);
+
+const execCommandInputSchema = z.object({
+  agentId: z.string().describe('The agent ID (used to scope sandbox and exec mounts)'),
+  command: z.string().describe('The command to execute'),
+  tier: execTierSchema.optional().describe('Execution tier: host, sandbox, or locked-down'),
+  launchMode: execLaunchModeSchema.optional().describe('Launch mode: child for non-interactive, pty for interactive terminal sessions'),
+  commandMode: execCommandModeSchema.optional().describe('Command mode: direct parses argv and enforces allowlist; shell runs through a shell according to tier policy'),
+  background: z.boolean().optional().describe('Whether to hand the process off as a supervised session immediately'),
+  cwd: z.string().optional().describe('Optional working directory. Use mount:<alias>/... to target configured execution mounts'),
+  surfaceOutput: z.boolean().optional().describe('Whether to surface stdout directly to chat when the command completes in the foreground'),
+  surfaceFiles: z.array(z.string()).optional().describe('Optional file paths to surface after foreground completion. Files outside the sandbox but inside approved mounts are copied into sandbox output first'),
+});
+
+const processToolInputSchema = z.discriminatedUnion('action', [
+  z.object({
+    action: z.literal('list'),
+    agentId: z.string().optional().describe('Optional agent ID filter. Defaults to the current tool context agent when available'),
+  }),
+  z.object({
+    action: z.literal('poll'),
+    sessionId: z.string().min(1).describe('Process session identifier'),
+    offset: z.number().int().nonnegative().optional().describe('Read output starting from this absolute offset'),
+    limit: z.number().int().positive().optional().describe('Maximum number of characters to return'),
+  }),
+  z.object({
+    action: z.literal('log'),
+    sessionId: z.string().min(1).describe('Process session identifier'),
+    offset: z.number().int().nonnegative().optional().describe('Read output starting from this absolute offset'),
+    limit: z.number().int().positive().optional().describe('Maximum number of characters to return'),
+  }),
+  z.object({
+    action: z.literal('write'),
+    sessionId: z.string().min(1).describe('Process session identifier'),
+    input: z.string().describe('Raw PTY input to forward to the running session'),
+  }),
+  z.object({
+    action: z.literal('kill'),
+    sessionId: z.string().min(1).describe('Process session identifier'),
+  }),
+]);
+
+function toErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function buildProcessHandleData(input: {
+  sessionId: string;
+  status: string;
+  tier: string;
+  launchMode: string;
+  commandMode: string;
+  background: boolean;
+}): Record<string, unknown> {
+  return {
+    sessionId: input.sessionId,
+    sessionStatus: input.status,
+    tier: input.tier,
+    launchMode: input.launchMode,
+    commandMode: input.commandMode,
+    background: input.background,
   };
-  if (process.env.LANG) env.LANG = process.env.LANG;
-  if (process.env.LC_ALL) env.LC_ALL = process.env.LC_ALL;
-  return env as NodeJS.ProcessEnv;
+}
+
+function assertProcessSessionAccess(sessionId: string, context?: ToolExecutionContext): void {
+  if (!context?.agentId) {
+    return;
+  }
+
+  const session = processSupervisor.getSessionSnapshot(sessionId);
+  if (session.agentId !== context.agentId) {
+    throw new Error(`Process session ${sessionId} is not accessible for agent '${context.agentId}'`);
+  }
 }
 
 registerTool(
   'exec_command',
   tool({
-    description: 'Execute an allowlisted shell command in the agent sandbox directory. Commands are run directly (no shell), with timeout and output size limits enforced.',
-    inputSchema: z.object({
-      agentId: z.string().describe('The agent ID (used to determine sandbox directory)'),
-      command: z.string().describe('The command to execute (binary name and arguments)'),
-      surfaceOutput: z.boolean().optional().describe('Whether to surface stdout directly to chat'),
-    }),
-    execute: async ({ agentId, command, surfaceOutput }): Promise<ToolResult> => {
-      const { execFile } = await import('child_process');
-      const { promisify } = await import('util');
-      const execFileAsync = promisify(execFile);
-
+    description: 'Execute commands using the configured exec runtime with explicit execution tier, child or PTY launch mode, background handoff, and mount-aware working directories.',
+    inputSchema: execCommandInputSchema,
+    execute: async ({
+      agentId,
+      command,
+      tier,
+      launchMode,
+      commandMode,
+      background,
+      cwd,
+      surfaceOutput,
+      surfaceFiles,
+    }): Promise<ToolResult> => {
       const config = getRuntimeConfig().exec;
+      const context = getToolExecutionContext();
 
       if (!config.enabled) {
         return { success: false, error: 'exec_command is disabled. Set runtime.exec.enabled to true in openclaw.json.' };
       }
 
-      // Enforce sane upper bounds regardless of what the config says
-      const maxTimeout = Math.min(config.maxTimeout ?? 30, 300); // cap at 5 min
-      const maxOutputSize = Math.min(config.maxOutputSize ?? 10000, 1_000_000); // cap at 1 MB
-
-      // Parse command
-      const parsed = parseCommand(command);
-      if ('error' in parsed) {
-        return { success: false, error: parsed.error };
-      }
-
-      const { binary, args } = parsed;
-
-      // Check allowlist
-      const binaryBasename = getBinaryBasename(binary);
-      const allowlist = config.allowlist ?? [];
-
-      if (!allowlist.includes(binaryBasename)) {
+      const resolvedTier = tier ?? config.defaultTier;
+      if (!isExecTierAllowed(resolvedTier, config.maxTier)) {
         return {
           success: false,
-          error: `Command '${binaryBasename}' is not in the allowlist. Allowed commands: ${allowlist.join(', ') || '(none)'}`,
+          error: `Execution tier '${resolvedTier}' exceeds configured maxTier '${config.maxTier}'`,
         };
       }
 
-      // Get sandbox directory
-      let sandboxDir: string;
-      try {
-        sandboxDir = getSandboxDir(agentId);
-      } catch (error) {
-        return { success: false, error: `Invalid agent sandbox: ${error}` };
+      const resolvedLaunchMode = launchMode ?? config.defaultLaunchMode;
+      const resolvedCommandMode: ExecCommandMode = commandMode ?? (resolvedLaunchMode === 'pty' ? 'shell' : 'direct');
+      const resolvedBackground = background ?? config.defaultBackground;
+
+      if (resolvedBackground && surfaceFiles && surfaceFiles.length > 0) {
+        return {
+          success: false,
+          error: 'surfaceFiles require foreground completion. Re-run without backgrounding, or surface files later with send_file_to_chat.',
+        };
       }
 
-      const timeoutMs = maxTimeout * 1000;
-      // maxBuffer limits each stream; set large enough to capture output before our truncation
-      const streamBuffer = Math.max(maxOutputSize * 5, 1024 * 1024);
+      const activeSessions = processSupervisor
+        .listSessions(agentId)
+        .filter(session => session.status === 'starting' || session.status === 'running').length;
+      if (activeSessions >= config.maxSessions) {
+        return {
+          success: false,
+          error: `Maximum exec session limit reached for agent '${agentId}' (${config.maxSessions})`,
+        };
+      }
 
+      const maxTimeoutSeconds = Math.min(config.maxTimeout, 300);
+      const maxOutputSize = Math.min(config.maxOutputSize, 1_000_000);
+      const sessionBufferSize = Math.min(config.sessionBufferSize, 2_000_000);
+
+      let prepared;
       try {
-        const { stdout, stderr } = await execFileAsync(binary, args, {
-          cwd: sandboxDir,
-          timeout: timeoutMs,
-          maxBuffer: streamBuffer,
-          killSignal: 'SIGTERM',
-          env: buildSafeEnv() as NodeJS.ProcessEnv,
+        prepared = buildExecLaunch({
+          agentId,
+          command,
+          tier: resolvedTier,
+          launchMode: resolvedLaunchMode,
+          commandMode: resolvedCommandMode,
+          cwd,
+          allowlist: config.allowlist,
+          mounts: config.mounts,
+          containerRuntime: config.containerRuntime,
+          timeoutMs: maxTimeoutSeconds * 1000,
+          ptyCols: config.ptyCols,
+          ptyRows: config.ptyRows,
         });
+      } catch (error) {
+        return { success: false, error: toErrorMessage(error, 'Failed to prepare exec launch') };
+      }
 
-        const capped = capCombinedOutput(stdout, stderr, maxOutputSize);
-        const surface = surfaceOutput && capped.stdout.length > 0
-          ? [{ type: 'text', content: capped.stdout } satisfies SurfaceDirective]
-          : undefined;
+      let session;
+      try {
+        session = await processSupervisor.spawnSession({
+          agentId,
+          taskId: context?.taskId,
+          tier: resolvedTier,
+          launchMode: resolvedLaunchMode,
+          bufferSize: sessionBufferSize,
+          sessionTimeoutMs: maxTimeoutSeconds * 1000,
+          spawn: prepared.spawn,
+        });
+      } catch (error) {
+        return { success: false, error: toErrorMessage(error, 'Failed to start process session') };
+      }
 
+      if (resolvedBackground) {
         return {
           success: true,
-          data: {
-            stdout: capped.stdout,
-            stderr: capped.stderr,
-            exitCode: 0,
-            outputTruncated: capped.truncated,
-          },
-          surface,
+          data: buildProcessHandleData({
+            sessionId: session.sessionId,
+            status: session.status,
+            tier: resolvedTier,
+            launchMode: resolvedLaunchMode,
+            commandMode: resolvedCommandMode,
+            background: true,
+          }),
         };
-      } catch (error) {
-        const execError = error as { code?: string | number; signal?: string; stdout?: string; stderr?: string; message?: string };
+      }
 
-        // Handle timeout
-        if (execError.signal === 'SIGTERM' || execError.code === 'ETIMEDOUT') {
-          return {
-            success: false,
-            error: `Command timed out after ${maxTimeout} seconds`,
-          };
-        }
+      const completed = await processSupervisor.waitForSession(session.sessionId, config.foregroundYieldMs);
 
-        // Handle spawn errors (binary not found, etc.)
-        if (execError.code === 'ENOENT') {
-          return {
-            success: false,
-            error: `Command not found: '${binary}'`,
-          };
-        }
+      if (!completed) {
+        return {
+          success: true,
+          data: buildProcessHandleData({
+            sessionId: session.sessionId,
+            status: session.status,
+            tier: resolvedTier,
+            launchMode: resolvedLaunchMode,
+            commandMode: resolvedCommandMode,
+            background: true,
+          }),
+        };
+      }
 
-        // Handle non-zero exit codes — still a successful execution
-        if (typeof execError.code === 'number') {
-          const capped = capCombinedOutput(
-            execError.stdout ?? '',
-            execError.stderr ?? '',
-            maxOutputSize,
-          );
-          const surface = surfaceOutput && capped.stdout.length > 0
-            ? [{ type: 'text', content: capped.stdout } satisfies SurfaceDirective]
-            : undefined;
-
-          return {
-            success: true,
-            data: {
-              stdout: capped.stdout,
-              stderr: capped.stderr,
-              exitCode: execError.code,
-              outputTruncated: capped.truncated,
-            },
-            surface,
-          };
-        }
-
+      if (completed.reason === 'spawn-error') {
         return {
           success: false,
-          error: `Failed to execute command: ${execError.message ?? 'Unknown error'}`,
+          error: completed.stderr.trim() || 'Failed to launch command',
+        };
+      }
+
+      if (completed.status === 'timed_out') {
+        return {
+          success: false,
+          error: `Command timed out after ${maxTimeoutSeconds} seconds`,
+        };
+      }
+
+      if (completed.reason === 'manual-cancel') {
+        return {
+          success: false,
+          error: 'Command was cancelled before completion',
+        };
+      }
+
+      if (completed.reason === 'signal') {
+        return {
+          success: false,
+          error: `Command exited due to signal ${String(completed.signal ?? 'unknown')}`,
+        };
+      }
+
+      const capped = capCombinedOutput(completed.stdout, completed.stderr, maxOutputSize);
+      const surfaces: SurfaceDirective[] = [];
+
+      if (surfaceOutput && capped.stdout.length > 0) {
+        surfaces.push({ type: 'text', content: capped.stdout });
+      }
+
+      if (surfaceFiles && surfaceFiles.length > 0) {
+        try {
+          const surfacedFiles = surfaceExecFiles({
+            agentId,
+            files: surfaceFiles,
+            workingDirectory: prepared.workingDirectory,
+            mounts: prepared.mounts,
+          });
+
+          for (const surfacedFile of surfacedFiles) {
+            surfaces.push({
+              type: 'file',
+              filePath: surfacedFile.surfacedPath,
+              mimeType: detectMimeType(surfacedFile.surfacedPath),
+            });
+          }
+        } catch (error) {
+          return {
+            success: false,
+            error: toErrorMessage(error, 'Failed to surface output files'),
+          };
+        }
+      }
+
+      return {
+        success: true,
+        data: {
+          stdout: capped.stdout,
+          stderr: capped.stderr,
+          exitCode: completed.exitCode ?? 0,
+          outputTruncated: capped.truncated,
+          tier: resolvedTier,
+          launchMode: resolvedLaunchMode,
+          commandMode: resolvedCommandMode,
+        },
+        ...(surfaces.length > 0 ? { surface: surfaces } : {}),
+      };
+    },
+  }),
+  { riskLevel: 'high' },
+);
+
+registerTool(
+  'process',
+  tool({
+    description: 'Interact with supervised exec sessions using canonical actions: list, poll, log, write, and kill.',
+    inputSchema: processToolInputSchema,
+    execute: async (input): Promise<ToolResult> => {
+      const config = getRuntimeConfig().exec;
+      const context = getToolExecutionContext();
+
+      if (!config.enabled) {
+        return { success: false, error: 'process is unavailable because runtime.exec.enabled is false' };
+      }
+
+      try {
+        switch (input.action) {
+          case 'list': {
+            const agentFilter = input.agentId ?? context?.agentId;
+            return {
+              success: true,
+              data: {
+                sessions: processSupervisor.listSessions(agentFilter),
+              },
+            };
+          }
+          case 'poll': {
+            assertProcessSessionAccess(input.sessionId, context);
+            return {
+              success: true,
+              data: processSupervisor.pollSession(input.sessionId, input.offset, input.limit),
+            };
+          }
+          case 'log': {
+            assertProcessSessionAccess(input.sessionId, context);
+            return {
+              success: true,
+              data: processSupervisor.readSessionLog(input.sessionId, input.offset, input.limit),
+            };
+          }
+          case 'write': {
+            assertProcessSessionAccess(input.sessionId, context);
+            return {
+              success: true,
+              data: processSupervisor.writeSession(input.sessionId, input.input),
+            };
+          }
+          case 'kill': {
+            assertProcessSessionAccess(input.sessionId, context);
+            return {
+              success: true,
+              data: processSupervisor.killSession(input.sessionId),
+            };
+          }
+          default:
+            assertNever(input);
+        }
+      } catch (error) {
+        return {
+          success: false,
+          error: toErrorMessage(error, 'Process session operation failed'),
         };
       }
     },
   }),
-  { riskLevel: 'high' },
+  { riskLevel: 'medium' },
 );
 
 const MIME_TYPE_MAP: Record<string, string> = {

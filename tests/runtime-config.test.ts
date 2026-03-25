@@ -41,8 +41,10 @@ beforeEach(() => {
 afterEach(async () => {
   const { resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
+  const { resetExecRuntimeStateForTests } = await import('../src/lib/services/exec-runtime');
   resetRuntimeWarningsForTests();
   resetProviderRegistryForTests();
+  resetExecRuntimeStateForTests();
   restoreEnv();
 });
 
@@ -377,8 +379,27 @@ describe('runtimeSectionSchema exec section', () => {
       exec: {
         enabled: true,
         allowlist: ['cat', 'ls', 'grep'],
+        defaultTier: 'host',
+        maxTier: 'host',
+        containerRuntime: 'docker',
+        mounts: [
+          {
+            alias: 'workspace',
+            hostPath: '/tmp/workspace',
+            permissions: 'read-write',
+            createIfMissing: true,
+          },
+        ],
         maxTimeout: 60,
         maxOutputSize: 50000,
+        maxSessions: 4,
+        sessionTimeout: 900,
+        sessionBufferSize: 250000,
+        foregroundYieldMs: 1500,
+        defaultLaunchMode: 'pty',
+        defaultBackground: true,
+        ptyCols: 180,
+        ptyRows: 50,
       },
     });
 
@@ -386,8 +407,27 @@ describe('runtimeSectionSchema exec section', () => {
     if (result.success) {
       expect(result.data.exec?.enabled).toBe(true);
       expect(result.data.exec?.allowlist).toEqual(['cat', 'ls', 'grep']);
+      expect(result.data.exec?.defaultTier).toBe('host');
+      expect(result.data.exec?.maxTier).toBe('host');
+      expect(result.data.exec?.containerRuntime).toBe('docker');
+      expect(result.data.exec?.mounts).toEqual([
+        {
+          alias: 'workspace',
+          hostPath: '/tmp/workspace',
+          permissions: 'read-write',
+          createIfMissing: true,
+        },
+      ]);
       expect(result.data.exec?.maxTimeout).toBe(60);
       expect(result.data.exec?.maxOutputSize).toBe(50000);
+      expect(result.data.exec?.maxSessions).toBe(4);
+      expect(result.data.exec?.sessionTimeout).toBe(900);
+      expect(result.data.exec?.sessionBufferSize).toBe(250000);
+      expect(result.data.exec?.foregroundYieldMs).toBe(1500);
+      expect(result.data.exec?.defaultLaunchMode).toBe('pty');
+      expect(result.data.exec?.defaultBackground).toBe(true);
+      expect(result.data.exec?.ptyCols).toBe(180);
+      expect(result.data.exec?.ptyRows).toBe(50);
     }
   });
 
@@ -479,6 +519,43 @@ describe('runtimeSectionSchema exec section', () => {
     });
 
     expect(result.success).toBe(false);
+  });
+
+  test('rejects defaultTier that is more privileged than maxTier', async () => {
+    const { runtimeSectionSchema } = await import('../src/lib/config/schema');
+
+    const result = runtimeSectionSchema.safeParse({
+      exec: {
+        defaultTier: 'host',
+        maxTier: 'sandbox',
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects duplicate mount aliases and reserved sandbox alias', async () => {
+    const { runtimeSectionSchema } = await import('../src/lib/config/schema');
+
+    const duplicateAlias = runtimeSectionSchema.safeParse({
+      exec: {
+        mounts: [
+          { alias: 'workspace', hostPath: '/tmp/a', permissions: 'read-only' },
+          { alias: 'workspace', hostPath: '/tmp/b', permissions: 'read-write' },
+        ],
+      },
+    });
+
+    const reservedAlias = runtimeSectionSchema.safeParse({
+      exec: {
+        mounts: [
+          { alias: 'sandbox', hostPath: '/tmp/a', permissions: 'read-only' },
+        ],
+      },
+    });
+
+    expect(duplicateAlias.success).toBe(false);
+    expect(reservedAlias.success).toBe(false);
   });
 });
 
@@ -749,15 +826,29 @@ describe('getRuntimeConfig() exec defaults', () => {
   test('returns default exec values when no exec section is configured', async () => {
     await setProviderRegistryState();
 
+    const { setDetectedContainerRuntimeForTests } = await import('../src/lib/services/exec-runtime');
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
+    setDetectedContainerRuntimeForTests(null);
     resetRuntimeWarningsForTests();
 
     const config = getRuntimeConfig();
 
     expect(config.exec.enabled).toBe(false);
     expect(config.exec.allowlist).toEqual([]);
+    expect(config.exec.defaultTier).toBe('host');
+    expect(config.exec.maxTier).toBe('host');
+    expect(config.exec.containerRuntime).toBeNull();
+    expect(config.exec.mounts).toEqual([]);
     expect(config.exec.maxTimeout).toBe(30);
     expect(config.exec.maxOutputSize).toBe(10000);
+    expect(config.exec.maxSessions).toBe(8);
+    expect(config.exec.sessionTimeout).toBe(300);
+    expect(config.exec.sessionBufferSize).toBe(100000);
+    expect(config.exec.foregroundYieldMs).toBe(1000);
+    expect(config.exec.defaultLaunchMode).toBe('child');
+    expect(config.exec.defaultBackground).toBe(false);
+    expect(config.exec.ptyCols).toBe(120);
+    expect(config.exec.ptyRows).toBe(30);
   });
 
   test('returns configured exec values from runtime section', async () => {
@@ -765,22 +856,62 @@ describe('getRuntimeConfig() exec defaults', () => {
       exec: {
         enabled: true,
         allowlist: ['cat', 'ls', 'grep'],
+        defaultTier: 'sandbox' as const,
+        maxTier: 'host' as const,
+        containerRuntime: 'podman' as const,
+        mounts: [
+          {
+            alias: 'workspace',
+            hostPath: '/tmp/workspace',
+            permissions: 'read-write' as const,
+            createIfMissing: true,
+          },
+        ],
         maxTimeout: 60,
         maxOutputSize: 50000,
+        maxSessions: 2,
+        sessionTimeout: 120,
+        sessionBufferSize: 32000,
+        foregroundYieldMs: 1400,
+        defaultLaunchMode: 'pty' as const,
+        defaultBackground: true,
+        ptyCols: 160,
+        ptyRows: 44,
       },
     };
 
     await setProviderRegistryState(makeMinimalConfig(runtimeSection));
 
+    const { setDetectedContainerRuntimeForTests } = await import('../src/lib/services/exec-runtime');
     const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
+    setDetectedContainerRuntimeForTests('podman');
     resetRuntimeWarningsForTests();
 
     const config = getRuntimeConfig();
 
     expect(config.exec.enabled).toBe(true);
     expect(config.exec.allowlist).toEqual(['cat', 'ls', 'grep']);
+    expect(config.exec.defaultTier).toBe('sandbox');
+    expect(config.exec.maxTier).toBe('host');
+    expect(config.exec.containerRuntime).toBe('podman');
+    expect(config.exec.mounts).toEqual([
+      {
+        alias: 'workspace',
+        hostPath: '/tmp/workspace',
+        permissions: 'read-write',
+        createIfMissing: true,
+      },
+    ]);
     expect(config.exec.maxTimeout).toBe(60);
     expect(config.exec.maxOutputSize).toBe(50000);
+    expect(config.exec.maxSessions).toBe(2);
+    expect(config.exec.sessionTimeout).toBe(120);
+    expect(config.exec.sessionBufferSize).toBe(32000);
+    expect(config.exec.foregroundYieldMs).toBe(1400);
+    expect(config.exec.defaultLaunchMode).toBe('pty');
+    expect(config.exec.defaultBackground).toBe(true);
+    expect(config.exec.ptyCols).toBe(160);
+    expect(config.exec.ptyRows).toBe(44);
   });
 
   test('fills in defaults for partial exec section', async () => {
@@ -797,8 +928,19 @@ describe('getRuntimeConfig() exec defaults', () => {
 
     expect(config.exec.enabled).toBe(true);
     expect(config.exec.allowlist).toEqual([]);
+    expect(config.exec.defaultTier).toBe('host');
+    expect(config.exec.maxTier).toBe('host');
+    expect(config.exec.mounts).toEqual([]);
     expect(config.exec.maxTimeout).toBe(30);
     expect(config.exec.maxOutputSize).toBe(10000);
+    expect(config.exec.maxSessions).toBe(8);
+    expect(config.exec.sessionTimeout).toBe(300);
+    expect(config.exec.sessionBufferSize).toBe(100000);
+    expect(config.exec.foregroundYieldMs).toBe(1000);
+    expect(config.exec.defaultLaunchMode).toBe('child');
+    expect(config.exec.defaultBackground).toBe(false);
+    expect(config.exec.ptyCols).toBe(120);
+    expect(config.exec.ptyRows).toBe(30);
   });
 
   test('uses defaults for missing allowlist', async () => {
@@ -815,7 +957,73 @@ describe('getRuntimeConfig() exec defaults', () => {
 
     expect(config.exec.enabled).toBe(true);
     expect(config.exec.allowlist).toEqual([]);
+    expect(config.exec.defaultTier).toBe('host');
+    expect(config.exec.maxTier).toBe('host');
     expect(config.exec.maxTimeout).toBe(120);
     expect(config.exec.maxOutputSize).toBe(10000);
+  });
+});
+
+describe('exec runtime helpers', () => {
+  test('encodes privilege ordering consistently for locked-down < sandbox < host', async () => {
+    const { compareExecTiers } = await import('../src/lib/services/exec-runtime');
+
+    expect(compareExecTiers('locked-down', 'sandbox')).toBeLessThan(0);
+    expect(compareExecTiers('sandbox', 'host')).toBeLessThan(0);
+    expect(compareExecTiers('host', 'host')).toBe(0);
+  });
+
+  test('detects container runtime and reports startup viability', async () => {
+    const { getExecStartupDiagnostics, setDetectedContainerRuntimeForTests } = await import('../src/lib/services/exec-runtime');
+
+    setDetectedContainerRuntimeForTests('docker');
+    const available = getExecStartupDiagnostics({
+      enabled: true,
+      defaultTier: 'sandbox',
+      maxTier: 'host',
+      containerRuntime: 'docker',
+    });
+
+    expect(available.containerRuntime).toBe('docker');
+    expect(available.defaultTierViable).toBe(true);
+
+    setDetectedContainerRuntimeForTests(null);
+    const unavailable = getExecStartupDiagnostics({
+      enabled: true,
+      defaultTier: 'locked-down',
+      maxTier: 'host',
+      containerRuntime: null,
+    });
+
+    expect(unavailable.containerRuntime).toBeNull();
+    expect(unavailable.defaultTierViable).toBe(false);
+    expect(unavailable.messages.some(message => message.includes('requires Docker or Podman'))).toBe(true);
+  });
+
+  test('validates explicitly configured container runtimes and does not silently fall back to another runtime', async () => {
+    const { setDetectedContainerRuntimeForTests } = await import('../src/lib/services/exec-runtime');
+    const { getRuntimeConfig, resetRuntimeWarningsForTests } = await import('../src/lib/config/runtime');
+
+    await setProviderRegistryState(makeMinimalConfig({
+      exec: {
+        enabled: true,
+        containerRuntime: 'docker',
+      },
+    }));
+    setDetectedContainerRuntimeForTests('podman');
+    resetRuntimeWarningsForTests();
+
+    expect(getRuntimeConfig().exec.containerRuntime).toBeNull();
+
+    await setProviderRegistryState(makeMinimalConfig({
+      exec: {
+        enabled: true,
+        containerRuntime: 'podman',
+      },
+    }));
+    setDetectedContainerRuntimeForTests('podman');
+    resetRuntimeWarningsForTests();
+
+    expect(getRuntimeConfig().exec.containerRuntime).toBe('podman');
   });
 });

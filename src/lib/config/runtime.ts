@@ -1,8 +1,16 @@
 import { ensureProviderRegistryInitialized, providerRegistry } from '@/lib/services/provider-registry';
+import {
+  detectContainerRuntime,
+} from '@/lib/services/exec-runtime';
 import type {
   BrowserConfig,
   BrowserViewportConfig,
+  ContainerRuntime,
   EmbeddingProvider,
+  ExecLaunchMode,
+  ExecMountConfig,
+  ExecMountPermission,
+  ExecTier,
   McpServerConfig,
   PrismaLogLevel,
   VectorRetrievalMode,
@@ -32,8 +40,25 @@ export interface RuntimeBehaviorConfig {
   exec: {
     enabled: boolean;
     allowlist: string[];
+    defaultTier: ExecTier;
+    maxTier: ExecTier;
+    containerRuntime: ContainerRuntime | null;
+    mounts: Array<{
+      alias: string;
+      hostPath: string;
+      permissions: ExecMountPermission;
+      createIfMissing: boolean;
+    }>;
     maxTimeout: number;
     maxOutputSize: number;
+    maxSessions: number;
+    sessionTimeout: number;
+    sessionBufferSize: number;
+    foregroundYieldMs: number;
+    defaultLaunchMode: ExecLaunchMode;
+    defaultBackground: boolean;
+    ptyCols: number;
+    ptyRows: number;
   };
   memory: {
     embeddingProvider: EmbeddingProvider;
@@ -68,6 +93,15 @@ function warnDeprecatedEnvVar(envVar: string, replacement: string): void {
   console.warn(`[runtime-config] ${envVar} env var is deprecated, use ${replacement} in config`);
 }
 
+function normalizeExecMounts(mounts?: ExecMountConfig[]): RuntimeBehaviorConfig['exec']['mounts'] {
+  return (mounts ?? []).map(mount => ({
+    alias: mount.alias ?? '',
+    hostPath: mount.hostPath ?? '',
+    permissions: mount.permissions ?? 'read-only',
+    createIfMissing: mount.createIfMissing ?? false,
+  }));
+}
+
 function getDefaults(): RuntimeBehaviorConfig {
   return {
     safety: {
@@ -93,8 +127,20 @@ function getDefaults(): RuntimeBehaviorConfig {
     exec: {
       enabled: false,
       allowlist: [],
+      defaultTier: 'host',
+      maxTier: 'host',
+      containerRuntime: null,
+      mounts: [],
       maxTimeout: 30,
       maxOutputSize: 10000,
+      maxSessions: 8,
+      sessionTimeout: 300,
+      sessionBufferSize: 100000,
+      foregroundYieldMs: 1000,
+      defaultLaunchMode: 'child',
+      defaultBackground: false,
+      ptyCols: 120,
+      ptyRows: 30,
     },
     memory: {
       embeddingProvider: 'disabled',
@@ -139,13 +185,13 @@ export function getRuntimeConfig(): RuntimeBehaviorConfig {
   try {
     state = ensureProviderRegistryInitialized();
   } catch {
-    // Fall back to defaults when config cannot be loaded yet.
+    return getDefaults();
   }
-  
+
   if (!state) {
     return getDefaults();
   }
-  
+
   const { config } = state;
   const runtime = config.runtime;
 
@@ -173,7 +219,9 @@ export function getRuntimeConfig(): RuntimeBehaviorConfig {
   const envCompactionThreshold = Number.isFinite(rawThreshold) ? rawThreshold : undefined;
 
   const defaults = getDefaults();
-  
+  const configuredExec = runtime?.exec;
+  const resolvedContainerRuntime = detectContainerRuntime(configuredExec?.containerRuntime ?? defaults.exec.containerRuntime);
+
   return {
     safety: {
       subagentTimeout: runtime?.safety?.subagentTimeout ?? envSubagentTimeout ?? defaults.safety.subagentTimeout,
@@ -196,10 +244,22 @@ export function getRuntimeConfig(): RuntimeBehaviorConfig {
       compactionThreshold: runtime?.performance?.compactionThreshold ?? envCompactionThreshold ?? defaults.performance.compactionThreshold,
     },
     exec: {
-      enabled: runtime?.exec?.enabled ?? defaults.exec.enabled,
-      allowlist: runtime?.exec?.allowlist ?? defaults.exec.allowlist,
-      maxTimeout: runtime?.exec?.maxTimeout ?? defaults.exec.maxTimeout,
-      maxOutputSize: runtime?.exec?.maxOutputSize ?? defaults.exec.maxOutputSize,
+      enabled: configuredExec?.enabled ?? defaults.exec.enabled,
+      allowlist: configuredExec?.allowlist ?? defaults.exec.allowlist,
+      defaultTier: configuredExec?.defaultTier ?? defaults.exec.defaultTier,
+      maxTier: configuredExec?.maxTier ?? defaults.exec.maxTier,
+      containerRuntime: resolvedContainerRuntime,
+      mounts: normalizeExecMounts(configuredExec?.mounts ?? defaults.exec.mounts),
+      maxTimeout: configuredExec?.maxTimeout ?? defaults.exec.maxTimeout,
+      maxOutputSize: configuredExec?.maxOutputSize ?? defaults.exec.maxOutputSize,
+      maxSessions: configuredExec?.maxSessions ?? defaults.exec.maxSessions,
+      sessionTimeout: configuredExec?.sessionTimeout ?? defaults.exec.sessionTimeout,
+      sessionBufferSize: configuredExec?.sessionBufferSize ?? defaults.exec.sessionBufferSize,
+      foregroundYieldMs: configuredExec?.foregroundYieldMs ?? defaults.exec.foregroundYieldMs,
+      defaultLaunchMode: configuredExec?.defaultLaunchMode ?? defaults.exec.defaultLaunchMode,
+      defaultBackground: configuredExec?.defaultBackground ?? defaults.exec.defaultBackground,
+      ptyCols: configuredExec?.ptyCols ?? defaults.exec.ptyCols,
+      ptyRows: configuredExec?.ptyRows ?? defaults.exec.ptyRows,
     },
     memory: {
       embeddingProvider: runtime?.memory?.embeddingProvider ?? defaults.memory.embeddingProvider,

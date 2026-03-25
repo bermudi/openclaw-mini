@@ -14,6 +14,8 @@ import { hookSubscriptionManager } from '@/lib/services/hook-subscription-manage
 import { watchConfig } from '@/lib/config/watcher';
 import { registerOptionalTools } from '@/lib/tools';
 import { memoryIndexingService } from '@/lib/services/memory-indexing';
+import { getRuntimeConfig } from '@/lib/config/runtime';
+import { getExecStartupDiagnostics } from '@/lib/services/exec-runtime';
 
 let initialized = false;
 let initResult: InitResult | null = null;
@@ -87,7 +89,35 @@ export async function initialize(): Promise<InitResult> {
     }
   }
 
-  // 4. Database connection and migration
+  // 4. Exec runtime diagnostics and startup validation
+  if (result.hardFailures.length === 0) {
+    const execConfig = getRuntimeConfig().exec;
+    const diagnostics = getExecStartupDiagnostics({
+      enabled: execConfig.enabled,
+      defaultTier: execConfig.defaultTier,
+      maxTier: execConfig.maxTier,
+      containerRuntime: execConfig.containerRuntime,
+    });
+
+    for (const message of diagnostics.messages) {
+      console.info(`[Init] ${message}`);
+    }
+
+    if (execConfig.enabled && !diagnostics.defaultTierViable) {
+      result.hardFailures.push({
+        type: 'exec-runtime',
+        error: `Exec startup validation failed: default tier '${diagnostics.defaultTier}' requires Docker or Podman, but no supported container runtime is available`,
+        guidance: 'Install Docker or Podman, or set runtime.exec.defaultTier to host before enabling exec',
+      });
+    } else if (execConfig.enabled && !diagnostics.containerRuntime) {
+      result.softWarnings.push({
+        type: 'exec-runtime',
+        warning: 'Docker/Podman not detected; sandbox and locked-down exec tiers will fail until a supported container runtime is installed',
+      });
+    }
+  }
+
+  // 5. Database connection and migration
   if (result.hardFailures.length === 0) {
     const dbCheck = await checkDatabase();
     if (!dbCheck.success) {

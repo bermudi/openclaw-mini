@@ -30,9 +30,23 @@ const runtimePerformanceSchema = z.object({
 
 const embeddingProviderSchema = z.enum(['disabled', 'openai', 'google', 'anthropic', 'ollama', 'mock']);
 const vectorRetrievalModeSchema = z.enum(['disabled', 'auto', 'sqlite-vec', 'in-process']);
+const execTierSchema = z.enum(['locked-down', 'sandbox', 'host']);
+const containerRuntimeSchema = z.enum(['docker', 'podman']);
+const execLaunchModeSchema = z.enum(['child', 'pty']);
+const execMountPermissionSchema = z.enum(['read-only', 'read-write']);
+
+const EXEC_TIER_RANK: Record<z.infer<typeof execTierSchema>, number> = {
+  'locked-down': 0,
+  sandbox: 1,
+  host: 2,
+};
 
 export type EmbeddingProvider = z.infer<typeof embeddingProviderSchema>;
 export type VectorRetrievalMode = z.infer<typeof vectorRetrievalModeSchema>;
+export type ExecTier = z.infer<typeof execTierSchema>;
+export type ContainerRuntime = z.infer<typeof containerRuntimeSchema>;
+export type ExecLaunchMode = z.infer<typeof execLaunchModeSchema>;
+export type ExecMountPermission = z.infer<typeof execMountPermissionSchema>;
 
 const runtimeMemorySchema = z.object({
   embeddingProvider: embeddingProviderSchema.optional(),
@@ -46,11 +60,74 @@ const runtimeMemorySchema = z.object({
   maxSearchResults: z.number().int().positive().optional(),
 }).strict();
 
+export const execMountSchema = z.object({
+  alias: z.string().trim().min(1),
+  hostPath: z.string().trim().min(1),
+  permissions: execMountPermissionSchema,
+  createIfMissing: z.boolean().optional(),
+}).strict().superRefine((mount, context) => {
+  if (!/^[A-Za-z0-9_-]+$/.test(mount.alias)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'mount alias must contain only letters, numbers, underscores, and hyphens',
+      path: ['alias'],
+    });
+  }
+
+  if (mount.alias === 'sandbox') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'mount alias \"sandbox\" is reserved',
+      path: ['alias'],
+    });
+  }
+});
+
 const runtimeExecSchema = z.object({
   enabled: z.boolean().optional(),
   allowlist: z.array(z.string().trim().min(1)).optional(),
+  defaultTier: execTierSchema.optional(),
+  maxTier: execTierSchema.optional(),
+  containerRuntime: containerRuntimeSchema.optional(),
+  mounts: z.array(execMountSchema).optional(),
   maxTimeout: z.number().int().positive().optional(),
   maxOutputSize: z.number().int().positive().optional(),
+  maxSessions: z.number().int().positive().optional(),
+  sessionTimeout: z.number().int().positive().optional(),
+  sessionBufferSize: z.number().int().positive().optional(),
+  foregroundYieldMs: z.number().int().positive().optional(),
+  defaultLaunchMode: execLaunchModeSchema.optional(),
+  defaultBackground: z.boolean().optional(),
+  ptyCols: z.number().int().positive().optional(),
+  ptyRows: z.number().int().positive().optional(),
+}).strict().superRefine((execConfig, context) => {
+  if (execConfig.defaultTier && execConfig.maxTier) {
+    if (EXEC_TIER_RANK[execConfig.defaultTier] > EXEC_TIER_RANK[execConfig.maxTier]) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'defaultTier cannot be more privileged than maxTier',
+        path: ['defaultTier'],
+      });
+    }
+  }
+
+  if (!execConfig.mounts) {
+    return;
+  }
+
+  const aliases = new Set<string>();
+  for (const [index, mount] of execConfig.mounts.entries()) {
+    if (aliases.has(mount.alias)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `duplicate mount alias '${mount.alias}'`,
+        path: ['mounts', index, 'alias'],
+      });
+      continue;
+    }
+
+    aliases.add(mount.alias);
+  }
 });
 
 const browserViewportSchema = z.object({
@@ -130,11 +207,30 @@ export interface RuntimeMemoryConfig {
   maxSearchResults?: number;
 }
 
+export interface ExecMountConfig {
+  alias?: string;
+  hostPath?: string;
+  permissions?: ExecMountPermission;
+  createIfMissing?: boolean;
+}
+
 export interface ExecConfig {
   enabled?: boolean;
   allowlist?: string[];
+  defaultTier?: ExecTier;
+  maxTier?: ExecTier;
+  containerRuntime?: ContainerRuntime;
+  mounts?: ExecMountConfig[];
   maxTimeout?: number;
   maxOutputSize?: number;
+  maxSessions?: number;
+  sessionTimeout?: number;
+  sessionBufferSize?: number;
+  foregroundYieldMs?: number;
+  defaultLaunchMode?: ExecLaunchMode;
+  defaultBackground?: boolean;
+  ptyCols?: number;
+  ptyRows?: number;
 }
 
 export interface BrowserViewportConfig {
