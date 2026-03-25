@@ -11,6 +11,7 @@ import { sessionService } from '@/lib/services/session-service';
 import { db } from '@/lib/db';
 import { auditService } from '@/lib/services/audit-service';
 import { getSkillForSubAgent } from '@/lib/services/skill-service';
+import { getBuiltInSkillsDir, getManagedSkillsDir } from '@/lib/services/skill-loaders';
 import { getOverrideFieldsApplied } from '@/lib/subagent-config';
 import { getRuntimeConfig } from '@/lib/config/runtime';
 import { getMemoryDir, memoryService } from '@/lib/services/memory-service';
@@ -657,6 +658,78 @@ registerTool(
         return { success: true, data: { filename: safeName, content } };
       } catch (error) {
         return { success: false, error: `Failed to read file: ${error}` };
+      }
+    },
+  }),
+  { riskLevel: 'low' },
+);
+
+registerTool(
+  'read_skill_file',
+  tool({
+    description: 'Read a built-in or managed SKILL.md file by logical skill name.',
+    inputSchema: z.object({
+      source: z.string().describe("Skill source to read from: 'built-in' or 'managed'"),
+      skillName: z.string().describe('Logical skill name / directory name to read'),
+    }),
+    execute: async ({ source, skillName }): Promise<ToolResult> => {
+      const fs = await import('fs');
+      const path = await import('path');
+
+      const normalizedSource = source.trim().toLowerCase();
+      let skillsRoot: string;
+
+      if (normalizedSource === 'built-in') {
+        skillsRoot = getBuiltInSkillsDir();
+      } else if (normalizedSource === 'managed') {
+        skillsRoot = getManagedSkillsDir();
+      } else {
+        return {
+          success: false,
+          error: `Invalid skill source '${source}'. Use 'built-in' or 'managed'.`,
+        };
+      }
+
+      const normalizedSkillName = skillName.trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(normalizedSkillName)) {
+        return {
+          success: false,
+          error: `Invalid skill name '${skillName}'. Skill names must stay within the allowed skill directories.`,
+        };
+      }
+
+      const filePath = path.resolve(skillsRoot, normalizedSkillName, 'SKILL.md');
+      const relativePath = path.relative(skillsRoot, filePath);
+      if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+        return {
+          success: false,
+          error: `Invalid skill name '${skillName}'. Skill names must stay within the allowed skill directories.`,
+        };
+      }
+
+      if (!fs.existsSync(filePath)) {
+        return {
+          success: false,
+          error: `Skill file not found for ${normalizedSource} skill '${normalizedSkillName}' at ${filePath}`,
+        };
+      }
+
+      try {
+        const content = await fs.promises.readFile(filePath, 'utf-8');
+        return {
+          success: true,
+          data: {
+            source: normalizedSource,
+            skillName: normalizedSkillName,
+            filePath,
+            content,
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: `Failed to read skill file: ${error instanceof Error ? error.message : String(error)}`,
+        };
       }
     },
   }),

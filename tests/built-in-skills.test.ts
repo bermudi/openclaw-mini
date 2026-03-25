@@ -85,6 +85,7 @@ test('repository built-in skills load with expected metadata and substantive ins
       'coder',
       'planner',
       'researcher',
+      'skill-manager',
       'vision-analyst',
     ]);
 
@@ -132,6 +133,17 @@ test('repository built-in skills load with expected metadata and substantive ins
         model: 'gpt-4.1-mini',
         maxIterations: 6,
         maxToolInvocations: 8,
+      },
+    });
+
+    expect(byName.get('skill-manager')).toMatchObject({
+      enabled: true,
+      tools: ['read_skill_file', 'exec_command', 'write_note'],
+      source: 'built-in',
+      overrides: {
+        model: 'gpt-4.1',
+        maxIterations: 10,
+        maxToolInvocations: 12,
       },
     });
 
