@@ -1,6 +1,6 @@
 ## MODIFIED Requirements
 
-### Requirement: Multi-source skill discovery
+### Requirement: Skill discovery from filesystem
 The system SHALL support multiple skill sources, scanning both `skills/` (built-in) and `data/skills/` (managed) directories. Each source SHALL be scanned independently and the results merged.
 
 #### Scenario: Discover skills from both sources
@@ -10,6 +10,8 @@ The system SHALL support multiple skill sources, scanning both `skills/` (built-
 #### Scenario: Managed skills directory does not exist
 - **WHEN** `data/skills/` does not exist
 - **THEN** the system SHALL start normally with only built-in skills loaded
+
+## ADDED Requirements
 
 ### Requirement: Built-in skills are protected from override
 When a managed skill has the same logical name as a built-in skill, the collision SHALL be detected case-insensitively and the managed skill SHALL be rejected. The built-in skill SHALL always win.
