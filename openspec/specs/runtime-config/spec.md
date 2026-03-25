@@ -1,7 +1,7 @@
 # runtime-config Specification
 
 ## Purpose
-TBD - created by archiving change centralize-runtime-config. Update Purpose after archive.
+Centralized runtime configuration for OpenClaw including safety limits, retention policies, logging, performance tuning, and execution runtime settings.
 ## Requirements
 ### Requirement: Runtime configuration section
 The system SHALL support a `runtime` section in the config file for centralized runtime behavior configuration.
@@ -86,50 +86,50 @@ The system SHALL provide a typed API for accessing runtime configuration values 
 - **THEN** the system SHALL return the documented default value
 
 ### Requirement: Exec configuration section
-The system SHALL support a `runtime.exec` section in the config file for command execution settings.
+The system SHALL support a `runtime.exec` section in the config file for command execution settings, including execution tiers, container runtime, mounts, session limits, and launch defaults.
 
-#### Scenario: Exec section with all fields
-- **WHEN** `openclaw.json` contains `runtime.exec` with `enabled`, `allowlist`, `maxTimeout`, and `maxOutputSize`
-- **THEN** the system SHALL parse and validate all fields
+#### Scenario: Exec section with advanced fields
+- **WHEN** `openclaw.json` contains `runtime.exec` with fields such as `enabled`, `defaultTier`, `maxTier`, `containerRuntime`, `mounts`, `maxTimeout`, `maxOutputSize`, or session-limit settings
+- **THEN** the system SHALL parse and validate those fields
 
 #### Scenario: Exec enabled field
 - **WHEN** `runtime.exec.enabled` is set to a boolean
-- **THEN** the system SHALL use it to gate `exec_command` tool registration
+- **THEN** the system SHALL use it to gate exec-related behavior
+
+#### Scenario: Default tier field
+- **WHEN** `runtime.exec.defaultTier` is set to one of `host`, `sandbox`, or `locked-down`
+- **THEN** the system SHALL use it as the default execution tier for command launch
+
+#### Scenario: Maximum tier field
+- **WHEN** `runtime.exec.maxTier` is set to one of `host`, `sandbox`, or `locked-down`
+- **THEN** the system SHALL use the configured privilege ordering to reject requests above that ceiling
+
+#### Scenario: Container runtime auto-detect
+- **WHEN** `runtime.exec.containerRuntime` is not set
+- **THEN** the system SHALL auto-detect: prefer `docker`, fallback to `podman`
+
+#### Scenario: Mount declarations
+- **WHEN** `runtime.exec.mounts` is set to an array of mount declarations
+- **THEN** the system SHALL validate each declaration for alias, host path, permissions, and creation policy
 
 #### Scenario: Exec enabled default
 - **WHEN** `runtime.exec.enabled` is not set
-- **THEN** the system SHALL default to `false` (exec disabled)
+- **THEN** the system SHALL default to `false`
 
-#### Scenario: Allowlist field
-- **WHEN** `runtime.exec.allowlist` is set to an array of strings
-- **THEN** the system SHALL use it as the list of permitted binary names
+#### Scenario: Default tier requires unavailable container runtime
+- **WHEN** `runtime.exec.defaultTier` is `sandbox` or `locked-down` and no supported container runtime is available
+- **THEN** startup validation SHALL fail with a clear error
 
-#### Scenario: Allowlist default
-- **WHEN** `runtime.exec.allowlist` is not set
-- **THEN** the system SHALL default to an empty array (no commands allowed)
-
-#### Scenario: Max timeout field
-- **WHEN** `runtime.exec.maxTimeout` is set to a positive integer
-- **THEN** the system SHALL use it as the maximum execution time in seconds
-
-#### Scenario: Max timeout default
-- **WHEN** `runtime.exec.maxTimeout` is not set
-- **THEN** the system SHALL default to 30 seconds
-
-#### Scenario: Max output size field
-- **WHEN** `runtime.exec.maxOutputSize` is set to a positive integer
-- **THEN** the system SHALL use it as the maximum captured output size in characters
-
-#### Scenario: Max output size default
-- **WHEN** `runtime.exec.maxOutputSize` is not set
-- **THEN** the system SHALL default to 10000 characters
+#### Scenario: Missing container runtime for non-default isolated request
+- **WHEN** startup succeeds with a non-isolated default tier and a later command requests `sandbox` or `locked-down` without a supported container runtime
+- **THEN** that command SHALL fail with a clear runtime error
 
 ### Requirement: Exec config access via getRuntimeConfig
-The `getRuntimeConfig()` function SHALL include exec settings in its return value.
+The `getRuntimeConfig()` function SHALL include resolved exec settings, including tier, mount, backend, and session-control configuration.
 
 #### Scenario: Access exec config
 - **WHEN** code calls `getRuntimeConfig()`
-- **THEN** the returned object SHALL include an `exec` property with `enabled`, `allowlist`, `maxTimeout`, and `maxOutputSize`
+- **THEN** the returned object SHALL include an `exec` property with the resolved exec configuration fields and defaults
 
 ### Requirement: Search configuration section
 The system SHALL accept an optional `search` section at the top level of `openclaw.json` for web search provider configuration.
