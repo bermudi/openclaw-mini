@@ -1,33 +1,48 @@
 // OpenClaw Agent Runtime - Skill Service
-// Load SKILL.md files and provide skill metadata
+// Skill loading is an explicit pipeline:
+//   Discover -> Merge -> Validate -> Cache
+// Discover finds raw skill definitions from each source, merge resolves
+// case-insensitive name collisions using precedence, validate applies gating
+// and override-schema checks, and cache stores only validated results.
+//
+// Public provenance is intentionally stable: `source` reports only
+// `'built-in' | 'managed'`. Internal diagnostics retain `sourcePath` so merge
+// and validation warnings can still point to the exact SKILL.md file.
 
-import fs from 'fs';
-import path from 'path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import matter from 'gray-matter';
+import {
+  type SkillLoader,
+  type SkillRequirements,
+  type SkillSource,
+  type UnvalidatedSkill,
+  SKILL_PRECEDENCE_BUILTIN,
+  SKILL_PRECEDENCE_MANAGED,
+  createBuiltInSkillLoader,
+  createManagedSkillLoader,
+} from './skill-loaders';
 import {
   type SubAgentOverrides,
   createSubAgentOverridesSchema,
   formatSubAgentOverrideIssues,
 } from '@/lib/subagent-config';
-import { initializeProviderRegistry, providerRegistry } from '@/lib/services/provider-registry';
+import { ensureProviderRegistryInitialized, providerRegistry } from '@/lib/services/provider-registry';
 
 const DEFAULT_CACHE_TTL_MS = 60_000;
-
-function getSkillsDir(): string {
-  return process.env.OPENCLAW_SKILLS_DIR ?? path.join(process.cwd(), 'skills');
-}
 const execFileAsync = promisify(execFile);
-const binaryCache = new Map<string, boolean>();
+const binaryAvailabilityCache = new Map<string, boolean>();
 
 export const SKILL_CACHE_TTL_MS = DEFAULT_CACHE_TTL_MS;
-
-export interface SkillRequirements {
-  binaries?: string[];
-  env?: string[];
-  platform?: string[];
-}
+export {
+  SKILL_PRECEDENCE_BUILTIN,
+  SKILL_PRECEDENCE_MANAGED,
+};
+export type {
+  SkillLoader,
+  SkillRequirements,
+  SkillSource,
+  UnvalidatedSkill,
+};
 
 export interface SkillMetadata {
   name: string;
@@ -38,7 +53,7 @@ export interface SkillMetadata {
   requires?: SkillRequirements;
   enabled: boolean;
   gatingReason?: string;
-  source: string;
+  source: SkillSource;
 }
 
 export interface LoadedSkill extends SkillMetadata {
@@ -55,7 +70,7 @@ export interface SkillSummary {
   description: string;
   enabled: boolean;
   gatingReason?: string;
-  source: string;
+  source: SkillSource;
 }
 
 interface SkillCache {
@@ -63,19 +78,45 @@ interface SkillCache {
   skills: Map<string, LoadedSkill>;
 }
 
-interface UnvalidatedLoadedSkill extends LoadedSkill {
-  rawOverrides?: unknown;
-}
-
 const cache: SkillCache = {
   loadedAt: 0,
   skills: new Map(),
 };
 
-function normalizeStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const filtered = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
-  return filtered.length > 0 ? filtered : undefined;
+function shouldUseCache(): boolean {
+  if (!cache.loadedAt) return false;
+  return Date.now() - cache.loadedAt < DEFAULT_CACHE_TTL_MS;
+}
+
+function saveCache(skills: Map<string, LoadedSkill>): void {
+  cache.skills = skills;
+  cache.loadedAt = Date.now();
+}
+
+function mergeGatingReason(existing: string | undefined, next: string): string {
+  if (!existing) {
+    return next;
+  }
+
+  return `${existing}; ${next}`;
+}
+
+async function isBinaryAvailable(binary: string): Promise<boolean> {
+  const cached = binaryAvailabilityCache.get(binary);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const command = process.platform === 'win32' ? 'where' : 'which';
+
+  try {
+    await execFileAsync(command, [binary], { windowsHide: true });
+    binaryAvailabilityCache.set(binary, true);
+    return true;
+  } catch {
+    binaryAvailabilityCache.set(binary, false);
+    return false;
+  }
 }
 
 async function resolveGatingReason(requires?: SkillRequirements): Promise<string | undefined> {
@@ -106,77 +147,119 @@ async function resolveGatingReason(requires?: SkillRequirements): Promise<string
   return undefined;
 }
 
-async function isBinaryAvailable(binary: string): Promise<boolean> {
-  const cached = binaryCache.get(binary);
-  if (cached !== undefined) {
-    return cached;
+async function discoverSkills(loaders: SkillLoader[]): Promise<UnvalidatedSkill[]> {
+  const discovered: UnvalidatedSkill[] = [];
+
+  for (const loader of loaders) {
+    try {
+      const skills = await loader.load();
+      discovered.push(...skills);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`Failed to discover skills from loader '${loader.name}': ${message}`);
+    }
   }
 
-  const command = process.platform === 'win32' ? 'where' : 'which';
-
-  try {
-    await execFileAsync(command, [binary], { windowsHide: true });
-    binaryCache.set(binary, true);
-    return true;
-  } catch {
-    binaryCache.set(binary, false);
-    return false;
-  }
+  return discovered;
 }
 
-function shouldUseCache(): boolean {
-  if (!cache.loadedAt) return false;
-  return Date.now() - cache.loadedAt < DEFAULT_CACHE_TTL_MS;
-}
+function mergeSkills(skills: UnvalidatedSkill[]): UnvalidatedSkill[] {
+  const merged = new Map<string, UnvalidatedSkill>();
 
-function saveCache(skills: Map<string, LoadedSkill>): void {
-  cache.skills = skills;
-  cache.loadedAt = Date.now();
-}
+  for (const skill of skills) {
+    const logicalName = skill.name.toLowerCase();
+    const existing = merged.get(logicalName);
 
-function mergeGatingReason(existing: string | undefined, next: string): string {
-  if (!existing) {
-    return next;
-  }
+    if (!existing) {
+      merged.set(logicalName, skill);
+      continue;
+    }
 
-  return `${existing}; ${next}`;
-}
+    if (skill.precedence < existing.precedence) {
+      console.warn(
+        `Replacing ${existing.source} skill '${existing.name}' from ${existing.sourcePath} with ` +
+          `${skill.source} skill '${skill.name}' from ${skill.sourcePath} due to higher precedence.`,
+      );
+      merged.set(logicalName, skill);
+      continue;
+    }
 
-async function readSkillFile(skillPath: string): Promise<UnvalidatedLoadedSkill | null> {
-  const raw = await fs.promises.readFile(skillPath, 'utf-8');
-  const parsed = matter(raw);
+    if (skill.precedence > existing.precedence) {
+      console.warn(
+        `Rejected ${skill.source} skill '${skill.name}' from ${skill.sourcePath} because it collides with ` +
+          `${existing.source} skill '${existing.name}' from ${existing.sourcePath}.`,
+      );
+      continue;
+    }
 
-  const data = parsed.data as Record<string, unknown>;
-  const name = typeof data.name === 'string' ? data.name.trim() : '';
-  const description = typeof data.description === 'string' ? data.description.trim() : '';
-
-  if (!name || !description) {
-    console.warn(`Skipping skill at ${skillPath} (missing name or description)`);
-    return null;
+    console.warn(
+      `Rejected duplicate ${skill.source} skill '${skill.name}' from ${skill.sourcePath}; ` +
+        `existing ${existing.source} skill '${existing.name}' from ${existing.sourcePath} already owns that name.`,
+    );
   }
 
-  const requires: SkillRequirements | undefined = data.requires != null && typeof data.requires === 'object'
-    ? {
-        binaries: normalizeStringArray((data.requires as SkillRequirements).binaries),
-        env: normalizeStringArray((data.requires as SkillRequirements).env),
-        platform: normalizeStringArray((data.requires as SkillRequirements).platform),
+  return Array.from(merged.values());
+}
+
+async function validateSkills(skills: UnvalidatedSkill[]): Promise<Map<string, LoadedSkill>> {
+  const validatedSkills = new Map<string, LoadedSkill>();
+
+  const { getAvailableToolNames } = await import('@/lib/tools');
+  ensureProviderRegistryInitialized();
+  const overrideSchema = createSubAgentOverridesSchema({
+    knownSkillNames: skills.map(skill => skill.name),
+    knownToolNames: getAvailableToolNames(),
+    knownProviderNames: providerRegistry.list().map(provider => provider.id),
+  });
+
+  for (const skill of skills) {
+    const gatingReason = await resolveGatingReason(skill.requires);
+    let enabled = !gatingReason;
+    let mergedGatingReason = gatingReason;
+    let overrides: SubAgentOverrides | undefined;
+    let overrideErrors: string[] | undefined;
+
+    if (skill.rawOverrides !== undefined) {
+      const overrideResult = overrideSchema.safeParse(skill.rawOverrides);
+      if (!overrideResult.success) {
+        overrideErrors = formatSubAgentOverrideIssues(overrideResult.error.issues);
+        enabled = false;
+        mergedGatingReason = mergeGatingReason(
+          mergedGatingReason,
+          `invalid overrides: ${overrideErrors.join('; ')}`,
+        );
+        console.warn(
+          `Invalid overrides for skill '${skill.name}' at ${skill.sourcePath}: ${overrideErrors.join('; ')}`,
+        );
+      } else {
+        overrides = overrideResult.data;
       }
-    : undefined;
+    }
 
-  const tools = normalizeStringArray(data.tools);
-  const gatingReason = await resolveGatingReason(requires);
+    validatedSkills.set(skill.name, {
+      name: skill.name,
+      description: skill.description,
+      tools: skill.tools,
+      overrides,
+      overrideErrors,
+      requires: skill.requires,
+      enabled,
+      gatingReason: mergedGatingReason,
+      source: skill.source,
+      instructions: skill.instructions,
+    });
+  }
 
-  return {
-    name,
-    description,
-    tools,
-    rawOverrides: data.overrides,
-    requires,
-    enabled: !gatingReason,
-    gatingReason,
-    source: skillPath,
-    instructions: parsed.content.trim(),
-  };
+  return validatedSkills;
+}
+
+function getDefaultLoaders(): SkillLoader[] {
+  return [
+    // Lower precedence values win. Built-ins remain protected from managed
+    // overrides, while managed skills still contribute unique names.
+    createBuiltInSkillLoader(),
+    createManagedSkillLoader(),
+  ];
 }
 
 export async function loadAllSkills(): Promise<LoadedSkill[]> {
@@ -184,79 +267,9 @@ export async function loadAllSkills(): Promise<LoadedSkill[]> {
     return Array.from(cache.skills.values());
   }
 
-  const skills = new Map<string, UnvalidatedLoadedSkill>();
-
-  const skillsDir = getSkillsDir();
-  if (!fs.existsSync(skillsDir)) {
-    console.info(`Skills directory not found at ${skillsDir}. No skills loaded.`);
-    saveCache(skills);
-    return [];
-  }
-
-  const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true });
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-
-    const skillPath = path.join(skillsDir, entry.name, 'SKILL.md');
-    if (!fs.existsSync(skillPath)) {
-      continue;
-    }
-
-    try {
-      const skill = await readSkillFile(skillPath);
-      if (skill) {
-        if (skills.has(skill.name)) {
-          const existing = skills.get(skill.name);
-          console.warn(
-            `Duplicate skill name '${skill.name}' from ${skillPath}. Existing source: ${existing?.source ?? 'unknown'}`,
-          );
-        } else {
-          skills.set(skill.name, skill);
-        }
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`Failed to load skill at ${skillPath}: ${message}`);
-    }
-  }
-
-  const { getAvailableToolNames } = await import('@/lib/tools');
-  initializeProviderRegistry();
-  const overrideSchema = createSubAgentOverridesSchema({
-    knownSkillNames: Array.from(skills.values()).map(skill => skill.name),
-    knownToolNames: getAvailableToolNames(),
-    knownProviderNames: providerRegistry.list().map(provider => provider.id),
-  });
-
-  for (const skill of skills.values()) {
-    if (skill.rawOverrides === undefined) {
-      continue;
-    }
-
-    const overrideResult = overrideSchema.safeParse(skill.rawOverrides);
-    if (!overrideResult.success) {
-      const overrideErrors = formatSubAgentOverrideIssues(overrideResult.error.issues);
-      skill.overrideErrors = overrideErrors;
-      skill.enabled = false;
-      skill.gatingReason = mergeGatingReason(
-        skill.gatingReason,
-        `invalid overrides: ${overrideErrors.join('; ')}`,
-      );
-      console.warn(
-        `Invalid overrides for skill '${skill.name}' at ${skill.source}: ${overrideErrors.join('; ')}`,
-      );
-      continue;
-    }
-
-    skill.overrides = overrideResult.data;
-  }
-
-  const validatedSkills = new Map<string, LoadedSkill>();
-  for (const [name, skill] of skills.entries()) {
-    const { rawOverrides: _rawOverrides, ...validatedSkill } = skill;
-    validatedSkills.set(name, validatedSkill);
-  }
+  const discoveredSkills = await discoverSkills(getDefaultLoaders());
+  const mergedSkills = mergeSkills(discoveredSkills);
+  const validatedSkills = await validateSkills(mergedSkills);
 
   saveCache(validatedSkills);
   return Array.from(validatedSkills.values());
@@ -301,4 +314,5 @@ export async function getSkillForSubAgent(skillName: string): Promise<SkillLooku
 export function clearSkillCache(): void {
   cache.skills = new Map();
   cache.loadedAt = 0;
+  binaryAvailabilityCache.clear();
 }

@@ -83,14 +83,18 @@ function resetSkillsDir() {
   fs.mkdirSync(SKILLS_DIR, { recursive: true });
 }
 
-function writeSkill(name: string, frontmatter: string, body: string) {
-  const dir = path.join(SKILLS_DIR, name);
+function writeSkillFile(rootDir: string, name: string, frontmatter: string, body: string) {
+  const dir = path.join(rootDir, name);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
     path.join(dir, 'SKILL.md'),
     `---\n${frontmatter}\n---\n\n${body}\n`,
     'utf-8',
   );
+}
+
+function writeSkill(name: string, frontmatter: string, body: string) {
+  writeSkillFile(SKILLS_DIR, name, frontmatter, body);
 }
 
 function resetWorkspaceDir() {
@@ -362,6 +366,7 @@ test('skill loading parses frontmatter, gating, and cache TTL', async () => {
   const needsEnv = skills.find(skill => skill.name === 'needs-env');
   expect(needsEnv?.enabled).toBe(false);
   expect(needsEnv?.gatingReason).toContain('missing env: MISSING_ENV');
+  expect(needsEnv && 'sourcePath' in needsEnv).toBe(false);
 
   const needsBinary = skills.find(skill => skill.name === 'needs-binary');
   expect(needsBinary?.enabled).toBe(false);
@@ -388,6 +393,212 @@ test('skill loading parses frontmatter, gating, and cache TTL', async () => {
   const refreshedWebSearch = refreshedSkills.find(skill => skill.name === 'web-search');
   expect(refreshedWebSearch?.description).toBe('Updated description');
   Date.now = originalNow;
+});
+
+test('built-in skills win when managed skills use the same logical name', async () => {
+  const originalCwd = process.cwd();
+  const managedWorkspaceDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-managed-skills-'));
+  const managedSkillsRoot = path.join(managedWorkspaceDir, 'data', 'skills');
+
+  try {
+    process.chdir(managedWorkspaceDir);
+    writeSkill('planner', 'name: planner\ndescription: Built-in planner', 'Built-in instructions.');
+    writeSkillFile(
+      managedSkillsRoot,
+      'planner',
+      'name: planner\ndescription: Managed planner',
+      'Managed instructions.',
+    );
+
+    skillService.clearSkillCache();
+    const skills = await skillService.loadAllSkills();
+    const planners = skills.filter(skill => skill.name.toLowerCase() === 'planner');
+
+    expect(planners).toHaveLength(1);
+    expect(planners[0]?.description).toBe('Built-in planner');
+    expect(planners[0]?.instructions).toBe('Built-in instructions.');
+    expect(planners[0]?.source).toBe('built-in');
+  } finally {
+    process.chdir(originalCwd);
+    skillService.clearSkillCache();
+    fs.rmSync(managedWorkspaceDir, { recursive: true, force: true });
+  }
+});
+
+test('skill collisions are detected case-insensitively', async () => {
+  const originalCwd = process.cwd();
+  const managedWorkspaceDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-managed-skills-case-'));
+  const managedSkillsRoot = path.join(managedWorkspaceDir, 'data', 'skills');
+
+  try {
+    process.chdir(managedWorkspaceDir);
+    writeSkill('Planner', 'name: Planner\ndescription: Built-in planner', 'Built-in instructions.');
+    writeSkillFile(
+      managedSkillsRoot,
+      'planner',
+      'name: planner\ndescription: Managed planner',
+      'Managed instructions.',
+    );
+
+    skillService.clearSkillCache();
+    const skills = await skillService.loadAllSkills();
+    const planners = skills.filter(skill => skill.name.toLowerCase() === 'planner');
+
+    expect(planners).toHaveLength(1);
+    expect(planners[0]?.name).toBe('Planner');
+    expect(planners[0]?.source).toBe('built-in');
+  } finally {
+    process.chdir(originalCwd);
+    skillService.clearSkillCache();
+    fs.rmSync(managedWorkspaceDir, { recursive: true, force: true });
+  }
+});
+
+test('missing managed skills directory is treated as an empty managed set', async () => {
+  const originalCwd = process.cwd();
+  const managedWorkspaceDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-managed-empty-'));
+
+  try {
+    process.chdir(managedWorkspaceDir);
+    writeSkill('solo-skill', 'name: solo-skill\ndescription: Built-in only skill', 'Built-in instructions.');
+
+    skillService.clearSkillCache();
+    const skills = await skillService.loadAllSkills();
+
+    expect(skills.find(skill => skill.name === 'solo-skill')?.source).toBe('built-in');
+    expect(skills.some(skill => skill.source === 'managed')).toBe(false);
+  } finally {
+    process.chdir(originalCwd);
+    skillService.clearSkillCache();
+    fs.rmSync(managedWorkspaceDir, { recursive: true, force: true });
+  }
+});
+
+test('filesystem skill loader parses frontmatter and instructions', async () => {
+  const loaderRoot = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-loader-unit-'));
+
+  try {
+    const {
+      createFilesystemSkillLoader,
+      parseSkillFile,
+      SKILL_PRECEDENCE_MANAGED,
+    } = await import('../src/lib/services/skill-loaders');
+
+    writeSkillFile(
+      loaderRoot,
+      'parser-test',
+      'name: parser-test\ndescription: Parser test\ntools:\n  - get_datetime\nrequires:\n  env:\n    - OPENAI_API_KEY',
+      'Use the parser helper.',
+    );
+    writeSkillFile(
+      loaderRoot,
+      'malformed-requires',
+      'name: malformed-requires\ndescription: Bad requires\nrequires:\n  - not-an-object',
+      'Ignore malformed requires.',
+    );
+
+    const loader = createFilesystemSkillLoader({
+      name: 'unit-test-loader',
+      dirPath: loaderRoot,
+      source: 'managed',
+      precedence: SKILL_PRECEDENCE_MANAGED,
+    });
+
+    const skills = await loader.load();
+
+    expect(skills).toHaveLength(2);
+    expect(skills.find(skill => skill.name === 'parser-test')).toMatchObject({
+      name: 'parser-test',
+      description: 'Parser test',
+      tools: ['get_datetime'],
+      requires: { env: ['OPENAI_API_KEY'] },
+      source: 'managed',
+      precedence: SKILL_PRECEDENCE_MANAGED,
+    });
+    expect(skills.find(skill => skill.name === 'parser-test')?.instructions).toBe('Use the parser helper.');
+    expect(skills.find(skill => skill.name === 'parser-test')?.sourcePath).toBe(path.join(loaderRoot, 'parser-test', 'SKILL.md'));
+
+    const malformed = await parseSkillFile(path.join(loaderRoot, 'malformed-requires', 'SKILL.md'));
+    expect(malformed?.requires).toBeUndefined();
+  } finally {
+    fs.rmSync(loaderRoot, { recursive: true, force: true });
+  }
+});
+
+test('GET /api/skills returns built-in and managed provenance', async () => {
+  const originalCwd = process.cwd();
+  const managedWorkspaceDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-managed-api-'));
+  const managedSkillsRoot = path.join(managedWorkspaceDir, 'data', 'skills');
+
+  try {
+    process.chdir(managedWorkspaceDir);
+    writeSkill('planner', 'name: planner\ndescription: Built-in planner', 'Built-in instructions.');
+    writeSkillFile(
+      managedSkillsRoot,
+      'custom-tool',
+      'name: custom-tool\ndescription: Managed tool',
+      'Managed instructions.',
+    );
+
+    skillService.clearSkillCache();
+    const skillsRoute = await import('../src/app/api/skills/route');
+    const response = await skillsRoute.GET();
+    const body = await response.json() as {
+      success: boolean;
+      data: Array<{ name: string; source: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+
+    const sources = new Map(body.data.map(skill => [skill.name, skill.source]));
+    expect(sources.get('planner')).toBe('built-in');
+    expect(sources.get('custom-tool')).toBe('managed');
+  } finally {
+    process.chdir(originalCwd);
+    skillService.clearSkillCache();
+    fs.rmSync(managedWorkspaceDir, { recursive: true, force: true });
+  }
+});
+
+test('SIGHUP clears loaded skills and binary gating caches for the next lookup', async () => {
+  const { registerSkillCacheSignalHandler, resetSkillCacheSignalHandlerForTests } = await import('../src/instrumentation');
+  const binaryName = `openclaw-mini-dynamic-bin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const binDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-skill-bin-'));
+  const originalPath = process.env.PATH ?? '';
+  const listenersBefore = process.listenerCount('SIGHUP');
+
+  try {
+    registerSkillCacheSignalHandler();
+    registerSkillCacheSignalHandler();
+    expect(process.listenerCount('SIGHUP')).toBe(listenersBefore + 1);
+
+    process.env.PATH = originalPath;
+    writeSkill(
+      'dynamic-binary',
+      `name: dynamic-binary\ndescription: Needs a dynamic binary\nrequires:\n  binaries:\n    - ${binaryName}`,
+      'Binary-gated skill.',
+    );
+
+    skillService.clearSkillCache();
+    const firstLoad = await skillService.loadAllSkills();
+    expect(firstLoad.find(skill => skill.name === 'dynamic-binary')?.enabled).toBe(false);
+
+    const binaryPath = path.join(binDir, binaryName);
+    fs.writeFileSync(binaryPath, '#!/bin/sh\nexit 0\n', 'utf-8');
+    fs.chmodSync(binaryPath, 0o755);
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath}`;
+
+    process.emit('SIGHUP');
+
+    const secondLoad = await skillService.loadAllSkills();
+    expect(secondLoad.find(skill => skill.name === 'dynamic-binary')?.enabled).toBe(true);
+  } finally {
+    process.env.PATH = originalPath;
+    skillService.clearSkillCache();
+    resetSkillCacheSignalHandlerForTests();
+    fs.rmSync(binDir, { recursive: true, force: true });
+  }
 });
 
 test('sub-agent overrides are validated and surfaced as skill diagnostics', async () => {
