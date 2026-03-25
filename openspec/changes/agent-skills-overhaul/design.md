@@ -1,147 +1,104 @@
 ## Context
 
-We have a working sub-agent system: `spawn_subagent` creates tasks, the executor loads SKILL.md instructions as the system prompt, restricts tools to the skill's declared set, and returns the result to the parent. The skill-service loads SKILL.md files with gray-matter, supports gating (binaries, env vars, platform), caching, and override validation. All of this works.
+We already have working sub-agent execution: skills are loaded from `SKILL.md`, sub-agents inherit constrained tools, and the executor resolves runtime overrides. The weak spot is the skill layer itself.
 
-The problem is entirely in the skill *content*. Our two skills (`planner`, `executor`) have trivial instructions, duplicate their system prompt between `overrides.systemPrompt` and the body, and give agents access to tools that can't accomplish real tasks. The user wants to message on Telegram with an image and say "research all AI models and create a chart" — this requires vision analysis, web research, code execution, and file delivery. None of those exist as skills.
+Two things are currently wrong:
 
-### Current skill architecture flow
+1. the built-in skills are placeholders rather than useful specialists
+2. the runtime supports both a markdown body and `overrides.systemPrompt`, so the natural instruction body can be ignored
 
-1. Main agent receives message → sees skill summaries in system prompt
-2. Main agent calls `spawn_subagent(skill, task)`
-3. Skill-service loads SKILL.md → extracts `instructions` (body) and `overrides`
-4. Executor resolves config: `overrides.systemPrompt ?? skill.instructions` → becomes system prompt
-5. Tools filtered to `overrides.allowedTools` or `skill.tools` or low-risk defaults
-6. Sub-agent executes with those constraints
-
-The config resolution at step 4 means if `overrides.systemPrompt` is set, the SKILL.md body is discarded. Both current skills set both, making the body dead code.
+This change fixes those two issues, but deliberately does not try to solve every adjacent problem at once.
 
 ## Goals / Non-Goals
 
 **Goals:**
-
-- Create 5 skills that cover the user's real workflows: research, vision analysis, code execution, browser automation, and orchestration
-- Each SKILL.md body contains substantive instructions (30-100 lines) that teach the sub-agent *how* to approach its domain — not one-liners
-- REMOVE the `overrides.systemPrompt` field from the codebase entirely: body markdown is the canonical system prompt; overrides configure model/tools/limits only
-- Extend `spawn_subagent` tool to accept `attachments` for passing images to vision-capable sub-agents
-- Add `read_skill_file` tool for skill-manager to inspect skills/ and data/skills/ directories
-- Skills declare only the tools they actually need and gate on real dependencies
-- The planner skill understands the full roster and can chain skills for multi-step workflows
+- replace the placeholder skills with five substantive built-in skill definitions
+- make the SKILL.md body the only prompt source for sub-agents
+- remove `systemPrompt` from override schema, config resolution, and sub-agent task payloads
+- give the planner a clear built-in specialist roster: `researcher`, `vision-analyst`, `coder`, `browser`
+- align skill definitions to the runtime that exists today, not the runtime we plan to build later
 
 **Non-Goals:**
-
-- Building new tools for web search or browser — `web_search`, `web_fetch`, and `browser_action` already exist in the codebase
-- Adding skill auto-selection or dynamic routing — the main agent decides which skill to use based on summaries in its prompt
-- Semantic memory search within skills — that's the `memory-search` change
+- passing attachments or vision inputs through `spawn_subagent`
+- adding `skill-manager`
+- adding `read_skill_file`
+- implementing managed-skill authoring in `data/skills/`
+- overhauling the execution runtime beyond what already exists
+- adding new browser-skill gating infrastructure beyond the optional `browser_action` tool registration model
 
 ## Decisions
 
-### Decision 1: Body-only system prompt — REMOVE `overrides.systemPrompt` from codebase
+### Decision 1: Body-only system prompt
 
-The SKILL.md body IS the system prompt. The `overrides` block configures runtime parameters only (model, provider, tools, iteration limits). This eliminates the duplication and ensures the markdown body — the most natural place to write instructions — is what the sub-agent actually sees.
+The SKILL.md body is the canonical sub-agent prompt. `overrides.systemPrompt` is removed from:
 
-**Code change required**: Remove `systemPrompt` from `SubAgentOverrides` type in `subagent-config.ts` and update `resolveSubAgentConfig()` to always use the skill body as the system prompt.
+- override schema validation
+- resolved sub-agent config
+- audit-field reporting
+- sub-agent task payload construction/consumption
 
-**Alternative considered**: Keep `overrides.systemPrompt` as an "override" that replaces the body. Rejected because it creates two competing sources of truth and the body becomes invisible dead code.
+This removes the double-source-of-truth problem and makes the skill file itself authoritative.
 
-### Decision 2: Five focused skills instead of generic planner/executor
+### Decision 2: Five built-in skills, not six
 
-Each skill maps to a clear capability domain with specific tools:
+This change covers five built-in skills:
 
-| Skill | Domain | Key Tools | Model |
-|---|---|---|---|
-| `researcher` | Web search + summarization | `web_search`, `web_fetch`, `write_note` | Fast/cheap (gpt-4.1-mini) |
-| `vision-analyst` | Image analysis + data extraction | `read_file` | Vision-capable (gpt-4.1) |
-| `coder` | Script writing + execution | `exec_command`, `send_file_to_chat`, `write_note`, `read_file` | Capable (gpt-4.1) |
-| `browser` | Web interaction + screenshots | `browser_action` | Fast (gpt-4.1-mini) |
-| `planner` | Orchestration + delegation | `spawn_subagent`, `get_datetime`, `write_note` | Strong reasoning (gpt-4.1) |
-| `skill-manager` | Skill CRUD + iteration | `exec_command`, `read_file`, `spawn_subagent`, `write_note` | Capable (gpt-4.1) |
+- `researcher`
+- `vision-analyst`
+- `coder`
+- `browser`
+- `planner`
 
-**Alternative considered**: A single "swiss army knife" skill with all tools. Rejected because it violates least-privilege (code execution + browser in one agent is a security risk) and makes the sub-agent's system prompt unfocused.
+`skill-manager` moves out of this change because it depends on managed-skill discovery and a stronger exec runtime.
 
-### Decision 3: Planner as the only orchestrator, not a default
+### Decision 3: Planner is an orchestrator over the built-in roster only
 
-The main agent's system prompt shows all skill summaries. For simple tasks, the main agent spawns a single specialist directly (e.g., `spawn_subagent("researcher", "find latest OpenAI models")`). For complex multi-step tasks, the main agent spawns the `planner`, which then spawns specialists.
+The planner knows how to delegate to the four specialists above. It does not reference `skill-manager` in this change.
 
-This keeps spawn depth at 1 for simple cases and 2 for complex ones. The max depth of 5 leaves room for edge cases without routine waste.
+The planner also assumes attachment handoff is not yet available, so its guidance focuses on decomposition and specialist selection rather than image-payload transfer mechanics.
 
-### Decision 4: Skill gating via `requires` for external dependencies
+### Decision 4: Browser skill follows actual tool availability
 
-The `browser` skill gates on Playwright import availability (checked via `browserService.checkAvailability()` which attempts `import('playwright')`), not on `npx` binary. The `researcher` skill uses DuckDuckGo fallback (no gating required) or can gate on `requires.env: ["BRAVE_API_KEY"]` if Brave is preferred. This ensures skills that can't work are disabled with clear reasons.
+The browser skill declares `tools: [browser_action]`. This change does not fake extra skill gating with `requires.binaries: ["npx"]`, because the current browser feature is availability-based through optional Playwright tool registration.
 
-### Decision 5: Instruction quality pattern
+### Decision 5: Coder skill instructions must match the current exec surface
 
-Each SKILL.md body follows a consistent structure:
-1. **Role statement** — who you are, what you're good at
-2. **Approach** — how to tackle tasks in this domain (strategy, not just "do it")
-3. **Tool usage patterns** — when and how to use each tool, with examples
-4. **Output format** — what to return to the parent agent
-5. **Error handling** — what to do when things fail
-6. **Boundaries** — what NOT to do (stay in lane)
+The coder skill should not promise arbitrary shell scripting or unrestricted file authoring. Its instructions need to match the runtime that exists today:
 
-This gives the LLM enough context to behave competently without being overly prescriptive.
+- direct command execution through `exec_command`
+- sandbox-relative file delivery through `send_file_to_chat`
+- no implicit shell redirection or PTY workflows yet
 
-### Decision 6: Skill-manager uses new exec runtime to write to data/skills/
+That makes the first implementation honest, even if later exec-runtime work makes the skill much more capable.
 
-The `skill-manager` skill needs to create and edit SKILL.md files in `data/skills/`. Rather than adding a bespoke `manage_skill` tool, it uses the new exec runtime from `exec-runtime-overhaul` to write files via standard commands (`mkdir`, `tee`, `cat`) inside an operator-approved writable mount. This keeps the tool surface small and gives the agent the same filesystem primitives a human operator would use.
+### Decision 6: Consistent instruction pattern across skills
 
-The skill-manager also uses `spawn_subagent` to test newly created skills — it spawns a sub-agent with the new skill and a test prompt, evaluates the result, and iterates. This adapts the eval loop from `.agents/skills/skill-creator` for runtime use.
+Each built-in skill body should cover:
 
-**Alternative considered**: A dedicated `manage_skill` tool with create/edit/delete/validate actions. Rejected because it's a narrow-purpose tool that duplicates what the new exec runtime already provides. The skill's instructions (SKILL.md body) encode the workflow — the tool just needs filesystem access.
+1. role
+2. approach
+3. tool usage patterns
+4. output shape
+5. failure handling
+6. boundaries
 
-**Dependencies**: 
-- `exec-runtime-overhaul` — required for mount-aware execution to `data/skills/` (skill-manager)
-- `skill-loading-pipeline` — required for agent-managed skills in `data/skills/` with add-only precedence (built-ins protected from override)
-
-Both dependencies must be implemented before skill-manager can function fully.
-
-### Decision 7: Extend `spawn_subagent` to accept attachments
-
-The current `spawn_subagent` tool only accepts `{ skill, task, timeoutSeconds }`. This prevents the planner from passing images to `vision-analyst`. The tool schema must be extended:
-
-```typescript
-inputSchema: z.object({
-  skill: z.string(),
-  task: z.string(),
-  timeoutSeconds: z.number().optional(),
-  attachments: z.array(z.object({
-    type: z.enum(['image', 'file']),
-    data: z.string().describe('Base64-encoded data or URL'),
-    mimeType: z.string().optional(),
-  })).optional(),
-})
-```
-
-Attachments are passed through to the sub-agent's message payload, enabling vision-capable models to process images.
-
-### Decision 8: Add `read_skill_file` tool for skill-manager
-
-The current `read_file` tool is scoped to the agent memory directory and strips paths with `path.basename()`. skill-manager needs to inspect `skills/` and `data/skills/` directories. A new `read_skill_file` tool provides scoped read access to skill directories:
-
-```typescript
-registerTool(
-  'read_skill_file',
-  tool({
-    description: 'Read a SKILL.md file from skills/ or data/skills/',
-    inputSchema: z.object({
-      skillName: z.string().describe('Skill name (directory name)'),
-      source: z.enum(['built-in', 'managed']).describe('skills/ or data/skills/'),
-    }),
-    // ... returns skill content
-  }),
-  { riskLevel: 'low' },
-);
-```
-
-This gives skill-manager read access to the skill surface without exposing arbitrary filesystem access.
+The goal is durable skill behavior, not just better one-line descriptions.
 
 ## Risks / Trade-offs
 
-**[Risk] Skills reference tools that don't exist yet** → The `researcher` skill uses existing `web_search`/`web_fetch` tools. The `browser` skill uses existing `browser_action` tool (gated on Playwright import). Skills that reference missing tools will fail gracefully at tool resolution time — the executor filters to available tools, so the sub-agent simply won't have the tool.
+- **Vision-analyst is ahead of runtime handoff plumbing** -> acceptable; the skill can exist before planner-to-subagent image transfer lands
+- **Coder remains constrained by the current exec runtime** -> acceptable; the skill is still worth defining, but its instructions must be honest about limits
+- **Browser skill may load even when browser automation is not installed** -> acceptable for this change; tool availability remains the runtime truth
+- **Removing `systemPrompt` changes test/docs expectations** -> acceptable and necessary to eliminate dead instruction bodies
 
-**[Risk] Planner skill might over-delegate simple tasks** → A user asking "what time is it?" shouldn't trigger a planner→executor chain. Mitigation: the main agent (not the planner) decides what to spawn. The skill summaries should make it clear that the planner is for multi-step coordination, not simple queries.
+## Migration Plan
 
-**[Risk] Instructions become stale as tools evolve** → If `exec_command` gains new flags or `browser_action` adds new actions, the skill instructions won't auto-update. Mitigation: skills are plain markdown — easy to update. The instructions describe patterns and strategy, not API signatures.
+1. remove `systemPrompt` from sub-agent override schema and resolution
+2. stop passing `systemPrompt` through sub-agent task payloads
+3. replace placeholder built-in skills with substantive skill files
+4. update skill-related specs/tests to reflect the body-only prompt model
+5. validate skill loading and sub-agent behavior with the new built-in roster
 
-**[Risk] Skill-manager creates skills with broad tool access** → An agent-created skill could declare `tools: [exec_command, browser_action]`, gaining more access than intended. Mitigation: the sub-agent executor still enforces the allowlist and mode ceiling from runtime config. Skills can declare tools, but the runtime decides which are actually available. Additionally, the planner's `allowedSkills` controls which skills can be spawned.
+## Open Questions
 
-**[Trade-off] Six skills = more files to maintain** → But each skill is self-contained markdown, no code dependencies, and covers a distinct domain. The alternative (fewer, broader skills) would compromise tool isolation and prompt clarity.
+- None blocking. Attachment propagation and runtime skill management are now handled separately.

@@ -1,41 +1,33 @@
 ## ADDED Requirements
 
 ### Requirement: Vision analyst skill definition
-The system SHALL include a `skills/vision-analyst/SKILL.md` file with frontmatter fields: `name: vision-analyst`, `description` explaining image analysis and data extraction capability, and `tools` listing `read_file`.
+The system SHALL include a `skills/vision-analyst/SKILL.md` file with frontmatter fields `name: vision-analyst`, an image-analysis `description`, and a minimal declared tool set.
 
 #### Scenario: Skill discovered and loaded
-- **WHEN** the skill-service scans the skills directory
-- **THEN** a skill named `vision-analyst` SHALL be loaded with `enabled: true`
-
-#### Scenario: Skill description enables main agent selection for image tasks
-- **WHEN** the main agent receives a message with an attached image and a request to analyze it
-- **THEN** the skill summary SHALL make it clear that `vision-analyst` is the right choice for image understanding tasks
+- **WHEN** the skill-service scans the built-in skills directory
+- **THEN** a skill named `vision-analyst` SHALL be discoverable with its defined metadata and instruction body
 
 ### Requirement: Vision analyst skill instructions
-The SKILL.md body SHALL contain substantive instructions (minimum 30 lines) covering: role definition as an image analysis specialist, how to describe visual content (charts, screenshots, photos, diagrams), how to extract structured data from charts (axes, data points, trends), output format (structured description + extracted data), and guidance on what level of detail to provide.
+The SKILL.md body SHALL contain substantive instructions covering image description, chart/data extraction, structured output, and ambiguity handling.
 
 #### Scenario: Sub-agent receives vision-specific instructions
 - **WHEN** a sub-agent task is created with `skill: "vision-analyst"`
-- **THEN** the sub-agent's system prompt SHALL contain specific guidance on chart analysis, data extraction, and structured output formatting
+- **THEN** the prompt SHALL include guidance on chart analysis, data extraction, and structured reporting
 
 #### Scenario: Instructions cover chart analysis specifically
 - **WHEN** the SKILL.md body is loaded
-- **THEN** it SHALL include guidance on extracting data points, axis labels, trends, and legends from chart images
+- **THEN** it SHALL include guidance on axis labels, legends, time ranges, and notable trends when analyzing charts
 
-### Requirement: Vision analyst skill model configuration
-The vision analyst skill SHALL configure `overrides.model` to use a vision-capable model. The skill SHALL set conservative iteration limits since vision tasks are typically single-turn analysis.
+### Requirement: Vision analyst model configuration
+The vision analyst skill SHALL configure a vision-capable model and conservative iteration limits.
 
 #### Scenario: Vision-capable model used
-- **WHEN** a vision-analyst sub-agent task is executed
-- **THEN** the model SHALL be one that supports vision input (e.g., `gpt-4.1` or equivalent)
-
-#### Scenario: Low iteration count for focused analysis
-- **WHEN** the SKILL.md overrides are parsed
-- **THEN** `maxIterations` SHALL be 3 or fewer, reflecting that vision analysis is typically a single focused response
+- **WHEN** the skill overrides are parsed
+- **THEN** the configured model SHALL be one intended for vision-capable analysis
 
 ### Requirement: Vision analyst tool restriction
-The vision analyst skill SHALL declare minimal tools since its primary capability is the model's vision understanding. The sub-agent SHALL NOT have access to `exec_command`, `browser_action`, or `spawn_subagent`.
+The vision analyst skill SHALL declare a minimal tool set and SHALL NOT declare execution, browser, or spawn tools.
 
-#### Scenario: Minimal tool access
-- **WHEN** a vision-analyst sub-agent is executing
-- **THEN** it SHALL have access only to its declared tools (e.g., `read_file`) and NOT to execution or browser tools
+#### Scenario: Minimal tool declaration
+- **WHEN** the vision-analyst skill is loaded
+- **THEN** its declared tools SHALL exclude `exec_command`, `browser_action`, and `spawn_subagent`

@@ -25,17 +25,21 @@ The system SHALL support PTY-backed process sessions for interactive commands.
 ### Requirement: Process tool session control
 The system SHALL expose a `process` tool for interacting with supervised sessions.
 
+#### Scenario: List sessions
+- **WHEN** a caller invokes the `process` tool with action `list`
+- **THEN** the system SHALL return the visible supervised sessions and their statuses
+
 #### Scenario: Poll session output
 - **WHEN** a caller invokes the `process` tool with action `poll`
-- **THEN** the system SHALL return new buffered output and current status for the session
+- **THEN** the system SHALL return current status and newly buffered output for the session
 
 #### Scenario: Read session log
 - **WHEN** a caller invokes the `process` tool with action `log`
 - **THEN** the system SHALL return buffered session output with offset and limit support
 
-#### Scenario: Submit session input
-- **WHEN** a caller invokes the `process` tool with action `submit`
-- **THEN** the system SHALL write the provided input followed by a newline to the session
+#### Scenario: Write session input
+- **WHEN** a caller invokes the `process` tool with action `write`
+- **THEN** the system SHALL write the provided input to the session
 
 #### Scenario: Kill session
 - **WHEN** a caller invokes the `process` tool with action `kill`

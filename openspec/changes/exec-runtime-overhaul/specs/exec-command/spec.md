@@ -8,7 +8,7 @@ The system SHALL enforce command policy before launching `exec_command`.
 - **THEN** the system SHALL permit launch of the command
 
 #### Scenario: Disallowed direct command
-- **WHEN** an agent calls `exec_command` in direct argv mode with a command whose binary name is NOT in `runtime.exec.allowlist`
+- **WHEN** an agent calls `exec_command` in direct argv mode with a command whose binary name is not in `runtime.exec.allowlist`
 - **THEN** the system SHALL return a tool error indicating the command is not allowed
 
 #### Scenario: Empty allowlist for direct argv mode
@@ -19,11 +19,11 @@ The system SHALL enforce command policy before launching `exec_command`.
 The system SHALL enforce configurable timing limits on foreground and background command execution.
 
 #### Scenario: Foreground command completes within timeout
-- **WHEN** a foreground command finishes before `runtime.exec.maxTimeout` seconds
+- **WHEN** a foreground command finishes before `runtime.exec.maxTimeout`
 - **THEN** the system SHALL return the command result directly
 
 #### Scenario: Foreground command exceeds timeout without backgrounding
-- **WHEN** a foreground command does not finish within `runtime.exec.maxTimeout` seconds and is not allowed to continue in the background
+- **WHEN** a foreground command does not finish within `runtime.exec.maxTimeout` and is not allowed to continue in the background
 - **THEN** the system SHALL kill the process and return a timeout error
 
 #### Scenario: Background session exceeds timeout
@@ -48,12 +48,10 @@ The `exec_command` tool SHALL return either a completed command result or a supe
 ## REMOVED Requirements
 
 ### Requirement: Command execution in agent sandbox
-**Reason**: Command execution is no longer defined by a single fixed sandbox directory; it is determined by the selected execution tier, backend, mounts, and working directory policy.
-**Migration**: Configure `runtime.exec` tiers and mounts, then request the appropriate execution tier and working directory at launch time.
+**Reason**: command execution is no longer defined by a single fixed sandbox directory; it is determined by the selected execution tier, backend, mounts, and working directory policy.
 
 ### Requirement: No shell execution
-**Reason**: Interactive coding agents and PTY-backed workflows require shell-capable execution semantics.
-**Migration**: Use the tiered execution policy, allowlists for argv launches, and backend-backed isolation for higher-risk shell execution.
+**Reason**: interactive coding workflows and PTY-backed sessions require shell-capable execution semantics.
 
 ## ADDED Requirements
 
@@ -67,6 +65,17 @@ The system SHALL launch `exec_command` using the selected execution tier and res
 #### Scenario: Default tier selection
 - **WHEN** a caller does not specify an execution tier
 - **THEN** the system SHALL use the configured default tier
+
+### Requirement: Launch mode selection
+The system SHALL support both direct argv execution and shell-capable execution according to tier policy.
+
+#### Scenario: Direct argv mode
+- **WHEN** a caller launches `exec_command` in direct argv mode
+- **THEN** the system SHALL parse the command into binary and args and apply allowlist validation before launch
+
+#### Scenario: Shell-capable mode
+- **WHEN** a caller launches `exec_command` in shell mode
+- **THEN** the system SHALL apply the configured shell policy for the selected tier before launch
 
 ### Requirement: Mount-aware working directory resolution
 The system SHALL resolve `exec_command` working directories against the execution runtime mount policy.
@@ -92,3 +101,10 @@ The system SHALL support background execution for long-running commands.
 #### Scenario: Explicit background launch
 - **WHEN** a caller requests background execution
 - **THEN** the system SHALL return a supervised session handle without waiting for the command to exit
+
+### Requirement: Output file surfacing
+The execution runtime SHALL define a supported path for surfacing output files produced outside the legacy sandbox.
+
+#### Scenario: Output file created in mounted workspace
+- **WHEN** a command produces a file in an approved mounted workspace that must be delivered to chat
+- **THEN** the runtime SHALL either copy the file into a deliverable location or expose it through an approved outbound-file path

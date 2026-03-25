@@ -1,34 +1,33 @@
 ## Why
 
-Our current `exec_command` runtime is too limited for the kind of agents we want to support. It only supports short-lived batch commands in a per-agent sandbox with no PTY, no background session lifecycle, no shell workflows, and no principled way to grant access to selected host directories like an Obsidian vault or project workspace.
+Our current `exec_command` runtime is intentionally narrow: it parses a command string, rejects shell operators, checks an allowlist, and runs `execFile()` inside the agent sandbox. That is good for low-risk single-shot commands, but it cannot support interactive coding workflows, background processes, or operator-approved access to selected project directories.
 
-We need a real execution runtime that can power coding agents such as Pi, Codex, and OpenCode while still preserving operator control. That means interactive terminals, process supervision, mount-based filesystem access, and multiple isolation levels ranging from direct host access to a locked-down sandbox.
+We do want a fuller execution runtime, but the original draft left too many security and API details implicit. This revision tightens the plan before implementation: it makes the `process` tool contract consistent, spells out the execution request shape more clearly, avoids treating the current sandboxed runtime as equivalent to unrestricted host execution, and forces explicit decisions around startup behavior and file surfacing.
 
 ## What Changes
 
-- **REMOVE** the narrow `hostCwd`-based execution model; replace it with a mount-based execution model that can expose multiple operator-approved directories with explicit permissions
-- **NEW** three execution tiers: `host` (naked execution for trusted assistants), `sandbox` (container isolation with mounts for coding agents), and `locked-down` (strictest containment for untrusted code)
-- **NEW** container runtime support (Docker or Podman) for `sandbox` and `locked-down` tiers, with auto-detection
-- **NEW** execution mount config that maps operator-approved host paths into the container runtime with aliasing and read/write policy
-- **NEW** PTY-capable process runtime for interactive commands, including background session management for long-running coding agents and CLIs
-- **NEW** `process` tool for interacting with running sessions: poll output, read logs, write stdin, and terminate sessions
-- **MODIFY** `exec_command` to support shell-capable execution, PTY allocation, backgrounding, per-call execution tier requests, and mount-aware working directory resolution
+- Replace the current single-mode execution model with a tiered runtime for `host`, `sandbox`, and `locked-down` execution
+- Expand `exec_command` to support explicit execution mode selection, background handoff, PTY-backed sessions, and mount-aware working directories
+- Add a new `process` tool with a single canonical control API for supervised sessions
+- Add mount declarations in `runtime.exec.mounts` with alias, path, permission, and creation policy
+- Add container runtime detection for Docker/Podman without silent fallback from isolated tiers to host tier
+- Define how files produced outside the legacy sandbox are surfaced back to chat or copied into a deliverable location
 
 ## Capabilities
 
 ### New Capabilities
-- `exec-isolation`: execution isolation tiers (host/sandbox/locked-down) with container runtime selection
-- `exec-mounts`: declarative mounted host paths with aliases, permissions, and path validation for command execution
-- `exec-process-control`: PTY sessions, background process supervision, and the `process` tool lifecycle
+- `exec-isolation`: host, sandbox, and locked-down execution tiers with explicit privilege boundaries
+- `exec-mounts`: operator-approved mounts for isolated execution
+- `exec-process-control`: background sessions, PTY support, and a canonical `process` tool lifecycle
 
 ### Modified Capabilities
-- `exec-command`: expand command execution requirements to cover shell-capable execution, PTY support, background sessions, per-call tier selection, and mount-aware working directories
-- `runtime-config`: extend `runtime.exec` with tier, container runtime, mounts, environment, and session-control settings
+- `exec-command`: tier-aware launch, PTY support, background handoff, and mount-aware cwd resolution
+- `runtime-config`: richer `runtime.exec` schema for tiers, mounts, session limits, and backend selection
 
 ## Impact
 
-- **Runtime architecture**: command execution moves from a single `execFile()` path to a supervised execution runtime with child-process and PTY modes, plus container isolation for sandbox tiers
-- **Config schema**: `runtime.exec` grows to express access tiers, container runtime selection, mounts, environment rules, and session limits
-- **Tool surface**: introduces a new `process` tool and expands `exec_command` beyond short-lived batch execution
-- **Security model**: shifts from a simple per-agent sandbox to three tiers: trusted host execution, containerized coding environments, and locked-down isolation for untrusted code
-- **Container dependency**: `sandbox` and `locked-down` tiers require Docker or Podman; `host` tier works without containers
+- **Runtime architecture**: command execution moves from a single `execFile()` path to a supervised runtime with child-process and PTY adapters
+- **Security model**: current behavior is treated as a restricted legacy path, not as equivalent to unrestricted host execution
+- **Config schema**: `runtime.exec` grows substantially and now needs stronger validation/default rules
+- **Tool surface**: adds `process` and expands `exec_command`
+- **Dependencies**: PTY support is already present in `package.json`; implementation still needs container integration and session supervision code

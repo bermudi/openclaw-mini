@@ -1,145 +1,118 @@
 ## Context
 
-The current `skill-service.ts` has a single `loadAllSkills()` function that (1) scans `skills/` directory, (2) reads each `SKILL.md`, (3) validates overrides, and (4) caches the result. This conflates discovery, parsing, validation, and caching into one place, making it difficult to:
+The current `skill-service.ts` has a single `loadAllSkills()` function that scans one directory, parses frontmatter, evaluates gating, validates overrides, and caches the result. That works for a single source, but it makes three important behaviors implicit instead of explicit:
 
-- Add a second skill source (e.g., `data/skills/` for agent-managed skills)
-- Define clear precedence rules when skills share names
-- Reason about why a skill was disabled or overridden
-- Unit test individual stages in isolation
+- where skills come from
+- what happens when two sources define the same name
+- when validation runs relative to merging and caching
 
-The `exec-runtime-overhaul` design requires that `data/skills/` agent-managed skills coexist with `skills/` built-ins under a safe precedence model. The current implementation has no concept of multiple sources or precedence.
+This change turns those implicit rules into a pipeline that can support both built-in and managed skills without weakening trust boundaries.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- Define a skill loading pipeline with discrete, independently testable stages: Discover → Merge → Validate → Cache
-- Support two filesystem sources: `skills/` (built-in) and `data/skills/` (agent-managed), with built-ins protected from override — managed skills can only add NEW names
-- Enable future extensibility via a `SkillLoader` interface without modifying core pipeline logic
-- Preserve all existing behavior: discovery, frontmatter parsing, gating, override validation, caching, summaries, API
-- Make skill loading auditable: each stage logs its input/output for debugging
+- define a discover/merge/validate/cache pipeline with testable boundaries
+- support two filesystem sources: built-in `skills/` and managed `data/skills/`
+- protect built-in skills from managed overrides
+- expose stable public provenance metadata for API consumers
+- preserve the existing skill-service entry points
+- make hot-reload actually re-run gating checks
 
 **Non-Goals:**
-- Implementing remote skill sources or MCP-based loaders in this change; the interface is designed to accommodate them later
-- Changing skill metadata schema (name, description, tools, overrides, requires) or adding versioning
-- Modifying the skill caching TTL (remains 60s) or the `SkillCache` structure
-- Supporting skill unloading or selective hot-reload beyond full cache invalidation via `clearSkillCache()` and SIGHUP
+- implementing remote or MCP skill sources yet
+- adding per-skill precedence in frontmatter
+- changing the override schema beyond what other changes already require
+- selective cache invalidation per skill
 
 ## Decisions
 
-### Decision 1: Four-stage pipeline with clear boundaries
+### Decision 1: Four-stage pipeline
 
-The skill loading flow becomes four discrete stages:
+The loading flow is:
 
+```text
+Discover -> Merge -> Validate -> Cache
 ```
-Discover (per source) → Merge (by precedence) → Validate (gating + overrides) → Cache
-```
 
-- **Discover**: Each `SkillLoader` scans its own source and returns raw `UnvalidatedSkill[]`. Discovery is source-specific (e.g., filesystem traversal) and produces unvalidated skill objects with `rawOverrides`.
-- **Merge**: Takes all skills from all loaders, sorts by `precedence` ascending (lower number = higher priority), and keeps only the first occurrence of each skill name. Agent-managed skills use `precedence: 10`; built-in skills use `precedence: 20`. Lower numeric precedence wins.
-- **Validate**: Runs gating checks (binary, env, platform) and overrides schema validation on the merged set. Validation is global—it runs once after merge, not per-source.
-- **Cache**: Stores the fully validated `LoadedSkill[]` with TTL. Cache is checked before invoking the pipeline.
+- **Discover**: each loader returns `UnvalidatedSkill[]`
+- **Merge**: all discovered skills are combined using source precedence and collision rules
+- **Validate**: gating checks and override validation run on the merged set
+- **Cache**: only validated skills enter the cache
 
-Each stage is a pure function or a service method that accepts stage input and returns stage output. No shared mutable state between stages.
+Collision handling belongs in **Merge**, not Validate. Validation should run once on the final merged set.
 
-**Alternative considered**: Keep discovery and validation per-source (discover then validate each source independently, then merge validated skills). Rejected because override schema validation requires knowing all skill names across sources, so validation must happen post-merge.
+### Decision 2: Source precedence is explicit and consistent
 
-**Alternative considered**: More than four stages (e.g., separate Parse, Filter, Enrich). Rejected as over-engineering. The four stages map cleanly to distinct concerns with no cross-stage logic.
+Lower numeric precedence means higher priority.
 
-### Decision 2: `SkillLoader` interface for extensibility
+- built-in skills: `SKILL_PRECEDENCE_BUILTIN = 10`
+- managed skills: `SKILL_PRECEDENCE_MANAGED = 20`
+
+That ordering matches the security rule: built-ins always win on collision.
+
+### Decision 3: Collisions are case-insensitive
+
+Skill lookup is already case-insensitive, so merge-time collision detection must be case-insensitive too. `Planner`, `planner`, and `PLANNER` are the same logical skill name.
+
+When a managed skill collides with a built-in skill, the runtime:
+
+1. keeps the built-in skill
+2. rejects the managed skill
+3. logs a warning with both provenance values and source paths
+
+### Decision 4: Public provenance and internal source path are separate concerns
+
+The public skill metadata exposed by APIs uses:
 
 ```typescript
-interface SkillLoader {
-  readonly source: string;          // e.g., "skills/", "data/skills/"
-  readonly precedence: number;     // lower = higher priority on collision
-  discover(): Promise<UnvalidatedSkill[]>;
-}
+source: 'built-in' | 'managed'
 ```
 
-The pipeline accepts an array of `SkillLoader` instances. Built-in loaders are registered in a list; the order in the list does not matter since merge uses explicit `precedence`. New loaders (remote, MCP) can be added by implementing `SkillLoader` and pushing to the loader list.
+The loader may also retain an internal source-path field for logging and diagnostics, but raw file paths are not the stable public API.
 
-**Alternative considered**: Registry pattern with keyed map. Rejected because the key would be the source name, but we already have `source` as a field on the loader. A list is simpler.
+### Decision 5: Validation runs on the merged set
 
-**Alternative considered**: Generator/iterator pattern for lazy discovery. Rejected for the first iteration since all skills are in-memory files; lazy discovery adds complexity without benefit.
+Validation still includes:
 
-### Decision 3: Built-ins are protected — managed skills can only add new names
+- binary gating
+- env gating
+- platform gating
+- override schema validation
 
-The merge stage checks for name collisions between sources. If a managed skill (`data/skills/`) has the same name as a built-in (`skills/`), the collision is logged as a warning and the managed skill is rejected. The built-in skill wins.
+It runs after merge so `knownSkillNames` reflects the final merged set, not each source in isolation.
 
-This prevents a security issue where agents with write access to `data/skills/` could override trusted built-in skills (e.g., replacing `planner` with a malicious skill that exfiltrates data).
+### Decision 6: Hot reload clears all skill-loading caches
 
-**Security rationale**: If `exec-runtime-overhaul` grants agents mount-based write access to `data/`, they could:
-1. Create a skill with the same name as a trusted built-in
-2. The parent agent spawns what it thinks is the trusted skill
-3. The malicious skill runs with the parent's tool permissions
+`clearSkillCache()` resets:
 
-By protecting built-ins, we ensure the trusted skill surface cannot be tampered with.
+- the loaded skill cache
+- the cached binary-availability results used during gating
 
-**Alternative considered**: Agent-managed skills win on collision. Rejected due to the security risk above.
+`src/instrumentation.ts` is the startup hook for registering a one-time `SIGHUP` listener in the Node runtime.
 
-**Alternative considered**: Configurable allowlist of overridable built-ins. Rejected as over-engineering for the first iteration; the add-only model is safer and simpler.
+### Decision 7: Managed skills live under the workspace data root for now
 
-### Decision 4: Validation runs once after merge, not per-source
+Managed skills are loaded from `path.join(process.cwd(), 'data/skills')` in this iteration. The loader treats a missing directory as empty.
 
-Both gating (binary/env/platform checks) and override schema validation happen on the merged skill set. This is required because:
-- Override schema needs all skill names as `knownSkillNames` (cross-source knowledge)
-- Gating reason is a property of the final skill, not the per-source discovery result
-
-**Alternative considered**: Per-source validation with merge at the end. Rejected—see Decision 1 rationale.
-
-### Decision 5: Cache holds fully validated skills only
-
-The cache stores `Map<string, LoadedSkill>` only after validation passes. If validation fails for a skill, the skill is either disabled or skipped before entering the cache. This means the cache always contains usable, fully-checked skills.
-
-Cache invalidation is:
-- **TTL-based**: `shouldUseCache()` checks `Date.now() - cache.loadedAt < DEFAULT_CACHE_TTL_MS`
-- **Manual**: `clearSkillCache()` sets `loadedAt = 0` and clears the map
-- **Signal-based**: Server startup registers `process.on('SIGHUP', clearSkillCache)` for development hot-reload
-
-### Decision 6: `UnvalidatedSkill` type carries raw frontmatter and overrides
-
-```typescript
-interface UnvalidatedSkill {
-  name: string;
-  description: string;
-  tools?: string[];
-  rawOverrides?: unknown;
-  requires?: SkillRequirements;
-  enabled: boolean;           // temporarily false during validation
-  gatingReason?: string;     // accumulated during validation
-  source: string;
-  precedence: number;
-  instructions: string;
-}
-```
-
-The `enabled` and `gatingReason` fields start as defaults (no gating) and are updated during the Validate stage. `rawOverrides` is preserved as `unknown` until validation converts it to typed `SubAgentOverrides` or records errors.
-
-### Decision 7: Future sources use explicit precedence values
-
-Remote skill registries or MCP-based loaders should declare an explicit `precedence` value:
-- `0-9`: Reserved for system or operator-managed skills
-- `10`: Agent-managed (default for `data/skills/`)
-- `20`: Built-in (default for `skills/`)
-- `30+`: Lower-priority sources
-
-This gives future extension authors clear guidance and avoids conflicts.
+This keeps the first implementation simple while still matching the operator-visible workspace layout.
 
 ## Risks / Trade-offs
 
-- **[Risk] Multiple skill sources increase startup time** → Mitigation: TTL cache means startup cost is paid once per TTL window, not per request. Future: lazy discovery can be added without pipeline restructuring.
-- **[Risk] Precedence is implicit in numeric values that developers must know** → Mitigation: Constants (`SKILL_PRECEDENCE_BUILTIN`, `SKILL_PRECEDENCE_AGENT`) are exported from the module. Documentation and default loader implementations make the contract clear.
-- **[Risk] Agent-managed skills in `data/skills/` are not validated for safety** → Mitigation: Same validation pipeline runs on all skills regardless of source. Malicious skill content is still subject to gating checks, override validation, and the agent's tool allowlist. Additionally, built-ins are protected from override — managed skills can only introduce new names.
+- **Multiple sources add more IO** -> mitigated by TTL caching
+- **Changing the meaning of `source` affects API consumers** -> mitigated by making provenance explicit and stable
+- **Case-insensitive merge may surface collisions that were previously hidden** -> acceptable, because lookup is already case-insensitive
+- **Managed-skill location is still workspace-relative** -> acceptable for the first iteration; can be promoted into config later if needed
 
 ## Migration Plan
 
-1. Create `src/lib/services/skill-loader.ts` with `SkillLoader` interface and `FilesystemSkillLoader` implementation
-2. Refactor `skill-service.ts` to use the pipeline internally while preserving the public API
-3. Register both `skills/` (precedence 20) and `data/skills/` (precedence 10) loaders
-4. Wire `SIGHUP` to `clearSkillCache()` in server startup
-5. Add integration test: two skills with same name from different sources, verify precedence
-6. Run existing skill-service tests to confirm no regressions
+1. Introduce loader types and precedence constants
+2. Refactor `skill-service.ts` into discover/merge/validate/cache stages
+3. Register loaders for `skills/` and `data/skills/`
+4. Expose provenance as `built-in` or `managed`
+5. Extend `clearSkillCache()` to clear binary cache as well
+6. Register one-time `SIGHUP` invalidation in `src/instrumentation.ts`
+7. Add tests for precedence, case-insensitive collisions, managed-dir absence, and `/api/skills` provenance output
 
 ## Open Questions
 
-- Should `data/skills/` be created automatically if missing, or should the loader gracefully handle non-existent directories? (Decision: graceful—loader returns empty array if directory does not exist, consistent with current `skills/` behavior)
-- Do we need a `SKILL_PRECEDENCE` frontmatter field so individual skills can declare their own precedence, or is source-level precedence sufficient? (Decision: source-level precedence only for the first iteration; per-skill precedence can be added later if needed)
+- None blocking for implementation. Configurable managed-skill roots and non-filesystem loaders remain follow-up work.

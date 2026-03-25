@@ -1,146 +1,124 @@
 ## Context
 
-The current `exec_command` implementation is intentionally minimal: it parses a command string, rejects shell operators, checks a binary allowlist, and calls `execFile()` inside `data/sandbox/{agentId}/` with a tiny curated environment. That model is simple and safe, but it cannot support interactive coding agents or operator-approved access to real host files.
+Today, `exec_command` is a constrained helper: no shell semantics, allowlisted binaries only, and execution rooted in `data/sandbox/{agentId}`. The target runtime is much broader: interactive terminals, background sessions, operator-approved workspace mounts, and stronger isolation modes.
 
-The new requirement is broader. We want to support agents that behave more like Pi, Codex, and OpenCode:
+The original proposal had the right destination but still left several sharp edges unresolved:
 
-1. They need PTY-backed interactive terminals for REPLs, package managers, CLIs, and coding assistants.
-2. They need long-running background sessions that can be polled, written to, and terminated across multiple tool calls.
-3. They need a filesystem access model based on explicit operator-approved mounts rather than a single sandbox directory.
-4. They need multiple execution tiers so trusted local use can be fast while higher-risk tasks can run under stronger isolation.
+- it blurred the difference between the current restricted runtime and unrestricted host execution
+- it described the `process` tool with multiple competing verb sets
+- it did not define enough of the request/response contract for `exec_command`
+- it left file-surfacing behavior underspecified for commands that run outside the legacy sandbox
+
+This revision narrows those ambiguities before implementation.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- Support three execution tiers: `host`, `sandbox`, and `locked-down`
-- Introduce mount-based filesystem access with aliases and read/write policy
-- Support both child-process and PTY-backed execution
-- Add a supervised process registry and `process` tool for background sessions
-- Preserve a typed runtime config API for tier selection, mounts, and session limits
-- Use Docker or Podman for container isolation (auto-detect available runtime)
+- support three execution tiers: `host`, `sandbox`, and `locked-down`
+- support both direct child execution and PTY-backed interactive sessions
+- provide a canonical `process` control API
+- support mount-based working directories and operator-approved filesystem access
+- make startup and runtime behavior explicit when Docker/Podman is unavailable
+- define how generated files become deliverable artifacts
 
 **Non-Goals:**
-- Persisting background process handles across server restarts
-- Full Windows parity in the first iteration; initial implementation can target Linux-first behavior
-- Reproducing every OpenClaw execution feature such as interactive approval flows in this change
-- Solving remote execution or distributed worker execution
-- Replacing `read_file`/`write_note` with the exec runtime; this change is about command/process execution
-- Supporting multiple isolation backends beyond Docker/Podman
-- Skill loading changes (handled separately in `agent-skills-overhaul`)
+- durable session recovery after server restart
+- Windows-first parity in v1
+- distributed execution
+- replacing the rest of the sandbox/file APIs in this change
 
 ## Decisions
 
-### Decision 1: Three execution tiers with distinct use cases
+### Decision 1: Three tiers remain, but current behavior does not map to `host`
 
-The runtime will expose three execution tiers:
+The tiers stay:
 
-- **`host`**: Naked execution on the host with no container isolation. For trusted agents acting as personal assistants that need full filesystem access. No mounts enforcement—agent can access any path the user can.
+- `host`: direct host execution for explicitly trusted workflows
+- `sandbox`: containerized execution with approved mounts and normal network access
+- `locked-down`: containerized execution with read-only mounts and no network
 
-- **`sandbox`**: Container isolation (Docker/Podman) with operator-approved mounts. For coding agents that need controlled access to specific projects. Mounts define accessible directories; agent cannot escape to sensitive paths.
+Important clarification: the current allowlisted sandboxed `exec_command` behavior is **not** equivalent to the new `host` tier. Migration must be explicit rather than assuming the current implementation already behaves like host execution.
 
-- **`locked-down`**: Container isolation with strictest defaults: read-only mounts, no network access (`--network none`), minimal environment. For experiments and untrusted code. Maximum containment.
+### Decision 2: Canonical `process` tool verbs
 
-The runtime config will define both a default tier and a maximum privilege tier. A tool call may request a more restrictive tier than default, but never a less restrictive tier than allowed by config.
+The `process` tool uses one verb set everywhere:
 
-### Decision 2: Container runtime is Docker or Podman
+- `list`
+- `poll`
+- `log`
+- `write`
+- `kill`
 
-For `sandbox` and `locked-down` tiers, the runtime uses a container runtime:
+`write` sends raw input to a PTY-backed session. `log` reads buffered output with offset/limit support. `poll` is the lightweight status-plus-new-output call.
 
-- Auto-detect available runtime on startup: check for `docker` first, then `podman`
-- Both use identical CLI syntax, so the same code path works for either
-- If no container runtime is available, `sandbox` and `locked-down` tiers fail with a clear error message
+### Decision 3: `exec_command` request shape is explicit
 
-```typescript
-// Detection logic
-async function detectContainerRuntime(): Promise<'docker' | 'podman' | null> {
-  if (await commandExists('docker')) return 'docker';
-  if (await commandExists('podman')) return 'podman';
-  return null;
-}
+`exec_command` needs to support two launch modes:
+
+- **direct argv mode**: command is parsed into binary + args and checked against the allowlist
+- **shell mode**: shell-capable execution for PTY or complex workflows, governed by tier policy
+
+It also needs explicit fields for:
+
+- requested tier
+- requested execution mode (`child` or `pty`)
+- backgrounding
+- working directory
+
+The spec does not need to freeze exact TypeScript today, but it must freeze these concepts and their validation rules before implementation.
+
+### Decision 4: Startup behavior is explicit when containers are unavailable
+
+If Docker/Podman is unavailable:
+
+- startup still succeeds if `defaultTier` does not require containers
+- startup logs clear diagnostics about missing container support
+- `sandbox` and `locked-down` launches fail clearly at call time
+- if `defaultTier` is `sandbox` or `locked-down`, startup validation should fail fast rather than leaving the server in a broken default state
+
+### Decision 5: File surfacing must be part of the design
+
+Commands in mounted workspaces may produce files outside `data/sandbox/{agentId}`. The runtime therefore needs a defined handoff path for deliverable files.
+
+For the first iteration, the design assumes one of two explicit strategies:
+
+1. copy surfaced files into a sandbox/output-compatible location before delivery, or
+2. extend outbound file delivery to accept approved absolute paths
+
+This must be decided before implementation, not during it.
+
+### Decision 6: Runtime config needs explicit defaults and ordering
+
+`defaultTier` and `maxTier` rely on an implicit privilege ordering:
+
+```text
+locked-down < sandbox < host
 ```
 
-**Alternative considered**: Support Landlock, Firejail, Bubblewrap as alternatives. Rejected because it creates significant complexity for marginal benefit. Docker/Podman provide complete isolation (filesystem, network, resources) in one package.
+That ordering must be encoded consistently in config validation and runtime checks.
 
-### Decision 3: Mounts are first-class and alias-based
-
-`runtime.exec.mounts` will declare a list of approved host paths:
-
-- `alias`: stable name exposed to the command runtime (e.g., `project`, `data`)
-- `hostPath`: absolute or config-relative host path
-- `permissions`: `read-only` or `read-write`
-- optional `createIfMissing`: for managed paths
-
-Commands in `sandbox` and `locked-down` tiers see mounts through stable aliases at `/mnt/<alias>`. The container runtime enforces these as the only accessible paths.
-
-```yaml
-# Example config
-runtime:
-  exec:
-    mounts:
-      - alias: project
-        hostPath: /home/user/myapp
-        permissions: read-write
-      - alias: secrets
-        hostPath: /home/user/.config/keys
-        permissions: read-only
-```
-
-In `host` tier, mounts are advisory (agent can still access any path). In `sandbox` and `locked-down`, mounts are hard boundaries enforced by the container.
-
-### Decision 4: Separate launch from session control
-
-`exec_command` will become the launch API. It starts a command in one of two execution modes:
-
-- `child`: non-interactive child process
-- `pty`: pseudo-terminal process for interactive workflows
-
-If the command completes inside the configured foreground window, `exec_command` returns the final result directly. If it is backgrounded explicitly or exceeds the foreground yield window, `exec_command` returns a session handle.
-
-A new `process` tool becomes the control API for running sessions. It manages `list`, `poll`, `write`, `kill` operations.
-
-### Decision 5: Introduce a singleton process supervisor service
-
-The server will own a singleton process supervisor with:
-
-- child-process adapter for batch execution
-- PTY adapter backed by `@lydell/node-pty`
-- in-memory session registry for running and finished sessions
-- bounded stdout/stderr buffers and truncation policy
-- lifecycle transitions (`running`, `exited`, `failed`, `killed`, `timed_out`)
-
-The registry is intentionally ephemeral. If the server restarts, running sessions are lost and any later `process` call should report the session as missing.
-
-### Decision 6: Shell-capable execution is supported
-
-The old model used binary allowlisting plus shell rejection. Coding agents need shell semantics and PTY support, so the policy model must expand:
-
-- `host` tier: shell-capable, agent is trusted
-- `sandbox` tier: shell-capable, containment via container
-- `locked-down` tier: shell-capable, strictest containment
-
-The container provides the security boundary, not application-layer regexes.
+Safer defaults matter here; the prior draft's implicit `defaultTier: host` is too sharp for a first rollout.
 
 ## Risks / Trade-offs
 
-- **[Risk] Host tier provides no containment** → Mitigation: document clearly, keep it opt-in, reserve for trusted use cases
-- **[Risk] PTY sessions increase server complexity and memory pressure** → Mitigation: bounded buffers, per-session limits, explicit cleanup, and session TTLs
-- **[Risk] Container runtime dependency for sandbox/locked-down** → Mitigation: auto-detect, clear error when unavailable, host tier always works
-- **[Risk] Shell-capable execution increases attack surface** → Mitigation: container isolation for sandbox/locked-down, host tier reserved for trusted agents
-- **[Trade-off] In-memory session registry loses state on restart** → Acceptable for v1; durable process reattachment is much more complex
+- **Host tier is powerful** -> keep it explicit and opt-in
+- **PTY + session supervision increase complexity** -> mitigate with bounded buffers and clear lifecycle rules
+- **Container runtime differences are real** -> the code path can be shared, but Docker and Podman behavior should not be assumed identical in every edge case
+- **File delivery outside sandbox adds complexity** -> better to specify this now than discover it halfway through implementation
 
 ## Migration Plan
 
-1. Add `@lydell/node-pty` dependency
-2. Implement container runtime detection (Docker/Podman)
-3. Implement mount config parsing and validation
-4. Implement process supervisor with child-process and PTY adapters
-5. Expand `exec_command` to support tiers, PTY, backgrounding
-6. Add `process` tool for session control
-7. Update runtime config schema
-8. Preserve current behavior as default (existing sandbox behavior maps to `host` tier initially)
+1. Tighten config schema and defaults for the new exec model
+2. Implement runtime/container detection and startup diagnostics
+3. Implement mount validation and cwd resolution
+4. Implement process supervisor with child + PTY adapters
+5. Expand `exec_command`
+6. Add canonical `process` tool
+7. Add explicit file-surfacing support for outputs outside the legacy sandbox
+8. Run focused exec/runtime regression suites
 
 ## Open Questions
 
-- Should `sandbox` tier allow network access by default, or require explicit `network: true` in mount config?
-- What container image should `sandbox` and `locked-down` use? (minimal base like `alpine` or `debian-slim`?)
-- Should mounts be global or per-agent? Global is simpler; per-agent requires more config surface.
+- Which file-surfacing strategy should be used first: sandbox copy or absolute-path outbound delivery?
+- What container image baseline should isolated tiers use?
+- Should `defaultTier` default to `sandbox` rather than `host` once the runtime is implemented?
