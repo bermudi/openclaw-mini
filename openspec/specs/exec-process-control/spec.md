@@ -15,11 +15,19 @@ The system SHALL support supervised process sessions for background and interact
 - **THEN** the system SHALL record its terminal state and retain its buffered output for later inspection
 
 ### Requirement: PTY-backed execution
-The system SHALL support PTY-backed process sessions for interactive commands.
+The system SHALL support PTY-backed process sessions for interactive commands using a native PTY backend when available, with a supported fallback path on Unix-like hosts.
 
-#### Scenario: PTY requested
-- **WHEN** `exec_command` launches a command with PTY enabled
-- **THEN** the system SHALL spawn the process with a pseudo-terminal adapter
+#### Scenario: Native PTY backend available
+- **WHEN** `exec_command` launches a command with PTY enabled and the native PTY backend is available
+- **THEN** the system SHALL spawn the process with the native pseudo-terminal adapter
+
+#### Scenario: Native PTY backend unavailable on supported Unix host
+- **WHEN** `exec_command` launches a command with PTY enabled on a supported Unix-like host and the native PTY backend is unavailable or fails to initialize
+- **THEN** the system SHALL fall back to the supported wrapper-based PTY adapter
+
+#### Scenario: No supported PTY backend available
+- **WHEN** `exec_command` launches a command with PTY enabled and neither the native PTY backend nor a supported fallback backend is available for the host
+- **THEN** the system SHALL fail the PTY launch with a clear error
 
 #### Scenario: PTY input written
 - **WHEN** a caller sends input to a PTY-backed session
@@ -61,3 +69,4 @@ The system SHALL return a clear error when a caller references an unknown or exp
 #### Scenario: Session not found
 - **WHEN** a caller invokes the `process` tool for a session identifier that does not exist
 - **THEN** the system SHALL return a not-found error for that session
+
