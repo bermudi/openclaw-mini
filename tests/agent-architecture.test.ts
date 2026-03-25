@@ -11,6 +11,10 @@ import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeCo
 let lastSystemPrompt = '';
 let lastToolNames: string[] = [];
 let lastStepCount = 0;
+let lastPrompt = '';
+let lastMessages: unknown = undefined;
+let mockResponseText = 'stub response';
+let mockGenerateTextSteps: Array<Record<string, unknown>> = [];
 
 type SpawnResult = {
   success?: boolean;
@@ -32,13 +36,19 @@ mock.module('ai', () => ({
   generateText: async ({
     system,
     tools,
+    prompt,
+    messages,
   }: {
     system?: string;
     tools?: Record<string, unknown>;
+    prompt?: string;
+    messages?: unknown;
   }) => {
     lastSystemPrompt = system ?? '';
     lastToolNames = Object.keys(tools ?? {});
-    return { text: 'stub response', steps: [] };
+    lastPrompt = prompt ?? '';
+    lastMessages = messages;
+    return { text: mockResponseText, steps: mockGenerateTextSteps };
   },
   stepCountIs: (count: number) => {
     lastStepCount = count;
@@ -146,6 +156,25 @@ async function waitForSubagentTask(parentTaskId: string) {
   throw new Error('Sub-agent task was not created');
 }
 
+function makeToolStep(definitions: Array<{
+  toolName: string;
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown>;
+}>): Record<string, unknown> {
+  return {
+    toolCalls: definitions.map((definition, index) => ({
+      toolCallId: `tool-call-${index}`,
+      toolName: definition.toolName,
+      input: definition.input ?? {},
+    })),
+    toolResults: definitions.map((definition, index) => ({
+      toolCallId: `tool-call-${index}`,
+      toolName: definition.toolName,
+      output: definition.output ?? { success: true },
+    })),
+  };
+}
+
 beforeAll(async () => {
   process.env.DATABASE_URL = TEST_DB_URL;
   process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? 'test-key';
@@ -198,6 +227,10 @@ beforeEach(async () => {
   lastSystemPrompt = '';
   lastToolNames = [];
   lastStepCount = 0;
+  lastPrompt = '';
+  lastMessages = undefined;
+  mockResponseText = 'stub response';
+  mockGenerateTextSteps = [];
 });
 
 afterAll(async () => {
@@ -331,6 +364,77 @@ test('sessions unify per agent and split across agents', async () => {
 
   expect(third.sessionId).toBeDefined();
   expect(third.sessionId).not.toBe(first.sessionId);
+});
+
+test('message tasks preserve attachment and vision payloads from inbound input', async () => {
+  const agent = await agentService.createAgent({ name: 'Attachment Agent' });
+  await agentService.setDefaultAgent(agent.id);
+
+  const result = await inputManager.processInput({
+    type: 'message',
+    channel: 'telegram',
+    channelKey: 'chat-attachments',
+    content: 'review these files',
+    attachments: [{
+      channelFileId: 'doc-1',
+      localPath: '/tmp/contract.pdf',
+      filename: 'contract.pdf',
+      mimeType: 'application/pdf',
+      size: 2048,
+    }],
+    visionInputs: [{
+      channelFileId: 'img-1',
+      localPath: '/tmp/photo.png',
+      mimeType: 'image/png',
+    }],
+  });
+
+  expect(result.success).toBe(true);
+  expect(result.taskId).toBeDefined();
+
+  const task = await taskQueue.getTask(result.taskId!);
+  expect(task?.payload).toMatchObject({
+    attachments: [{
+      channelFileId: 'doc-1',
+      localPath: '/tmp/contract.pdf',
+      filename: 'contract.pdf',
+      mimeType: 'application/pdf',
+      size: 2048,
+    }],
+    visionInputs: [{
+      channelFileId: 'img-1',
+      localPath: '/tmp/photo.png',
+      mimeType: 'image/png',
+    }],
+  });
+});
+
+test('message attachments flow from input manager into executor prompt context', async () => {
+  const agent = await agentService.createAgent({ name: 'Attachment Prompt Agent' });
+  await agentService.setDefaultAgent(agent.id);
+
+  const result = await inputManager.processInput({
+    type: 'message',
+    channel: 'telegram',
+    channelKey: 'chat-attachment-prompt',
+    content: 'please review the attached contract',
+    attachments: [{
+      channelFileId: 'doc-2',
+      localPath: '/tmp/contract-v2.pdf',
+      filename: 'contract-v2.pdf',
+      mimeType: 'application/pdf',
+      size: 4096,
+    }],
+  });
+
+  expect(result.success).toBe(true);
+  expect(result.taskId).toBeDefined();
+
+  const execResult = await agentExecutor.executeTask(result.taskId!);
+  expect(execResult.success).toBe(true);
+  expect(lastPrompt).toContain('ATTACHED FILES:');
+  expect(lastPrompt).toContain('/tmp/contract-v2.pdf (contract-v2.pdf, application/pdf, 4096 bytes)');
+  expect(lastPrompt).toContain('please review the attached contract');
 });
 
 test('skill loading parses frontmatter, gating, and cache TTL', async () => {
@@ -840,6 +944,197 @@ test('sub-agent executor uses skill body as prompt and applies non-prompt overri
     skill: 'planner',
     overrideFieldsApplied: ['maxIterations', 'allowedTools'],
   });
+});
+
+test('sub-agent executor includes inherited attachments in prompt context', async () => {
+  writeSkill(
+    'attachment-helper',
+    'name: attachment-helper\ndescription: Attachment helper\ntools:\n  - get_datetime',
+    'Review the attached files carefully.',
+  );
+  skillService.clearSkillCache();
+
+  const agent = await agentService.createAgent({ name: 'Attachment Helper Agent', skills: ['attachment-helper'] });
+  const task = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'subagent',
+    priority: 5,
+    payload: {
+      task: 'Review the inherited PDF',
+      skill: 'attachment-helper',
+      attachments: [{
+        channelFileId: 'doc-sub-1',
+        localPath: '/tmp/subagent-spec.pdf',
+        filename: 'subagent-spec.pdf',
+        mimeType: 'application/pdf',
+        size: 5120,
+      }],
+    },
+    source: 'test',
+    skillName: 'attachment-helper',
+  });
+
+  const result = await agentExecutor.executeTask(task.id);
+  if (!result.success) {
+    throw new Error(`Executor failed: ${result.error ?? 'unknown error'}`);
+  }
+
+  expect(lastPrompt).toContain('Sub-agent task received.');
+  expect(lastPrompt).toContain('ATTACHED FILES:');
+  expect(lastPrompt).toContain('/tmp/subagent-spec.pdf (subagent-spec.pdf, application/pdf, 5120 bytes)');
+});
+
+test('sub-agent executor passes inherited vision inputs through multimodal generation', async () => {
+  writeSkill(
+    'vision-helper',
+    'name: vision-helper\ndescription: Vision helper\ntools:\n  - get_datetime',
+    'Inspect images passed into the task.',
+  );
+  skillService.clearSkillCache();
+
+  const agent = await agentService.createAgent({ name: 'Vision Helper Agent', skills: ['vision-helper'], model: 'gpt-4o' });
+  const testDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-subagent-vision-'));
+
+  try {
+    const imagePath = path.join(testDir, 'inspection.png');
+    fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4E, 0x47]));
+
+    const task = await taskQueue.createTask({
+      agentId: agent.id,
+      type: 'subagent',
+      priority: 5,
+      payload: {
+        task: 'Describe the inherited image',
+        skill: 'vision-helper',
+        visionInputs: [{
+          channelFileId: 'img-sub-1',
+          localPath: imagePath,
+          mimeType: 'image/png',
+        }],
+      },
+      source: 'test',
+      skillName: 'vision-helper',
+    });
+
+    const result = await agentExecutor.executeTask(task.id);
+    if (!result.success) {
+      throw new Error(`Executor failed: ${result.error ?? 'unknown error'}`);
+    }
+
+    expect(Array.isArray(lastMessages)).toBe(true);
+    const contentParts = ((lastMessages as Array<{ content?: Array<{ type: string; text?: string }> }>)?.[0]?.content) ?? [];
+    expect(contentParts.some(part => part.type === 'text' && part.text?.includes('Describe the inherited image'))).toBe(true);
+    expect(contentParts.some(part => part.type === 'image')).toBe(true);
+  } finally {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  }
+});
+
+test('sub-agent file surfaces inherit delivery target and dispatch end-to-end', async () => {
+  writeSkill(
+    'file-helper',
+    'name: file-helper\ndescription: File helper\ntools:\n  - send_file_to_chat',
+    'Send the requested file back to the user.',
+  );
+  skillService.clearSkillCache();
+
+  const sandboxService = await import('../src/lib/services/sandbox-service');
+  const deliveryService = await import('../src/lib/services/delivery-service');
+  const sandboxRoot = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-subagent-send-file-'));
+  const deliveryTarget = {
+    channel: 'telegram' as const,
+    channelKey: 'parent-chat',
+    metadata: { chatId: 'parent-chat', threadId: '7' },
+  };
+  const sentFiles: Array<{ target: unknown; filePath: string; opts?: { caption?: string; mimeType?: string } }> = [];
+
+  try {
+    deliveryService.resetAdaptersForTests();
+    deliveryService.registerAdapter({
+      channel: 'telegram',
+      sendText: async () => ({ externalMessageId: 'text-ignored' }),
+      sendFile: async (target, filePath, opts) => {
+        sentFiles.push({ target, filePath, opts });
+        return { externalMessageId: 'file-sent-1' };
+      },
+      isConnected: () => true,
+    });
+
+    const agent = await agentService.createAgent({ name: 'File Helper Agent', skills: ['file-helper'] });
+    sandboxService.setSandboxRootForTests(sandboxRoot);
+    const sandboxDir = sandboxService.getSandboxDir(agent.id);
+    const reportPath = path.join(sandboxDir, 'report.txt');
+    fs.writeFileSync(reportPath, 'child report', 'utf-8');
+
+    mockResponseText = '';
+    mockGenerateTextSteps = [
+      makeToolStep([
+        {
+          toolName: 'send_file_to_chat',
+          input: { agentId: agent.id, filePath: 'report.txt', caption: 'Child report' },
+          output: {
+            success: true,
+            data: {
+              filePath: reportPath,
+              mimeType: 'text/plain',
+              caption: 'Child report',
+              deliveryTarget,
+            },
+            surface: [{ type: 'file', filePath: reportPath, mimeType: 'text/plain', caption: 'Child report' }],
+          },
+        },
+      ]),
+    ];
+
+    const task = await taskQueue.createTask({
+      agentId: agent.id,
+      type: 'subagent',
+      priority: 5,
+      payload: {
+        task: 'Send the report back to chat',
+        skill: 'file-helper',
+        deliveryTarget,
+      },
+      source: 'test',
+      skillName: 'file-helper',
+    });
+
+    const result = await agentExecutor.executeTask(task.id);
+    if (!result.success) {
+      throw new Error(`Executor failed: ${result.error ?? 'unknown error'}`);
+    }
+
+    const deliveries = await db.outboundDelivery.findMany({ where: { taskId: task.id } });
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]).toMatchObject({
+      taskId: task.id,
+      channel: 'telegram',
+      channelKey: 'parent-chat',
+      deliveryType: 'file',
+      filePath: reportPath,
+      text: 'Child report',
+    });
+    expect(JSON.parse(deliveries[0].targetJson)).toEqual(deliveryTarget);
+
+    const dispatchStats = await deliveryService.processPendingDeliveries();
+    expect(dispatchStats.sent).toBeGreaterThanOrEqual(1);
+    expect(sentFiles).toHaveLength(1);
+    expect(sentFiles[0]).toMatchObject({
+      target: deliveryTarget,
+      filePath: reportPath,
+      opts: { caption: 'Child report' },
+    });
+
+    const completedTask = await taskQueue.getTask(task.id);
+    expect(completedTask?.result).toMatchObject({
+      response: '',
+      surfaces: [{ type: 'file', filePath: reportPath, mimeType: 'text/plain', caption: 'Child report' }],
+    });
+  } finally {
+    deliveryService.resetAdaptersForTests();
+    sandboxService.setSandboxRootForTests(null);
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
 });
 
 test('real built-in planner skill executes with repository instructions and orchestration tool surface', async () => {

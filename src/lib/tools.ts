@@ -24,7 +24,7 @@ import {
 import { processSupervisor } from '@/lib/services/process-supervisor';
 import { parseCommand, getBinaryBasename, capCombinedOutput } from '@/lib/utils/exec-helpers';
 import { existsSync } from 'fs';
-import type { DeliveryTarget, TaskType } from '@/lib/types';
+import type { Attachment, DeliveryTarget, TaskType, VisionInput } from '@/lib/types';
 import { SearchService, getSearchProvider } from '@/lib/services/search-service';
 import { browserService } from '@/lib/services/browser-service';
 import { mcpService } from '@/lib/services/mcp-service';
@@ -366,6 +366,20 @@ export async function registerOptionalTools(): Promise<void> {
   }
 }
 
+const spawnSubagentAttachmentSchema = z.object({
+  channelFileId: z.string().describe('Stable channel-specific file identifier for the attachment'),
+  localPath: z.string().describe('Local filesystem path to the downloaded attachment'),
+  filename: z.string().describe('Original filename for the attachment'),
+  mimeType: z.string().describe('MIME type of the attachment'),
+  size: z.number().int().nonnegative().optional().describe('Optional attachment size in bytes'),
+});
+
+const spawnSubagentVisionInputSchema = z.object({
+  channelFileId: z.string().describe('Stable channel-specific file identifier for the vision input'),
+  localPath: z.string().describe('Local filesystem path to the downloaded image'),
+  mimeType: z.string().describe('MIME type of the image'),
+});
+
 registerTool(
   'spawn_subagent',
   tool({
@@ -373,9 +387,17 @@ registerTool(
     inputSchema: z.object({
       skill: z.string().describe('Skill name to use for the sub-agent'),
       task: z.string().describe('Task to assign to the sub-agent'),
+      attachments: z.array(spawnSubagentAttachmentSchema).optional().describe('Optional attachments to pass through to the child task'),
+      visionInputs: z.array(spawnSubagentVisionInputSchema).optional().describe('Optional vision inputs to pass through to the child task'),
       timeoutSeconds: z.number().int().positive().optional().describe('Timeout in seconds (default: 120)'),
     }),
-    execute: async ({ skill, task, timeoutSeconds }): Promise<ToolResult> => {
+    execute: async ({ skill, task, attachments, visionInputs, timeoutSeconds }: {
+      skill: string;
+      task: string;
+      attachments?: Attachment[];
+      visionInputs?: VisionInput[];
+      timeoutSeconds?: number;
+    }): Promise<ToolResult> => {
       const context = getToolExecutionContext();
       if (!context) {
         return { success: false, error: 'spawn_subagent called without task context' };
@@ -407,6 +429,8 @@ registerTool(
           skill: skillName,
           skillTools: skillResult.skill.tools,
           overrides: skillResult.skill.overrides,
+          attachments,
+          visionInputs,
           deliveryTarget: context.deliveryTarget,
         },
         source: `subagent:${context.taskId}`,

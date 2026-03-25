@@ -30,7 +30,7 @@ import { loadBootstrapContext, loadHeartbeatContext } from './workspace-service'
 import { countTokens } from '@/lib/utils/token-counter';
 import { eventBus } from './event-bus';
 import { supportsVision } from './model-catalog';
-import { handleVisionInput, buildFallbackDeliveryTarget as buildFallbackDeliveryTargetUtil, type VisionHandlerContext } from './vision-handler';
+import { handleVisionInput, type VisionHandlerContext } from './vision-handler';
 import { mcpService } from './mcp-service';
 
 interface PromptContextSection {
@@ -219,9 +219,8 @@ class AgentExecutorService {
       const hasVisionInputs = !!(msgPayload.visionInputs && msgPayload.visionInputs.length > 0);
       const hasTextContent = (msgPayload.content ?? '').trim().length > 0;
 
-      const deliveryTarget = task.type === 'message'
-        ? msgPayload.deliveryTarget ?? this.buildFallbackDeliveryTarget(msgPayload)
-        : undefined;
+      const deliveryTarget = msgPayload.deliveryTarget
+        ?? (task.type === 'message' ? this.buildFallbackDeliveryTarget(msgPayload) : undefined);
 
       // Handle vision inputs using extracted handler
       const visionResult = await handleVisionInput(
@@ -591,14 +590,15 @@ class AgentExecutorService {
   }): Promise<void> {
     const { task, response, deliveryTarget, executionToolCalls, surfaces, responseDedupeKey, extraDeliveries = [] } = input;
     const taskResult = this.buildCompletedTaskResult(task, response, executionToolCalls, surfaces);
+    const surfacesToDeliver = surfaces.filter(surface => task.type === 'message' || surface.type === 'file');
     const shouldDeliverResponse = task.type === 'message' && response.trim().length > 0 && !!deliveryTarget && !!responseDedupeKey;
-    const shouldDeliverSurfaces = task.type === 'message' && !!deliveryTarget && surfaces.length > 0;
+    const shouldDeliverSurfaces = !!deliveryTarget && surfacesToDeliver.length > 0;
     const shouldDeliverExtras = task.type === 'message' && !!deliveryTarget && extraDeliveries.length > 0;
 
     if (deliveryTarget && (shouldDeliverResponse || shouldDeliverSurfaces || shouldDeliverExtras)) {
       await db.$transaction(async (tx) => {
         await taskQueue.completeTaskTx(tx, task.id, taskResult);
-        await this.enqueueSurfaceDeliveries(tx, task.id, deliveryTarget, surfaces);
+        await this.enqueueSurfaceDeliveries(tx, task.id, deliveryTarget, surfacesToDeliver);
 
         if (shouldDeliverResponse && responseDedupeKey) {
           await enqueueDeliveryTx(
@@ -905,12 +905,18 @@ DATA: ${JSON.stringify((task.payload as { data?: unknown }).data, null, 2)}
 Process this inter-agent communication. You can respond by using the send_message_to_agent tool.`;
 
       case 'subagent': {
-        const payload = task.payload as { task?: string };
+        const payload = task.payload as {
+          task?: string;
+          attachments?: Attachment[];
+        };
+        const attachmentsSection = payload.attachments && payload.attachments.length > 0
+          ? `\n\nATTACHED FILES:\n${payload.attachments.map(a => `- ${a.localPath} (${a.filename}, ${a.mimeType}${a.size ? `, ${a.size} bytes` : ''})`).join('\n')}`
+          : '';
         return `Sub-agent task received.
 ${contextSection}
 
 TASK:
-${payload.task ?? 'No task provided.'}`;
+${payload.task ?? 'No task provided.'}${attachmentsSection}`;
       }
 
       default:

@@ -102,6 +102,8 @@ class InputManagerService {
         channelKey: input.channelKey,
         deliveryTarget,
         metadata: input.metadata,
+        attachments: input.attachments,
+        visionInputs: input.visionInputs,
       },
       source: `${input.channel}:${input.channelKey}`,
     });

@@ -256,6 +256,76 @@ test('7.1 spawn allowed below max depth proceeds normally', async () => {
   expect(created?.spawnDepth).toBe(3);
 });
 
+test('7.1 spawn_subagent preserves attachments, vision inputs, and inherited delivery target', async () => {
+  const agent = await agentService.createAgent({ name: 'Agent' });
+  writeSkill('test-skill');
+
+  const spawnTool = toolsMap.get('spawn_subagent');
+  const parent = await createParentTask(agent.id);
+  const deliveryTarget = {
+    channel: 'telegram' as const,
+    channelKey: 'chat-parent',
+    metadata: { chatId: 'chat-parent', threadId: '42' },
+  };
+  const attachments = [{
+    channelFileId: 'doc-1',
+    localPath: '/tmp/spec.pdf',
+    filename: 'spec.pdf',
+    mimeType: 'application/pdf',
+    size: 1234,
+  }];
+  const visionInputs = [{
+    channelFileId: 'img-1',
+    localPath: '/tmp/spec.png',
+    mimeType: 'image/png',
+  }];
+
+  const spawnPromise = withSpawnSubagentContext(
+    {
+      agentId: agent.id,
+      taskId: parent.id,
+      taskType: 'message',
+      spawnDepth: 0,
+      deliveryTarget,
+    },
+    async () =>
+      spawnTool!.execute!(
+        { skill: 'test-skill', task: 'inspect inherited io', attachments, visionInputs, timeoutSeconds: 5 },
+        {} as never,
+      ),
+  );
+
+  let childTask: Awaited<ReturnType<typeof db.task.findFirst>> = null;
+  for (let i = 0; i < 20; i++) {
+    childTask = await db.task.findFirst({ where: { type: 'subagent', parentTaskId: parent.id } });
+    if (childTask) break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+
+  expect(childTask).not.toBeNull();
+  const payload = childTask ? JSON.parse(childTask.payload) as {
+    attachments?: typeof attachments;
+    visionInputs?: typeof visionInputs;
+    deliveryTarget?: typeof deliveryTarget;
+  } : undefined;
+
+  expect(payload?.attachments).toEqual(attachments);
+  expect(payload?.visionInputs).toEqual(visionInputs);
+  expect(payload?.deliveryTarget).toEqual(deliveryTarget);
+
+  await db.task.update({
+    where: { id: childTask!.id },
+    data: {
+      status: 'completed',
+      result: JSON.stringify({ response: 'done', taskType: 'subagent' }),
+      completedAt: new Date(),
+    },
+  });
+
+  const spawnResult = await spawnPromise;
+  expect(spawnResult).toMatchObject({ success: true, data: { response: 'done', skill: 'test-skill' } });
+});
+
 // ============================================================
 // 7.2 Timeout Cleanup Tests
 // ============================================================
