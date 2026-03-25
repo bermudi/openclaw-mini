@@ -992,7 +992,8 @@ test('sub-agent executor passes inherited vision inputs through multimodal gener
   );
   skillService.clearSkillCache();
 
-  const agent = await agentService.createAgent({ name: 'Vision Helper Agent', skills: ['vision-helper'], model: 'gpt-4o' });
+  const agent = await agentService.createAgent({ name: 'Vision Helper Agent', skills: ['vision-helper'] });
+  await agentService.updateAgent(agent.id, { model: 'gpt-4o' });
   const testDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-subagent-vision-'));
 
   try {
@@ -1182,6 +1183,188 @@ test('real built-in planner skill executes with repository instructions and orch
       process.env.OPENCLAW_SKILLS_DIR = originalSkillsDir;
     }
     skillService.clearSkillCache();
+  }
+});
+
+test('full parent→child multimodal handoff: inbound message → spawn_subagent → child execution', async () => {
+  // Setup: parent skill that delegates to a helper, helper skill that processes multimodal inputs
+  writeSkill(
+    'multimodal-helper',
+    'name: multimodal-helper\ndescription: Processes multimodal inputs\ntools:\n  - send_file_to_chat',
+    'Process the files and images you receive. Send results back.',
+  );
+  skillService.clearSkillCache();
+
+  const sandboxService = await import('../src/lib/services/sandbox-service');
+  const deliveryService = await import('../src/lib/services/delivery-service');
+  const sandboxRoot = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-full-handoff-'));
+  const testVisionDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-full-handoff-vision-'));
+
+  const deliveryTarget = {
+    channel: 'telegram' as const,
+    channelKey: 'integration-chat',
+    metadata: { chatId: 'integration-chat', threadId: '99' },
+  };
+  const sentFiles: Array<{ target: unknown; filePath: string; opts?: { caption?: string; mimeType?: string } }> = [];
+
+  try {
+    // Register delivery adapter
+    deliveryService.resetAdaptersForTests();
+    deliveryService.registerAdapter({
+      channel: 'telegram',
+      sendText: async () => ({ externalMessageId: 'text-1' }),
+      sendFile: async (target, filePath, opts) => {
+        sentFiles.push({ target, filePath, opts });
+        return { externalMessageId: 'file-1' };
+      },
+      isConnected: () => true,
+    });
+
+    // Create agent with helper skill
+    const agent = await agentService.createAgent({
+      name: 'Integration Agent',
+      skills: ['multimodal-helper'],
+    });
+    await agentService.updateAgent(agent.id, { model: 'gpt-4o' });
+    await agentService.setDefaultAgent(agent.id);
+    sandboxService.setSandboxRootForTests(sandboxRoot);
+
+    // Create vision input file
+    const visionPath = path.join(testVisionDir, 'diagram.png');
+    fs.writeFileSync(visionPath, Buffer.from([0x89, 0x50, 0x4E, 0x47]));
+
+    // Create sandbox file that child will send back
+    const sandboxDir = sandboxService.getSandboxDir(agent.id);
+    const analysisPath = path.join(sandboxDir, 'analysis.txt');
+    fs.writeFileSync(analysisPath, 'Analysis complete', 'utf-8');
+
+    const parentAttachments = [{
+      channelFileId: 'doc-integration',
+      localPath: '/tmp/contract-integration.pdf',
+      filename: 'contract-integration.pdf',
+      mimeType: 'application/pdf',
+      size: 8192,
+    }];
+    const parentVisionInputs = [{
+      channelFileId: 'img-integration',
+      localPath: visionPath,
+      mimeType: 'image/png',
+    }];
+
+    // Step 1: Process inbound message with attachments and vision inputs
+    const inputResult = await inputManager.processInput({
+      type: 'message',
+      channel: 'telegram',
+      channelKey: 'integration-chat',
+      content: 'Analyze this contract and diagram, then send me the analysis file',
+      attachments: parentAttachments,
+      visionInputs: parentVisionInputs,
+    });
+    expect(inputResult.success).toBe(true);
+    const parentTaskId = inputResult.taskId!;
+
+    // Verify parent task preserved multimodal payloads
+    const parentTask = await taskQueue.getTask(parentTaskId);
+    expect(parentTask?.payload).toMatchObject({
+      attachments: parentAttachments,
+      visionInputs: parentVisionInputs,
+    });
+
+    // Step 2: Execute parent task (simulating delegation decision)
+    mockResponseText = 'Delegating to helper';
+    mockGenerateTextSteps = [];
+
+    const parentExecResult = await agentExecutor.executeTask(parentTaskId);
+    expect(parentExecResult.success).toBe(true);
+
+    // Step 3: Simulate spawn_subagent by creating child task with inherited multimodal payloads
+    const childTask = await taskQueue.createTask({
+      agentId: agent.id,
+      type: 'subagent',
+      priority: 5,
+      payload: {
+        task: 'Process the contract and diagram, then send analysis file back',
+        skill: 'multimodal-helper',
+        skillTools: ['send_file_to_chat'],
+        attachments: parentAttachments,
+        visionInputs: parentVisionInputs,
+        deliveryTarget,
+      },
+      source: `subagent:${parentTaskId}`,
+      parentTaskId,
+      skillName: 'multimodal-helper',
+      spawnDepth: 1,
+    });
+
+    // Step 4: Execute child task, mocking send_file_to_chat that uses inherited delivery target
+    mockResponseText = '';
+    lastMessages = undefined;
+    mockGenerateTextSteps = [
+      makeToolStep([
+        {
+          toolName: 'send_file_to_chat',
+          input: { agentId: agent.id, filePath: 'analysis.txt', caption: 'Analysis results' },
+          output: {
+            success: true,
+            data: {
+              filePath: analysisPath,
+              mimeType: 'text/plain',
+              caption: 'Analysis results',
+              deliveryTarget,
+            },
+            surface: [{ type: 'file', filePath: analysisPath, mimeType: 'text/plain', caption: 'Analysis results' }],
+          },
+        },
+      ]),
+    ];
+
+    const childExecResult = await agentExecutor.executeTask(childTask.id);
+    expect(childExecResult.success).toBe(true);
+
+    // Assert: child received vision inputs as multimodal messages
+    expect(Array.isArray(lastMessages)).toBe(true);
+    const contentParts = ((lastMessages as Array<{ content?: Array<{ type: string; text?: string }> }>)?.[0]?.content) ?? [];
+    expect(contentParts.some(part => part.type === 'image')).toBe(true);
+
+    // Assert: child prompt includes inherited attachments (embedded in multimodal message text)
+    const textPart = contentParts.find(part => part.type === 'text');
+    expect(textPart?.text).toContain('ATTACHED FILES:');
+    expect(textPart?.text).toContain('/tmp/contract-integration.pdf (contract-integration.pdf, application/pdf, 8192 bytes)');
+
+    // Step 5: Verify child's file surface gets delivered via inherited delivery target
+    const childDeliveries = await db.outboundDelivery.findMany({ where: { taskId: childTask.id } });
+    expect(childDeliveries).toHaveLength(1);
+    expect(childDeliveries[0]).toMatchObject({
+      taskId: childTask.id,
+      channel: 'telegram',
+      channelKey: 'integration-chat',
+      deliveryType: 'file',
+      filePath: analysisPath,
+      text: 'Analysis results',
+    });
+    expect(JSON.parse(childDeliveries[0].targetJson)).toEqual(deliveryTarget);
+
+    // Step 6: Dispatch and verify actual delivery
+    const dispatchStats = await deliveryService.processPendingDeliveries();
+    expect(dispatchStats.sent).toBeGreaterThanOrEqual(1);
+    expect(sentFiles).toHaveLength(1);
+    expect(sentFiles[0]).toMatchObject({
+      target: deliveryTarget,
+      filePath: analysisPath,
+      opts: { caption: 'Analysis results' },
+    });
+
+    // Step 7: Verify child task result includes surface
+    const completedChild = await taskQueue.getTask(childTask.id);
+    expect(completedChild?.result).toMatchObject({
+      response: '',
+      surfaces: [{ type: 'file', filePath: analysisPath, mimeType: 'text/plain', caption: 'Analysis results' }],
+    });
+  } finally {
+    deliveryService.resetAdaptersForTests();
+    sandboxService.setSandboxRootForTests(null);
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+    fs.rmSync(testVisionDir, { recursive: true, force: true });
   }
 });
 
