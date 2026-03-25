@@ -15,7 +15,10 @@ This change replaces the two placeholder skills with a proper skill suite that c
 - **NEW** `skills/browser/SKILL.md` — web interaction via `browser_action` tool (navigate, click, type, screenshot, extract). Depends on the `browser-control` change. Gated on Playwright binary
 - **NEW** `skills/planner/SKILL.md` (rewrite) — orchestrator that decomposes complex multi-step tasks and delegates to the other skills via `spawn_subagent`. Understands the full skill roster and can chain them
 - **NEW** `skills/skill-manager/SKILL.md` — self-management skill that creates, edits, lists, and iterates on skills at runtime. Uses the new exec runtime to write SKILL.md files to `data/skills/`, `read_file` to inspect existing skills, and `spawn_subagent` to test new skills. Adapts the full skill-creator workflow (draft → test → evaluate → iterate → optimize description) for runtime use. Depends on `exec-runtime-overhaul` for mount-aware execution and interactive process support, and `skill-loading-pipeline` for multi-directory skill discovery with agent-managed skills taking precedence
-- **FIX** skill instruction pattern: body markdown becomes the real system prompt; remove `overrides.systemPrompt` duplication. Each SKILL.md body should contain substantive instructions (how to approach tasks, output format expectations, error handling, tool usage patterns) — not one-liners
+- **FIX** skill instruction pattern: body markdown becomes the canonical system prompt; REMOVE `overrides.systemPrompt` field from the codebase entirely. Each SKILL.md body should contain substantive instructions (how to approach tasks, output format expectations, error handling, tool usage patterns) — not one-liners
+- **MODIFY** `spawn_subagent` tool schema to accept `attachments` array for passing images/files to sub-agents (required for vision-analyst)
+- **NEW** `read_skill_file` tool that can read from `skills/` and `data/skills/` directories (current `read_file` is scoped to agent memory only)
+- **MODIFY** `subagent-config.ts` to remove `systemPrompt` from `SubAgentOverrides` type and validation schema
 
 ## Capabilities
 
@@ -35,6 +38,6 @@ This change replaces the two placeholder skills with a proper skill suite that c
 ## Impact
 
 - **Skills directory**: Remove 2 files, add 6 new SKILL.md files (net +4 skills)
-- **Dependencies**: None — skills are pure markdown consumed by existing `skill-service.ts`. The tools they reference (`web_search`, `web_fetch`, `browser_action`) are provided by other changes
-- **Code**: No code changes needed — `skill-service.ts` already reads `name`, `description`, `tools`, `overrides`, `requires`, and body instructions correctly. The fix is in the skill *content*, not the loader
-- **Cross-change dependencies**: `researcher` skill needs `web-search-providers` change implemented first; `browser` skill needs `browser-control` change implemented first; `coder` skill uses existing `exec_command` and `send_file_to_chat` tools; `skill-manager` skill needs `exec-runtime-overhaul` (for mount-aware execution and PTY/process support) AND `skill-loading-pipeline` (for `data/skills/` discovery and precedence rules) implemented first
+- **Dependencies**: Code changes required in `subagent-config.ts` and `tools.ts` to remove `systemPrompt` override support and extend `spawn_subagent` for attachments. The tools referenced (`web_search`, `web_fetch`, `browser_action`) already exist in the codebase
+- **Code**: Changes required: (1) remove `systemPrompt` from `SubAgentOverrides` in `subagent-config.ts`, (2) extend `spawn_subagent` schema with `attachments` field in `tools.ts`, (3) add `read_skill_file` tool for skill-manager to inspect skills
+- **Cross-change dependencies**: `researcher` skill uses existing `web_search`/`web_fetch` tools; `browser` skill uses existing `browser_action` tool (gated on Playwright import availability, not npx); `coder` skill uses existing `exec_command` tool; `skill-manager` skill needs `exec-runtime-overhaul` (for mount-aware execution) AND `skill-loading-pipeline` (for `data/skills/` discovery with add-only precedence) implemented first

@@ -19,15 +19,15 @@ Each configured execution mount SHALL expose a stable alias that commands can us
 - **THEN** the runtime SHALL make that mount available under the alias `obsidian`
 
 ### Requirement: Mount permission enforcement
-The system SHALL enforce declared mount permissions in sandboxed and isolated execution.
+The system SHALL enforce declared mount permissions in `sandbox` and `locked-down` execution.
 
 #### Scenario: Read-only mount write attempt
-- **WHEN** a command running in `sandbox` or `isolated` tier attempts to write through a `read-only` mount
+- **WHEN** a command running in `sandbox` or `locked-down` tier attempts to write through a `read-only` mount
 - **THEN** the runtime SHALL deny the write
 
 #### Scenario: Read-write mount write attempt
-- **WHEN** a command running in `sandbox` or `isolated` tier writes through a `read-write` mount
-- **THEN** the runtime SHALL permit the write subject to backend policy
+- **WHEN** a command running in `sandbox` or `locked-down` tier writes through a `read-write` mount
+- **THEN** the runtime SHALL permit the write subject to container policy
 
 ### Requirement: Mount path validation
 The system SHALL validate configured mount host paths before command launch.
@@ -48,5 +48,5 @@ The system SHALL resolve requested working directories against configured mounts
 - **THEN** the runtime SHALL resolve that working directory relative to the mounted path
 
 #### Scenario: Working directory outside configured mounts in isolated execution
-- **WHEN** a command in `sandbox` or `isolated` tier requests a working directory outside configured mounts
+- **WHEN** a command in `sandbox` or `locked-down` tier requests a working directory outside configured mounts
 - **THEN** the runtime SHALL reject the command

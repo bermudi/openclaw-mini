@@ -7,13 +7,13 @@ The current `skill-service.ts` has a single `loadAllSkills()` function that (1) 
 - Reason about why a skill was disabled or overridden
 - Unit test individual stages in isolation
 
-The `exec-runtime-overhaul` design (Decision 7) explicitly requires that `data/skills/` agent-managed skills coexist with `skills/` built-ins and win on name collision. The current implementation has no concept of multiple sources or precedence.
+The `exec-runtime-overhaul` design requires that `data/skills/` agent-managed skills coexist with `skills/` built-ins under a safe precedence model. The current implementation has no concept of multiple sources or precedence.
 
 ## Goals / Non-Goals
 
 **Goals:**
 - Define a skill loading pipeline with discrete, independently testable stages: Discover → Merge → Validate → Cache
-- Support two filesystem sources: `skills/` (built-in) and `data/skills/` (agent-managed), with agent-managed winning on name collision
+- Support two filesystem sources: `skills/` (built-in) and `data/skills/` (agent-managed), with built-ins protected from override — managed skills can only add NEW names
 - Enable future extensibility via a `SkillLoader` interface without modifying core pipeline logic
 - Preserve all existing behavior: discovery, frontmatter parsing, gating, override validation, caching, summaries, API
 - Make skill loading auditable: each stage logs its input/output for debugging
@@ -61,17 +61,22 @@ The pipeline accepts an array of `SkillLoader` instances. Built-in loaders are r
 
 **Alternative considered**: Generator/iterator pattern for lazy discovery. Rejected for the first iteration since all skills are in-memory files; lazy discovery adds complexity without benefit.
 
-### Decision 3: Agent-managed skills win on collision
+### Decision 3: Built-ins are protected — managed skills can only add new names
 
-The merge stage sorts by `precedence` ascending and uses a `Map<string, LoadedSkill>`, keeping the first occurrence. Since `data/skills/` loaders use `precedence: 10` and `skills/` loaders use `precedence: 20`, agent-managed skills automatically win.
+The merge stage checks for name collisions between sources. If a managed skill (`data/skills/`) has the same name as a built-in (`skills/`), the collision is logged as a warning and the managed skill is rejected. The built-in skill wins.
 
-This means:
-- If both `skills/planner/SKILL.md` and `data/skills/planner/SKILL.md` exist, the agent-managed version is used and the built-in is silently ignored
-- Collision warnings from the current implementation are removed since the precedence mechanism is explicit
+This prevents a security issue where agents with write access to `data/skills/` could override trusted built-in skills (e.g., replacing `planner` with a malicious skill that exfiltrates data).
 
-**Alternative considered**: Warn on collision and let the operator decide. Rejected because agents need autonomous operation; silent override is the correct default.
+**Security rationale**: If `exec-runtime-overhaul` grants agents mount-based write access to `data/`, they could:
+1. Create a skill with the same name as a trusted built-in
+2. The parent agent spawns what it thinks is the trusted skill
+3. The malicious skill runs with the parent's tool permissions
 
-**Alternative considered**: Log a debug message on collision. Accepted—pipeline stages emit logs for auditing, but no user-facing warning.
+By protecting built-ins, we ensure the trusted skill surface cannot be tampered with.
+
+**Alternative considered**: Agent-managed skills win on collision. Rejected due to the security risk above.
+
+**Alternative considered**: Configurable allowlist of overridable built-ins. Rejected as over-engineering for the first iteration; the add-only model is safer and simpler.
 
 ### Decision 4: Validation runs once after merge, not per-source
 
@@ -123,7 +128,7 @@ This gives future extension authors clear guidance and avoids conflicts.
 
 - **[Risk] Multiple skill sources increase startup time** → Mitigation: TTL cache means startup cost is paid once per TTL window, not per request. Future: lazy discovery can be added without pipeline restructuring.
 - **[Risk] Precedence is implicit in numeric values that developers must know** → Mitigation: Constants (`SKILL_PRECEDENCE_BUILTIN`, `SKILL_PRECEDENCE_AGENT`) are exported from the module. Documentation and default loader implementations make the contract clear.
-- **[Risk] Agent-managed skills in `data/skills/` are not validated for safety** → Mitigation: Same validation pipeline runs on all skills regardless of source. Malicious skill content is still subject to gating checks, override validation, and the agent's tool allowlist.
+- **[Risk] Agent-managed skills in `data/skills/` are not validated for safety** → Mitigation: Same validation pipeline runs on all skills regardless of source. Malicious skill content is still subject to gating checks, override validation, and the agent's tool allowlist. Additionally, built-ins are protected from override — managed skills can only introduce new names.
 
 ## Migration Plan
 

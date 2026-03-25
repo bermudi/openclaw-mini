@@ -1,12 +1,12 @@
 ## Why
 
-The current `skill-service.ts` implements skill loading as a single undifferentiated function that scans one directory. This blocks two requirements from `exec-runtime-overhaul`: (1) agent-managed skills in `data/skills/` must coexist with built-in `skills/` and win on name collisions, and (2) the skill system must be extensible to support future sources like remote skills or MCP registries. A pipeline architecture makes precedence rules, multi-source discovery, and validation ordering explicit rather than implicit.
+The current `skill-service.ts` implements skill loading as a single undifferentiated function that scans one directory. This blocks two requirements from `exec-runtime-overhaul`: (1) agent-managed skills in `data/skills/` must coexist with built-in `skills/` under a safe precedence model, and (2) the skill system must be extensible to support future sources like remote skills or MCP registries. A pipeline architecture makes precedence rules, multi-source discovery, and validation ordering explicit rather than implicit.
 
 ## What Changes
 
 - Replace `loadAllSkills()` with a discover/merge/validate/cache pipeline where each stage is independently testable
 - Add `SkillSource` abstraction with filesystem scanner supporting both `skills/` and `data/skills/`
-- Agent-managed skills (`data/skills/`) take precedence over built-in skills (`skills/`) on name collision
+- Agent-managed skills (`data/skills/`) can only introduce NEW skill names — they cannot override built-in skills (`skills/`) on name collision. Collisions result in a validation error and the built-in skill wins
 - Introduce `SkillPrecedence` tier metadata so future sources (remote, MCP) can declare priority
 - Add `clearSkillCache()` export and wire it to SIGHUP for hot-reload during development
 - Extract skill validation into a standalone `validateSkill()` function that runs after merge
@@ -16,8 +16,8 @@ The current `skill-service.ts` implements skill loading as a single undifferenti
 
 ### New Capabilities
 
-- `skill-loading-pipeline`: Refactor skill loading into a discover/merge/validate pipeline with explicit precedence. Stages: Discover (per-source) → Merge (by precedence, agent wins on collision) → Validate (gating + overrides) → Cache (TTL + manual invalidation). Each stage is a pure function or service method, making the flow auditable and testable.
-- `skill-precedence`: Metadata field declaring skill source precedence tier. Built-in skills default to `standard`, agent-managed skills default to `override`. Future sources (remote, MCP) can declare custom tiers. Higher precedence wins on collision.
+- `skill-loading-pipeline`: Refactor skill loading into a discover/merge/validate pipeline with explicit precedence. Stages: Discover (per-source) → Merge (built-ins win on collision, managed skills add-only) → Validate (gating + overrides + collision detection) → Cache (TTL + manual invalidation). Each stage is a pure function or service method, making the flow auditable and testable.
+- `skill-precedence`: Metadata field declaring skill source precedence tier. Built-in skills have protected namespace; agent-managed skills can only add new names. Collision detection logs a warning and rejects the managed skill. Future sources (remote, MCP) follow the same add-only model by default.
 
 ### Modified Capabilities
 

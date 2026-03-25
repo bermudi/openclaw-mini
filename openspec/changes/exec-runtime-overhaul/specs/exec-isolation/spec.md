@@ -1,19 +1,19 @@
 ## ADDED Requirements
 
 ### Requirement: Execution tiers
-The system SHALL support three execution tiers for command execution: `direct`, `sandbox`, and `isolated`.
+The system SHALL support three execution tiers for command execution: `host`, `sandbox`, and `locked-down`.
 
-#### Scenario: Direct tier requested
-- **WHEN** a command is launched with tier `direct`
-- **THEN** the system SHALL execute it without an isolation backend
+#### Scenario: Host tier requested
+- **WHEN** a command is launched with tier `host`
+- **THEN** the system SHALL execute it directly on the host without container isolation
 
 #### Scenario: Sandbox tier requested
 - **WHEN** a command is launched with tier `sandbox`
-- **THEN** the system SHALL execute it through a configured isolation backend with standard restrictions
+- **THEN** the system SHALL execute it in a container (Docker or Podman) with operator-approved mounts
 
-#### Scenario: Isolated tier requested
-- **WHEN** a command is launched with tier `isolated`
-- **THEN** the system SHALL execute it through a configured isolation backend with stricter restrictions than `sandbox`
+#### Scenario: Locked-down tier requested
+- **WHEN** a command is launched with tier `locked-down`
+- **THEN** the system SHALL execute it in a container with strictest restrictions: read-only mounts, no network, minimal environment
 
 ### Requirement: Tier ceiling enforcement
 The system SHALL enforce configured execution-tier ceilings so a command cannot request more privilege than the runtime allows.
@@ -26,31 +26,35 @@ The system SHALL enforce configured execution-tier ceilings so a command cannot 
 - **WHEN** a command requests a tier more restrictive than the configured default tier and not above the configured maximum tier
 - **THEN** the system SHALL honor the requested tier
 
-### Requirement: Backend selection
-The system SHALL resolve an isolation backend for `sandbox` and `isolated` execution from configured backend preferences.
+### Requirement: Container runtime detection
+The system SHALL auto-detect an available container runtime for `sandbox` and `locked-down` tiers.
 
-#### Scenario: Explicit backend configured
-- **WHEN** the runtime config specifies a concrete backend such as `landlock`, `firejail`, `docker`, or `podman`
-- **THEN** the system SHALL attempt to use that backend for qualifying tiers
+#### Scenario: Docker available
+- **WHEN** the `docker` command is available on the host
+- **THEN** the system SHALL use Docker as the container runtime
 
-#### Scenario: Auto backend configured
-- **WHEN** the runtime config specifies backend `auto`
-- **THEN** the system SHALL select the first available backend from the configured preference order
+#### Scenario: Podman available (Docker not available)
+- **WHEN** `docker` is not available but `podman` is available
+- **THEN** the system SHALL use Podman as the container runtime
 
-### Requirement: No silent fallback for isolated execution
-The system SHALL not silently degrade an `isolated` execution request to a less restrictive tier.
+#### Scenario: No container runtime available
+- **WHEN** neither Docker nor Podman is available
+- **THEN** the system SHALL report no container runtime available and fail `sandbox`/`locked-down` tier requests with a clear error
 
-#### Scenario: Isolated backend unavailable
-- **WHEN** a command requests tier `isolated` and no suitable isolation backend is available
-- **THEN** the system SHALL fail the command with an error describing the missing backend capability
+### Requirement: No silent fallback for sandbox/locked-down
+The system SHALL not silently degrade a `sandbox` or `locked-down` execution request to `host` tier.
 
-### Requirement: Isolation profile differentiation
-The system SHALL apply different security profiles to `sandbox` and `isolated` execution even when they use the same backend type.
+#### Scenario: Container runtime unavailable for sandbox
+- **WHEN** a command requests tier `sandbox` or `locked-down` and no container runtime is available
+- **THEN** the system SHALL fail the command with an error describing the missing container runtime
+
+### Requirement: Tier profile differentiation
+The system SHALL apply different security profiles to `sandbox` and `locked-down` execution.
 
 #### Scenario: Sandbox profile applied
 - **WHEN** a command runs in tier `sandbox`
-- **THEN** the system SHALL apply the standard sandbox policy for environment filtering, resource limits, and mount permissions
+- **THEN** the system SHALL apply mounts with read/write permissions and allow network access
 
-#### Scenario: Isolated profile applied
-- **WHEN** a command runs in tier `isolated`
-- **THEN** the system SHALL apply a stricter policy than `sandbox` for environment filtering, resource limits, and mount permissions
+#### Scenario: Locked-down profile applied
+- **WHEN** a command runs in tier `locked-down`
+- **THEN** the system SHALL apply read-only mounts, disable network access (`--network none`), and use minimal environment variables
