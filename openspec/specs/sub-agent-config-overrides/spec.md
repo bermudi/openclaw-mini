@@ -4,7 +4,7 @@
 TBD - created by archiving change sub-agent-config-overrides. Update Purpose after archive.
 ## Requirements
 ### Requirement: Sub-agent override declaration
-The system SHALL allow each sub-agent definition to include an `overrides` object specifying zero or more of the following fields: `model`, `provider`, `credentialRef`, `maxIterations`, `allowedSkills`, `allowedTools`, and `maxToolInvocations`. At least one field SHALL be present and all values SHALL pass schema validation (e.g., provider exists in registry, positive integers, referenced skills/tools exist).
+The system SHALL allow each sub-agent definition to include an `overrides` object specifying zero or more of the following fields: `model`, `provider`, `credentialRef`, `maxIterations`, `allowedSkills`, `allowedTools`, and `maxToolInvocations`. At least one field SHALL be present and all values SHALL pass schema validation.
 
 #### Scenario: Valid override payload
 - **WHEN** a sub-agent manifest contains an overrides object with `model: "gpt-4"` and `provider: "openrouter"`
@@ -19,15 +19,11 @@ The system SHALL allow each sub-agent definition to include an `overrides` objec
 - **THEN** config validation SHALL reject the manifest because the SKILL.md body is now the canonical prompt source
 
 ### Requirement: Deterministic override merge
-The runtime SHALL compute the effective configuration for each sub-agent by merging base gateway defaults, agent profile values, skill body instructions, and the declared overrides in that order. Override fields may replace runtime parameters, but they SHALL NOT replace the prompt body.
+The runtime SHALL compute the effective configuration for each sub-agent by merging base gateway defaults, agent profile values, skill body instructions, and declared overrides in that order. Override fields may replace runtime parameters, but they SHALL NOT replace the prompt body.
 
 #### Scenario: Override replaces model only
 - **WHEN** a sub-agent override sets `provider: "openrouter"` and `model: "claude-opus-4.6"`
-- **THEN** the resolved config SHALL use the new provider and model while retaining the parent prompt and limits
-
-#### Scenario: Override inherits defaults when empty
-- **WHEN** a sub-agent omits the overrides block entirely
-- **THEN** the resolved config SHALL equal the agent profile (which already includes base defaults)
+- **THEN** the resolved config SHALL use the new provider and model while retaining the skill body as the system prompt
 
 ### Requirement: Credential reference handling
 When `credentialRef` is provided, the system SHALL fetch the referenced secret via the standard credential loader at instantiation time, inject it into the provider client, and SHALL NOT persist or log the raw secret.
