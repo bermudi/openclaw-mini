@@ -1,187 +1,171 @@
-# OpenClaw-Mini Architectural Gaps
+# OpenClaw-Mini — Architectural Design Review
 
-> Last updated: 2026-03-20
+## 1. STRUCTURAL COHERENCE
 
-This document tracks architectural gaps, security issues, and missing infrastructure not covered by existing OpenSpec changes.
+### 1.1 Three Processes, Two Databases, One Problem
 
----
+The system runs three processes (`next dev`, `openclaw-ws`, `scheduler`), and the scheduler creates **its own `PrismaClient`** (`mini-services/scheduler/index.ts:11`) while the Next.js app uses its own singleton (`src/lib/db.ts`). These two clients point at the same SQLite database.
 
-## Critical (Security)
+**SQLite does not support concurrent writers well.** You will get `SQLITE_BUSY` errors under even moderate load when the scheduler is polling/writing tasks while the Next.js API is also creating tasks. This is a ticking time bomb for any real usage beyond a demo.
 
-### No API Authentication
-All API routes are unauthenticated. Any client can:
-- Read/write agents, sessions, tasks
-- Access memory files
-- Trigger webhooks
-- Access audit logs
+### 1.2 The Scheduler Bypasses the Service Layer
 
-**Location**: `src/app/api/**`
+The scheduler directly creates tasks via raw Prisma (`prisma.task.create` at `scheduler/index.ts:100`) while the Next.js app uses `taskQueue.createTask()` which fires event bus events, broadcasts WebSocket events, and logs audits. **The scheduler's tasks skip all of these side effects.** This means:
 
-### Webhook Signatures Not Enforced
-`webhook-security.ts` exists but is never called from `input-manager.ts`. Anyone can send fake webhook events.
+-   No `task:created` event bus emission → hook triggers won't fire
+-   No WebSocket broadcast → the dashboard won't show these tasks appearing
+-   No audit log → invisible actions
 
-**Location**: `src/lib/services/input-manager.ts`, `src/lib/services/webhook-security.ts`
+This is a classic consequence of duplicating write paths instead of routing through a single authoritative service.
 
-### No CORS Configuration
-WebSocket service uses `origin: '*'` allowing any domain to connect.
+### 1.3 Dual Event Systems With No Contract
 
-**Location**: `mini-services/openclaw-ws/index.ts`
+You have **two completely separate event distribution systems**:
 
----
+1.  **`EventBus`** — in-process `EventEmitter` (`event-bus.ts`)
+2.  **WebSocket broadcast** via HTTP POST to the WS mini-service (`ws-client.ts`)
 
-## Critical (Reliability)
+These are not synchronized. The EventBus only fires within the Next.js process. The scheduler runs in a separate process and never touches the EventBus. The WS service receives events via HTTP POST but has no EventBus of its own. **Hook subscriptions in `HookSubscriptionManager` listen on the EventBus — they will never fire for scheduler-originated events.**
 
-### No Health Check Endpoint
-Main app has no `/health` endpoint. Orchestrators (Docker/K8s) cannot verify app health.
+### 1.4 Session Scope: The Hidden Single-Session Assumption
 
-**Location**: `src/app/` — missing entirely
+The schema has `@@unique([agentId, sessionScope])` on `Session`, and `InputManager.getOrCreateSession` always passes `'main'` as `sessionScope`. This means **every agent has exactly one session regardless of channel**. A Telegram user and a WhatsApp user talking to the same agent share the same session — seeing each other's conversation history. The AGENTS.md says "All communication channels must maintain the same session context" but this is an extremely surprising default with no escape hatch.
 
-### No Graceful Shutdown
-Main app ignores SIGTERM/SIGINT. In-flight requests dropped on restart.
+## 2. DECISION QUALITY
 
-**Location**: Only `mini-services/scheduler/index.ts` has shutdown; main app does not
+### 2.1 Next.js as an Agent Runtime — Cargo Cult
 
-### No Request Timeouts
-API routes and AI SDK calls have no timeout. Slow AI responses hang requests indefinitely.
+Next.js is a frontend framework optimized for SSR/SSG. Using it as the backbone of a **long-running, event-driven agent runtime** fights the framework at every turn:
 
-**Location**: `src/app/api/**`, `src/lib/services/agent-executor.ts`
+-   Agent task execution is a long-running background process. Next.js API routes are designed for request/response, not background workers. That's why you needed the scheduler as a separate process.
+-   The `instrumentation.ts` hook is the only way to run startup code, and it's fragile — Next.js can restart the runtime, clear module caches in dev mode, and doesn't guarantee single-instance execution in production.
+-   The `processing` Map in `TaskQueueService` is **in-process state** that won't survive Next.js restarts or work correctly under standalone mode with multiple workers.
 
----
+### 2.2 The Outbox Pattern Without the Guarantees
 
-## High Priority
+`OutboundDelivery` looks like a transactional outbox — good instinct. But `processPendingDeliveries` is called in the scheduler's `runDeliveryLoop` with a polling interval, and `enqueueDeliveryTx` correctly uses transactions. However:
 
-### No Rate Limiting
-No protection against DoS attacks or resource exhaustion.
+-   The delivery loop runs sequentially (`for...of` in `processPendingDeliveries`) — a single slow adapter blocks all deliveries.
+-   Deduplication relies on a `dedupeKey` unique constraint and swallows constraint errors silently (`delivery-service.ts:105`). This is correct for idempotency but means you can't distinguish "already sent" from "genuinely deduplicated" — making debugging delivery issues painful.
 
-**Location**: All API routes
+### 2.3 calculateNextCron is Broken
 
-### No Input Validation
-Webhook payloads passed through without schema validation. Malformed inputs can crash the system.
+`InputManager.calculateNextCron` (`input-manager.ts:380`) ignores the cron expression entirely and adds 24 hours:
 
-**Location**: `src/lib/services/input-manager.ts`
+```typescript
+// For MVP, just add 24 hours as a simple implementation
+const next = new Date();
+next.setDate(next.getDate() + 1);
+```
 
-### No Circuit Breakers
-Provider failures cascade immediately. 429/500 errors cause instant retries without backoff.
+Meanwhile, the scheduler's `getNextCronDate` actually tries to parse the expression but uses `node-cron`'s `parseExpression` which **doesn't exist** on `node-cron` (it exists on `cron-parser`, a different package). The type assertion at `scheduler/index.ts:160` masks this — it'll always fall back to "1 hour from now."
 
-**Location**: `src/lib/services/model-provider.ts`
+**Both cron paths are broken.** One lies about supporting cron, the other silently fails.
 
-### In-Memory Processing Map
-`TaskQueue.processing` Map is lost on restart. Tasks stuck in "processing" never recover.
+### 2.4 JSON-in-Columns Anti-Pattern
 
-**Location**: `src/lib/services/task-queue.ts`
+`Task.payload`, `Task.result`, `Trigger.config`, `Agent.skills`, `Session.context` — all are `String` columns holding JSON. Every read requires `JSON.parse`, every write requires `JSON.stringify`. The `mapTask` method parses payload and result on every single read (`task-queue.ts:356-357`). No validation happens on parse — a corrupted JSON string crashes the entire task processing pipeline.
 
-### No Dead Letter Queue for Failed Deliveries
-When `dispatchDelivery()` exhausts its 5 retries, the message is marked failed and that's it. The user never sees it. There's no:
-- Alerting that delivery failed
-- Admin UI to inspect failed messages
-- Retry mechanism beyond the 5 attempts
-- Archive of failed messages for manual replay
+## 3. FRICTION POINTS
 
-For a system whose entire job is "receive input, produce response, deliver it" — losing the response silently is a total failure mode.
+### 3.1 Agent Status Stuck in busy or error
 
-**Location**: `src/lib/services/delivery-service.ts`
+`AgentExecutorService.executeTask` sets agent status to `'busy'` at line 100 and only resets it to `'idle'` in `runPostCommitSideEffects`. If any exception occurs **after** setting busy but **before** reaching the catch block's `setAgentStatus(error)` — or if the process crashes mid-execution — the agent is permanently stuck. The scheduler checks for `status: 'idle'` agents, so a stuck agent stops processing forever.
 
-### No Idempotency Beyond Dedupe Key
-The dedupe key is `task:{taskId}` — which prevents double delivery of the same task's response. But if the same input message is delivered twice (network retry, webhook replay), two different tasks get created. The dedupe key doesn't cover the input message itself.
+There is a `sweepOrphanedSubagents` method, but it only handles subagent tasks, not the agent's `status` field itself.
 
-**Location**: `src/lib/services/delivery-service.ts`
+### 3.2 failChildTasks Called Twice
 
-### WebSocket Has No Event Recovery Protocol
-`ws-client.ts` enables Socket.IO auto-reconnect, but there's no spec for:
-- Event sequence tracking or sequence numbers
-- Replaying missed events after reconnection
-- Persisting events server-side for retrieval
-- A fallback channel when WebSocket fails
+In the error handler (`agent-executor.ts:378-379`):
 
-Events emitted during disconnection are simply lost.
+```typescript
+await taskQueue.failTask(taskId, errorMessage);
+await taskQueue.failChildTasks(taskId, 'Parent task failed');
+```
 
-**Location**: `mini-services/openclaw-ws/`, `src/lib/services/ws-client.ts`
+But `failTaskTx` already calls `failChildTasks` internally (`task-queue.ts:213`). The second explicit call is redundant — it re-queries children and finds none (they're already failed). Harmless now, but if `failChildTasks` ever has side effects, this double-fire will be a bug factory.
 
----
+### 3.3 The processing Map Is Not Durable
 
-## Medium Priority
+`TaskQueueService.processing` (`task-queue.ts:35`) is an in-memory `Map<string, boolean>` that prevents concurrent task execution per agent. If the Next.js process restarts:
 
-### No Dead Letter Queue for Tasks
-Failed tasks marked `failed` but not retained for analysis or manual retry.
+-   The map is wiped
+-   An agent with a still-processing task in the DB will start another task concurrently
+-   Two `generateText` calls will run simultaneously for the same agent with the same session, producing interleaved responses
 
-**Location**: `src/lib/services/task-queue.ts`
+### 3.4 Debugging Memory Recall Will Be Brutal
 
-### No Pagination
-Session messages, audit logs, task lists return all results. Memory exhaustion on large datasets.
+The memory system has 6 models (`Memory`, `MemoryChunk`, `MemoryIndexState`, `EmbeddingCache`, `MemoryIndexMetadata`, `MemoryRecallLog`) and the retrieval path flows through `memory-service.ts` → `memory-indexing.ts` → `memory-reflector.ts` with hybrid vector/keyword search. When the agent gives a bad response because it recalled the wrong memories, tracing *why* those specific chunks were selected requires cross-referencing `MemoryRecallLog.selectedKeys`, the chunk embeddings, the similarity scores, and the budget-trimming logic in `buildMemorySections`. None of this is exposed in the UI or easily queryable.
 
-**Location**: `GET /api/sessions`, `GET /api/tasks`, `GET /api/audit`
+### 3.5 tools.ts Is a 1600-Line God File
 
-### No Structured Logging
-Logs are console.log without severity, timestamps, or correlation IDs. Hard to search/debug.
+All tool registrations, the `AsyncLocalStorage` context, tool filtering logic, and all tool implementations live in a single file. Adding a new tool means editing a 1600-line file. The file mixes registry infrastructure with business logic (executing shell commands, spawning subagents, managing browser sessions, file operations). This will be the #1 merge conflict hotspot.
 
-**Location**: Throughout codebase
+## 4. SECURITY
 
-### No Metrics/Tracing
-No OpenTelemetry or similar. Cannot debug production issues.
+### 4.1 No Authentication on Admin API Routes
 
-**Location**: N/A — missing entirely
+The finder confirmed: `/api/agents`, `/api/tasks`, `/api/sessions`, `/api/audit`, `/api/skills`, `/api/workspace`, `/api/tools` — **zero authentication**. Anyone with network access can:
 
-### Credentials in Plain Env Vars
-No rotation, no encryption at rest, no audit trail for secret access.
+-   Create/delete/modify agents
+-   Read all session history (including user messages)
+-   Read audit logs
+-   Execute tasks
+-   Access workspace files
 
-**Location**: `src/lib/credentials.ts`, `src/lib/config/`
+Only `/api/channels/bindings` has an API key check, and webhooks verify signatures. Everything else is wide open.
 
-### No Backup/Restore
-SQLite database has no backup mechanism. Data loss on corruption.
+### 4.2 The WebSocket Service Has No Auth
 
-**Location**: N/A — missing entirely
+`mini-services/openclaw-ws/index.ts` — CORS is `origin: '*'`, the `/broadcast` HTTP endpoint has no authentication. Any process on the network can inject arbitrary events into the WebSocket stream. A malicious actor could broadcast fake `task:completed` events with crafted results to the dashboard.
 
-### Audit Log Integrity
-Audit logs can be deleted/modified. No tamper detection.
+### 4.3 The Scheduler → Next.js API Call Is Unauthenticated
 
-**Location**: `src/lib/services/audit-service.ts`
+`scheduler/index.ts:57`:
 
-### No Input Sanitization
-Raw user content passed to AI without sanitization.
+```typescript
+const response = await fetch(`http://localhost:3000/api/tasks/${task.id}/execute`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' }
+});
+```
 
-**Location**: `src/lib/services/agent-executor.ts`
+No API key, no auth token. If/when you add auth to the task execution endpoint, the scheduler will break.
 
----
+### 4.4 Exec Runtime — Host Tier Default
 
-## Low Priority
+`runtime.ts:133`: `defaultTier: 'host'`. When exec is enabled, agents execute shell commands **directly on the host by default**. The allowlist mechanism exists but is empty by default. An agent with the `exec` tool can run arbitrary commands on the host machine unless explicitly restricted.
 
-### Executor and Planner Skills are generic
-The executor and planner skills are currently generic and not tailored to specific use cases. They should be customized for better performance and functionality. We should also take a look at the override fields and move them to a different place in the actual code structure as skills are just instructions for the agent doing work.
+## 5. CODE-LEVEL CONCERNS
 
----
+### 5.1 Pervasive as Type Assertions on Payloads
 
-## Scalability
+Throughout `agent-executor.ts`, task payloads are cast with `as`:
 
-### SQLite Single-Writer
-Write bottleneck under load. Only one write can happen at a time.
+```typescript
+const msgPayload = task.payload as { content?: string; sender?: string; ... };
+```
 
-**Location**: `prisma/schema.prisma`
+This is repeated ~10 times with different shape assumptions. The `Task.payload` is `Record<string, unknown>` — none of these casts are validated. A webhook trigger producing a payload with a different shape will silently produce `undefined` values, not an error.
 
-### Polling-Based Task Processing
-Latency from poll interval (not event-driven).
+### 5.2 Fire-and-Forget WebSocket Broadcasts
 
-**Location**: `mini-services/scheduler/`
+Every `broadcastTaskCreated`, `broadcastTaskStarted`, etc. returns a `Promise<boolean>` that is **never awaited** at the call sites in `task-queue.ts`. The `fetch` to the WS service silently fails on network errors (`ws-client.ts:36`). During a WS outage, you'll have zero indication that the dashboard is stale.
+
+### 5.3 Module Singletons Everywhere
+
+`agentExecutor`, `taskQueue`, `sessionService`, `memoryService`, `eventBus`, `inputManager`, `hookSubscriptionManager`, `processSupervisor`, `mcpService`, `browserService` — all are module-level singletons via `export const foo = new FooService()`. This makes:
+
+-   Testing require carefully ordered imports and mock resets
+-   Dependency injection impossible without major refactoring
+-   Circular dependency potential high (e.g., `tools.ts` imports from `task-queue`, `session-service`, `memory-service`, `exec-runtime`, `process-supervisor`, `search-service`, `browser-service`, `mcp-service`)
 
 ---
 
-## Covered by OpenSpec (Not Yet Implemented)
+## Summary: The Three Things That Will Hurt Most
 
-| Gap | OpenSpec Change |
-|-----|-----------------|
-| Event bus for internal hooks | `event-bus-hooks` |
-| Sub-agent depth limits | `subagent-lifecycle` |
-| Sub-agent timeout/cancellation | `subagent-lifecycle` |
-| Orphan sub-agent cleanup | `subagent-lifecycle` |
-| Memory git versioning | `memory-git-versioning` |
-| Memory confidence scoring | `memory-quality-lifecycle` |
+1.  **SQLite concurrent access from three processes** will produce `SQLITE_BUSY` errors in production. You either need to collapse into a single process or move to PostgreSQL.
 
----
+2.  **Zero authentication on the entire API surface** means this cannot be deployed on any network you don't fully trust — not even a home network with other devices.
 
-## Recommended New OpenSpecs
-
-1. **api-authentication** — Add auth to all endpoints
-2. **observability** — Structured logging + OpenTelemetry
-3. **resilience** — Timeouts, rate limiting, circuit breakers
-4. **graceful-shutdown** — Signal handlers for main app
-
-One note: running multiple Bun test files together still shows some suite-level interference from shared global/runtime state in existing tests, but the affected refactor suites pass when run individually, and typecheck passes. If you want, the next cleanup would be isolating provider/runtime globals across test files so multi-file Bun runs are fully stable.
+3.  **The scheduler bypassing the service layer** means half the system's events (audit, WebSocket, hooks) won't fire for scheduled/triggered tasks, creating ghost behavior that's invisible to monitoring and debugging.
