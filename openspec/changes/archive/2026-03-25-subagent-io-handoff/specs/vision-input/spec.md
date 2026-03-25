@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Vision inputs passed through task hierarchies
 The system SHALL support passing `visionInputs` through parent and sub-agent task payloads.

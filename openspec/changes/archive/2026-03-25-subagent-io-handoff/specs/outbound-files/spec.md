@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Sub-agent file delivery
 The `send_file_to_chat` tool SHALL work for sub-agent tasks when they inherit a valid delivery target from the parent task.

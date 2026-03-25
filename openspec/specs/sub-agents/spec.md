@@ -4,34 +4,26 @@
 TBD - created by archiving change agent-architecture. Update Purpose after archive.
 ## Requirements
 ### Requirement: Spawn sub-agent tool
-The main agent SHALL have access to a `spawn_subagent` tool that creates an ephemeral sub-agent task. The tool SHALL accept `skill` (string, required) and `task` (string, required) parameters.
+The main agent SHALL have access to a `spawn_subagent` tool that creates an ephemeral sub-agent task. The tool SHALL accept `skill` (string, required) and `task` (string, required), and MAY accept `attachments` and `visionInputs` for attachment-aware delegation.
 
-#### Scenario: Spawn a sub-agent with a valid skill
-- **WHEN** the main agent calls `spawn_subagent` with `{ skill: "web-search", task: "find flights to Lima for next Friday" }`
-- **THEN** a new Task SHALL be created with `type: "subagent"`, `skillName: "web-search"`, `parentTaskId` set to the current task's ID, and `status: "pending"`
+#### Scenario: Spawn a sub-agent with files
+- **WHEN** the main agent calls `spawn_subagent` with attachment metadata from the current task
+- **THEN** the created child task SHALL preserve those attachments in its payload
 
-#### Scenario: Spawn with unknown skill
-- **WHEN** the main agent calls `spawn_subagent` with a skill name that doesn't match any loaded and enabled SKILL.md
-- **THEN** the tool SHALL return `{ success: false, error: "Skill 'xyz' not found or disabled" }`
-
-#### Scenario: Spawn with disabled skill
-- **WHEN** the main agent calls `spawn_subagent` with a skill that exists but is disabled (failed gating)
-- **THEN** the tool SHALL return `{ success: false, error: "Skill 'xyz' not found or disabled: missing binary: ffmpeg" }`
+#### Scenario: Spawn a sub-agent with vision inputs
+- **WHEN** the main agent calls `spawn_subagent` with `visionInputs`
+- **THEN** the created child task SHALL preserve those vision inputs in its payload
 
 ### Requirement: Sub-agent task execution
-When the AgentExecutor processes a task with `type: "subagent"`, it SHALL load the full SKILL.md instructions as the system prompt and restrict available tools to those declared by the skill.
+When the AgentExecutor processes a task with `type: "subagent"`, it SHALL load the full SKILL.md instructions as the system prompt, restrict tools to those declared by the skill, and preserve attachment-related payloads when present.
 
-#### Scenario: Sub-agent uses skill instructions
-- **WHEN** a sub-agent task with `skillName: "web-search"` is executed
-- **THEN** the system prompt SHALL contain the full markdown body of `web-search/SKILL.md` (not the main agent's prompt)
+#### Scenario: Sub-agent receives inherited vision inputs
+- **WHEN** a sub-agent task payload includes `visionInputs`
+- **THEN** the executor SHALL process those vision inputs through the same multimodal execution path used for top-level message tasks
 
-#### Scenario: Sub-agent gets skill-defined tools
-- **WHEN** a skill's SKILL.md frontmatter declares `tools: ["web_search", "read_file"]`
-- **THEN** the sub-agent SHALL only have access to those tools during execution
-
-#### Scenario: Sub-agent with no tools declared
-- **WHEN** a skill's SKILL.md frontmatter does not declare a `tools` field
-- **THEN** the sub-agent SHALL receive all tools with `riskLevel: "low"`
+#### Scenario: Sub-agent receives inherited delivery context
+- **WHEN** a sub-agent tool needs to deliver a surfaced file back to chat
+- **THEN** the task execution context SHALL include an inherited delivery target from the parent task
 
 ### Requirement: Sub-agent session isolation
 Each sub-agent task SHALL execute within its own isolated session with scope `"subagent:<taskId>"`. This session SHALL NOT share context with the parent agent's main session.
