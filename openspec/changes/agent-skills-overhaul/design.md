@@ -85,7 +85,11 @@ The skill-manager also uses `spawn_subagent` to test newly created skills — it
 
 **Alternative considered**: A dedicated `manage_skill` tool with create/edit/delete/validate actions. Rejected because it's a narrow-purpose tool that duplicates what the new exec runtime already provides. The skill's instructions (SKILL.md body) encode the workflow — the tool just needs filesystem access.
 
-**Dependency**: Requires `exec-runtime-overhaul` to be implemented first. Without mount-aware execution, interactive process support, and `data/skills/` scanning, this skill has no way to write skills or have them discovered.
+**Dependencies**: 
+- `exec-runtime-overhaul` — required for mount-aware execution to `data/skills/` and PTY/process support for interactive workflows
+- `skill-loading-pipeline` — required for agent-managed skills in `data/skills/` to be discovered and take precedence over built-in skills
+
+Both dependencies must be implemented before skill-manager can function fully.
 
 ## Risks / Trade-offs
 

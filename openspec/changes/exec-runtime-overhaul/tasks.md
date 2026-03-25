@@ -38,9 +38,27 @@
 - [ ] 6.2 Implement precedence rules so agent-managed skills override built-in skills on name collisions
 - [ ] 6.3 Add tests covering empty `data/skills/`, mixed built-in/managed loading, and collision behavior
 
-## 7. Cross-change cleanup and verification
+## 7. Mount resolver service extraction
 
-- [ ] 7.1 Update `agent-skills-overhaul` to depend on `exec-runtime-overhaul` instead of `exec-command-execution-modes`
-- [ ] 7.2 Remove or supersede the `exec-command-execution-modes` change artifacts so there is a single authoritative exec runtime proposal
-- [ ] 7.3 Run the relevant test suites for exec, skill loading, and runtime config after implementation
-- [ ] 7.4 Validate the new OpenSpec change status and confirm all artifacts are ready for `/opsx:apply`
+- [ ] 7.1 Extract mount resolution logic into a standalone `MountResolver` service
+- [ ] 7.2 Define a clear `MountResolver` interface with `resolveAlias()`, `validatePath()`, and `checkPermission()` operations
+- [ ] 7.3 Ensure the service can be used independently by exec_command and future file operations
+- [ ] 7.4 Add unit tests for mount resolver in isolation
+
+## 8. Feature flags for incremental rollout
+
+- [ ] 8.1 Add `runtime.exec.featureFlags` to the config schema with typed flags:
+  - `enablePty`: boolean (default: false)
+  - `enableMounts`: boolean (default: false)
+  - `enableIsolationBackends`: boolean (default: false)
+  - `enableBackgroundSessions`: boolean (default: false)
+- [ ] 8.2 Wire feature flags into the appropriate code paths so capabilities are gated
+- [ ] 8.3 Document the flag behavior in runtime config specs
+- [ ] 8.4 Ensure all existing behavior is preserved when flags are false (backward compatibility)
+
+## 9. Cross-change cleanup and verification
+
+- [ ] 9.1 Update `agent-skills-overhaul` to depend on `exec-runtime-overhaul` instead of `exec-command-execution-modes`
+- [ ] 9.2 Remove or supersede the `exec-command-execution-modes` change artifacts so there is a single authoritative exec runtime proposal
+- [ ] 9.3 Run the relevant test suites for exec, skill loading, and runtime config after implementation
+- [ ] 9.4 Validate the new OpenSpec change status and confirm all artifacts are ready for `/opsx:apply`

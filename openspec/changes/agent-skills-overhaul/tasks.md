@@ -38,7 +38,7 @@
 
 - [ ] 7.1 Create `skills/skill-manager/SKILL.md` with frontmatter: `name: skill-manager`, `description` covering runtime skill creation, editing, testing, and optimization, `tools: [exec_command, read_file, spawn_subagent, write_note]`, `overrides` with capable model (`gpt-4.1`), `maxIterations: 15`, `maxToolInvocations: 20`
 - [ ] 7.2 Write SKILL.md body (60+ lines): role statement as the agent's self-improvement specialist, SKILL.md anatomy (frontmatter fields: name, description, tools, requires, overrides; body: substantive instructions), how to create a new skill (mkdir `data/skills/<name>/` via the new mount-aware `exec_command` runtime, write SKILL.md with proper frontmatter + instructions body), how to edit existing skills (read_file to inspect, exec_command to overwrite), how to list/audit skills (read_file on skills/ and data/skills/ directories), frontmatter validation guidance (required fields, tool names must match registered tools, gating with requires), skill testing workflow (spawn_subagent with the new skill name + test prompt, evaluate output, iterate), iterative improvement pattern (draft → test → evaluate → refine instructions → retest), description optimization guidance (write descriptions that trigger correctly — include what the skill does AND when to use it), output format (report what was created/modified, test results, any issues found), error handling (invalid frontmatter, missing tools, test failures), boundaries (only write to data/skills/, never modify built-in skills in skills/)
-- [ ] 7.3 Verify skill loads via `GET /api/skills` — should show `skill-manager` as enabled (note: full functionality requires `exec-runtime-overhaul` for mount-aware access to `data/skills/` and managed-skill discovery)
+- [ ] 7.3 Verify skill loads via `GET /api/skills` — should show `skill-manager` as enabled (note: full functionality requires `exec-runtime-overhaul` for mount-aware access to `data/skills/` AND `skill-loading-pipeline` for managed-skill discovery and precedence)
 
 ## 8. Validation and testing
 
@@ -47,3 +47,4 @@
 - [ ] 8.3 Verify each SKILL.md body has substantive instructions (minimum line counts: researcher 30, vision-analyst 30, coder 40, browser 30, planner 50, skill-manager 60)
 - [ ] 8.4 Run existing tests (`bun test`) to confirm no regressions in skill-service loading, subagent-lifecycle, or agent-architecture tests
 - [ ] 8.5 Test skill gating: temporarily remove `npx` from PATH and verify `browser` skill shows as disabled with correct gating reason
+- [ ] 8.6 After `exec-runtime-overhaul` and `skill-loading-pipeline` are implemented, verify skill-manager can write to `data/skills/` and newly written skills are discovered with correct precedence
