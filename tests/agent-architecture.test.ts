@@ -49,6 +49,7 @@ mock.module('ai', () => ({
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
 const SKILLS_DIR = path.join(tmpdir(), 'openclaw-mini-agent-skills');
+const BUILT_IN_SKILLS_DIR = path.join(process.cwd(), 'skills');
 const MEMORY_ROOT = path.join(tmpdir(), 'openclaw-mini-agent-memories');
 
 let db: PrismaClient;
@@ -604,7 +605,7 @@ test('SIGHUP clears loaded skills and binary gating caches for the next lookup',
 test('sub-agent overrides are validated and surfaced as skill diagnostics', async () => {
   writeSkill(
     'invalid-overrides',
-    'name: invalid-overrides\ndescription: Invalid overrides\noverrides:\n  provider: made-up\n  allowedTools:\n    - no_such_tool',
+    'name: invalid-overrides\ndescription: Invalid overrides\noverrides:\n  provider: made-up\n  systemPrompt: Forbidden prompt\n  allowedTools:\n    - no_such_tool',
     'This skill should be disabled.',
   );
 
@@ -616,6 +617,7 @@ test('sub-agent overrides are validated and surfaced as skill diagnostics', asyn
   expect(invalidSkill?.gatingReason).toContain('invalid overrides');
   expect(invalidSkill?.overrideErrors?.join(' | ')).toContain('provider');
   expect(invalidSkill?.overrideErrors?.join(' | ')).toContain('unknown tool');
+  expect(invalidSkill?.overrideErrors?.join(' | ')).toContain('systemPrompt');
 });
 
 test('sub-agent config resolution merges base runtime and overrides deterministically', async () => {
@@ -699,6 +701,7 @@ test('spawn_subagent tool handles success, missing skill, and timeout', async ()
   );
 
   const subTask = await waitForSubagentTask(parentTask.id);
+  expect(subTask.payload).not.toContain('systemPrompt');
   await taskQueue.completeTask(subTask.id, { response: 'done' });
 
   const successResult = (await successPromise) as SpawnResult | undefined;
@@ -798,10 +801,10 @@ test('spawn_subagent omits surfaces when child result does not include them', as
   expect(successResult?.data).toEqual({ response: 'done', skill: 'helper' });
 });
 
-test('sub-agent executor applies overrides to prompt, toolset, iterations, and audit logs', async () => {
+test('sub-agent executor uses skill body as prompt and applies non-prompt overrides', async () => {
   writeSkill(
     'planner',
-    'name: planner\ndescription: Planning skill\ntools:\n  - get_datetime\n  - random\noverrides:\n  systemPrompt: Specialized planner prompt\n  maxIterations: 8\n  allowedTools:\n    - get_datetime',
+    'name: planner\ndescription: Planning skill\ntools:\n  - get_datetime\n  - random\noverrides:\n  maxIterations: 8\n  allowedTools:\n    - get_datetime',
     'Base planner instructions.',
   );
   skillService.clearSkillCache();
@@ -821,7 +824,7 @@ test('sub-agent executor applies overrides to prompt, toolset, iterations, and a
     throw new Error(`Executor failed: ${result.error ?? 'unknown error'}`);
   }
 
-  expect(lastSystemPrompt).toBe('Specialized planner prompt');
+  expect(lastSystemPrompt).toBe('Base planner instructions.');
   expect(lastToolNames).toEqual(['get_datetime']);
   expect(lastStepCount).toBe(8);
 
@@ -835,8 +838,56 @@ test('sub-agent executor applies overrides to prompt, toolset, iterations, and a
   expect(JSON.parse(auditLogs[0].details)).toMatchObject({
     agentId: agent.id,
     skill: 'planner',
-    overrideFieldsApplied: ['systemPrompt', 'maxIterations', 'allowedTools'],
+    overrideFieldsApplied: ['maxIterations', 'allowedTools'],
   });
+});
+
+test('real built-in planner skill executes with repository instructions and orchestration tool surface', async () => {
+  const originalSkillsDir = process.env.OPENCLAW_SKILLS_DIR;
+  process.env.OPENCLAW_SKILLS_DIR = BUILT_IN_SKILLS_DIR;
+  skillService.clearSkillCache();
+
+  try {
+    const agent = await agentService.createAgent({ name: 'Built-in Planner Agent', skills: ['planner'] });
+    const task = await taskQueue.createTask({
+      agentId: agent.id,
+      type: 'subagent',
+      priority: 5,
+      payload: { task: 'Coordinate the work', skill: 'planner' },
+      source: 'test',
+      skillName: 'planner',
+    });
+
+    const result = await agentExecutor.executeTask(task.id);
+    if (!result.success) {
+      throw new Error(`Executor failed: ${result.error ?? 'unknown error'}`);
+    }
+
+    expect(lastSystemPrompt).toContain('You are the planner.');
+    expect(lastSystemPrompt).toContain('Available specialist roster');
+    expect(lastToolNames).toEqual(['spawn_subagent', 'get_datetime', 'write_note']);
+    expect(lastStepCount).toBe(8);
+
+    const auditLogs = await db.auditLog.findMany({
+      where: {
+        entityId: task.id,
+        action: 'subagent_overrides_applied',
+      },
+    });
+    expect(auditLogs).toHaveLength(1);
+    expect(JSON.parse(auditLogs[0].details)).toMatchObject({
+      agentId: agent.id,
+      skill: 'planner',
+      overrideFieldsApplied: ['model', 'maxIterations', 'allowedSkills', 'maxToolInvocations'],
+    });
+  } finally {
+    if (originalSkillsDir === undefined) {
+      delete process.env.OPENCLAW_SKILLS_DIR;
+    } else {
+      process.env.OPENCLAW_SKILLS_DIR = originalSkillsDir;
+    }
+    skillService.clearSkillCache();
+  }
 });
 
 test('sub-agent policy rejects disallowed tool and skill invocations', async () => {

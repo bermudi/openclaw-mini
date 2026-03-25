@@ -136,7 +136,6 @@ class AgentExecutorService {
       const subagentPayload = task.payload as {
         skill?: string;
         skillTools?: string[];
-        systemPrompt?: string;
         overrides?: SubAgentOverrides;
       };
       const skillName = task.skillName ?? subagentPayload.skill;
@@ -146,8 +145,7 @@ class AgentExecutorService {
         throw new Error(skill?.error ?? `Skill '${skillName ?? 'unknown'}' not found or disabled`);
       }
 
-      const defaultSubagentSystemPrompt = subagentPayload.systemPrompt
-        ?? skill?.skill?.instructions
+      const defaultSubagentSystemPrompt = skill?.skill?.instructions
         ?? 'You are a sub-agent executing a focused task.';
       const defaultSubagentToolNames = subagentPayload.skillTools && subagentPayload.skillTools.length > 0
         ? subagentPayload.skillTools

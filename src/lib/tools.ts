@@ -406,7 +406,6 @@ registerTool(
           task,
           skill: skillName,
           skillTools: skillResult.skill.tools,
-          systemPrompt: skillResult.skill.instructions,
           overrides: skillResult.skill.overrides,
           deliveryTarget: context.deliveryTarget,
         },

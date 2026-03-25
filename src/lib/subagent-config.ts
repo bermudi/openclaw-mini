@@ -6,7 +6,6 @@ export const SUB_AGENT_OVERRIDE_FIELDS = [
   'model',
   'provider',
   'credentialRef',
-  'systemPrompt',
   'maxIterations',
   'allowedSkills',
   'allowedTools',
@@ -19,7 +18,6 @@ export interface SubAgentOverrides {
   model?: string;
   provider?: string;
   credentialRef?: string;
-  systemPrompt?: string;
   maxIterations?: number;
   allowedSkills?: string[];
   allowedTools?: string[];
@@ -81,17 +79,27 @@ export function createSubAgentOverridesSchema(
   const knownSkillNames = buildKnownNameSet(options.knownSkillNames);
   const knownToolNames = buildKnownNameSet(options.knownToolNames);
   const knownProviders = buildKnownNameSet(options.knownProviderNames);
+  const knownOverrideFields = new Set<string>(SUB_AGENT_OVERRIDE_FIELDS);
 
   return z.object({
     model: z.string().trim().min(1).optional(),
     provider: z.string().trim().min(1).optional(),
     credentialRef: z.string().trim().min(1).optional(),
-    systemPrompt: z.string().trim().min(1).optional(),
     maxIterations: z.number().int().positive().optional(),
     allowedSkills: z.array(z.string().trim().min(1)).min(1).optional(),
     allowedTools: z.array(z.string().trim().min(1)).min(1).optional(),
     maxToolInvocations: z.number().int().positive().optional(),
-  }).superRefine((value, context) => {
+  }).passthrough().superRefine((value, context) => {
+    for (const key of Object.keys(value)) {
+      if (!knownOverrideFields.has(key)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `unknown override field '${key}'`,
+          path: [key],
+        });
+      }
+    }
+
     const hasAnyField = SUB_AGENT_OVERRIDE_FIELDS.some(field => value[field] !== undefined);
 
     if (!hasAnyField) {
@@ -130,10 +138,13 @@ export function createSubAgentOverridesSchema(
       }
     }
   }).transform(value => ({
-    ...value,
+    model: value.model,
     provider: value.provider,
+    credentialRef: value.credentialRef,
+    maxIterations: value.maxIterations,
     allowedSkills: normalizeNames(value.allowedSkills),
     allowedTools: normalizeNames(value.allowedTools),
+    maxToolInvocations: value.maxToolInvocations,
   }));
 }
 
@@ -186,10 +197,6 @@ export function resolveSubAgentConfig(input: {
 
   if (!overrides) {
     return resolved;
-  }
-
-  if (overrides.systemPrompt) {
-    resolved.systemPrompt = overrides.systemPrompt;
   }
 
   if (overrides.maxIterations) {
