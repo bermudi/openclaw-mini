@@ -330,9 +330,10 @@ class TaskQueueService {
   /**
    * Clean up old completed/failed tasks
    */
-  async cleanupOldTasks(daysOld: number = 7): Promise<number> {
+  async cleanupOldTasks(daysOld?: number): Promise<number> {
+    const retentionDays = daysOld ?? getRuntimeConfig().retention.tasks;
     const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - daysOld);
+    cutoff.setDate(cutoff.getDate() - retentionDays);
 
     const result = await db.task.deleteMany({
       where: {

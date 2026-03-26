@@ -19,6 +19,11 @@ export interface UpdateTriggerInput {
   enabled?: boolean;
 }
 
+export interface RecordTriggerFireInput {
+  lastTriggered: Date;
+  nextTrigger: Date;
+}
+
 class TriggerService {
   /**
    * Create a new trigger
@@ -179,6 +184,26 @@ class TriggerService {
         hookSubscriptionManager.unsubscribeHookTrigger(triggerId);
       }
     }
+
+    return this.mapTrigger(updated);
+  }
+
+  async recordTriggerFire(triggerId: string, input: RecordTriggerFireInput): Promise<Trigger | null> {
+    const trigger = await db.trigger.findUnique({
+      where: { id: triggerId },
+    });
+
+    if (!trigger) {
+      return null;
+    }
+
+    const updated = await db.trigger.update({
+      where: { id: triggerId },
+      data: {
+        lastTriggered: input.lastTriggered,
+        nextTrigger: input.nextTrigger,
+      },
+    });
 
     return this.mapTrigger(updated);
   }

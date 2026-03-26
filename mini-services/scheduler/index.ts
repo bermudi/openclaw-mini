@@ -2,16 +2,15 @@
 // Background worker for task processing and trigger management
 
 import cron from 'node-cron';
-import { PrismaClient } from '@prisma/client';
+import type { PrismaClient } from '@prisma/client';
 import { initializeAdapters, getRegisteredAdapters } from '../../src/lib/adapters';
-import { processPendingDeliveries } from '../../src/lib/services/delivery-service';
-import { memoryService } from '../../src/lib/services/memory-service';
 import { getRuntimeConfig, getPrismaLogConfig } from '../../src/lib/config/runtime';
 import { buildInternalAuthHeaders, ensureInternalAuthConfigured } from '../../src/lib/internal-auth';
+import { createConfiguredPrismaClient } from '../../src/lib/prisma-client';
 
-const prisma = new PrismaClient({
-  log: getPrismaLogConfig(),
-});
+let prisma: PrismaClient | null = null;
+let prismaReady: Promise<void> | null = null;
+let prismaInitPromise: Promise<PrismaClient> | null = null;
 
 const APP_BASE_URL = process.env.OPENCLAW_APP_URL || 'http://localhost:3000';
 
@@ -24,11 +23,45 @@ let deliveriesFailed = 0;
 
 console.log('[Scheduler] OpenClaw Scheduler Service starting...');
 
+async function getSchedulerPrisma(): Promise<PrismaClient> {
+  if (prisma) {
+    return prisma;
+  }
+
+  if (!prismaInitPromise) {
+    prismaInitPromise = (async () => {
+      const configured = createConfiguredPrismaClient({
+        log: getPrismaLogConfig(),
+        scope: 'scheduler',
+      });
+
+      prismaReady = configured.ready;
+      await prismaReady;
+      return configured.client;
+    })();
+  }
+
+  try {
+    prisma = await prismaInitPromise;
+    return prisma;
+  } catch (error) {
+    prisma = null;
+    prismaReady = null;
+    prismaInitPromise = null;
+    throw error;
+  } finally {
+    if (prisma) {
+      prismaInitPromise = null;
+    }
+  }
+}
+
 // ============================================
 // Task Processor - Polls and executes pending tasks
 // ============================================
 async function processPendingTasks() {
   try {
+    const prisma = await getSchedulerPrisma();
     // Find agents that are idle and have pending tasks
     const agentsWithTasks = await prisma.agent.findMany({
       where: {
@@ -105,11 +138,87 @@ async function createTaskViaApi(input: {
   return { success: true, data: body.data };
 }
 
+async function recordTriggerFireViaApi(input: {
+  triggerId: string;
+  lastTriggered: string;
+  nextTrigger: string;
+}): Promise<{ success: boolean; error?: string }> {
+  const response = await fetch(`${APP_BASE_URL}/api/internal/triggers/${input.triggerId}/fire`, {
+    method: 'POST',
+    headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      lastTriggered: input.lastTriggered,
+      nextTrigger: input.nextTrigger,
+    }),
+  });
+
+  const body = await response.json() as { success?: boolean; error?: string };
+
+  if (!response.ok || !body.success) {
+    return { success: false, error: body.error ?? `Trigger update failed with status ${response.status}` };
+  }
+
+  return { success: true };
+}
+
+async function runSchedulerMaintenanceViaApi(input?: {
+  processDeliveries?: boolean;
+  sweepOrphanedSubagents?: boolean;
+  cleanupOldTasks?: boolean;
+  cleanupHistoryArchives?: boolean;
+  decayMemoryConfidence?: boolean;
+}): Promise<{
+  success: boolean;
+  data?: {
+    deliveries?: {
+      sent: number;
+      failed: number;
+    } | null;
+    tasksCleaned?: number;
+    historyArchivesDeleted?: number;
+    memoryDecay?: {
+      decayed: number;
+      archived: number;
+    } | null;
+  };
+  error?: string;
+}> {
+  const response = await fetch(`${APP_BASE_URL}/api/scheduler/health`, {
+    method: 'POST',
+    headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(input ?? {}),
+  });
+
+  const body = await response.json() as {
+    success?: boolean;
+    data?: {
+      deliveries?: {
+        sent: number;
+        failed: number;
+      } | null;
+      tasksCleaned?: number;
+      historyArchivesDeleted?: number;
+      memoryDecay?: {
+        decayed: number;
+        archived: number;
+      } | null;
+    };
+    error?: string;
+  };
+
+  if (!response.ok || !body.success) {
+    return { success: false, error: body.error ?? `Scheduler maintenance failed with status ${response.status}` };
+  }
+
+  return { success: true, data: body.data };
+}
+
 // ============================================
 // Heartbeat/Cron Trigger Processor
 // ============================================
 async function processDueTriggers() {
   try {
+    const prisma = await getSchedulerPrisma();
     const now = new Date();
     
     // Find triggers that are due
@@ -160,13 +269,15 @@ async function processDueTriggers() {
           nextTrigger = new Date(now.getTime() + 3600000);
         }
 
-        await prisma.trigger.update({
-          where: { id: trigger.id },
-          data: {
-            lastTriggered: now,
-            nextTrigger
-          }
+        const triggerUpdateResult = await recordTriggerFireViaApi({
+          triggerId: trigger.id,
+          lastTriggered: now.toISOString(),
+          nextTrigger: nextTrigger.toISOString(),
         });
+
+        if (!triggerUpdateResult.success) {
+          throw new Error(triggerUpdateResult.error ?? `Failed to record trigger fire ${trigger.id}`);
+        }
 
         triggersFired++;
         console.log(`[Scheduler] Created task ${taskResult.data.id} for trigger ${trigger.name}`);
@@ -209,18 +320,20 @@ function getNextCronDate(expression: string): Date {
 // ============================================
 async function cleanupOldTasks() {
   try {
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - getRuntimeConfig().retention.tasks);
-
-    const result = await prisma.task.deleteMany({
-      where: {
-        status: { in: ['completed', 'failed'] },
-        completedAt: { lt: cutoff }
-      }
+    const result = await runSchedulerMaintenanceViaApi({
+      processDeliveries: false,
+      sweepOrphanedSubagents: false,
+      cleanupOldTasks: true,
     });
 
-    if (result.count > 0) {
-      console.log(`[Scheduler] Cleaned up ${result.count} old tasks`);
+    if (!result.success) {
+      throw new Error(result.error ?? 'Task cleanup failed');
+    }
+
+    const cleaned = result.data?.tasksCleaned ?? 0;
+
+    if (cleaned > 0) {
+      console.log(`[Scheduler] Cleaned up ${cleaned} old tasks`);
     }
   } catch (error) {
     console.error('[Scheduler] Error cleaning up tasks:', error);
@@ -257,9 +370,18 @@ async function runTriggerLoop() {
 
 async function runDeliveryLoop() {
   try {
-    const stats = await processPendingDeliveries();
-    deliveriesSent += stats.sent;
-    deliveriesFailed += stats.failed;
+    const result = await runSchedulerMaintenanceViaApi({
+      processDeliveries: true,
+      sweepOrphanedSubagents: false,
+      cleanupOldTasks: false,
+    });
+
+    if (!result.success) {
+      throw new Error(result.error ?? 'Delivery maintenance failed');
+    }
+
+    deliveriesSent += result.data?.deliveries?.sent ?? 0;
+    deliveriesFailed += result.data?.deliveries?.failed ?? 0;
   } catch (error) {
     console.error('[Scheduler] Error processing deliveries:', error);
   } finally {
@@ -333,6 +455,7 @@ async function checkAdapterHealth(): Promise<void> {
 
 async function start() {
   ensureInternalAuthConfigured('Scheduler');
+  await getSchedulerPrisma();
   isRunning = true;
   initializeAdapters();
   await startAdapters();
@@ -354,19 +477,30 @@ async function start() {
     console.log('[Scheduler] Running daily cleanup');
     await cleanupOldTasks();
 
-    const agents = await prisma.agent.findMany({
-      select: { id: true },
-    });
-
-    for (const agent of agents) {
-      await memoryService.cleanupHistoryArchives(agent.id);
-    }
-
     try {
-      const decayResult = await memoryService.decayMemoryConfidence();
-      console.log(`[Scheduler] Memory decay: ${decayResult.decayed} updated, ${decayResult.archived} archived`);
+      const result = await runSchedulerMaintenanceViaApi({
+        processDeliveries: false,
+        sweepOrphanedSubagents: false,
+        cleanupOldTasks: false,
+        cleanupHistoryArchives: true,
+        decayMemoryConfidence: true,
+      });
+
+      if (!result.success) {
+        throw new Error(result.error ?? 'Daily maintenance failed');
+      }
+
+      const decayResult = result.data?.memoryDecay;
+      if (decayResult) {
+        console.log(`[Scheduler] Memory decay: ${decayResult.decayed} updated, ${decayResult.archived} archived`);
+      }
+
+      const historyArchivesDeleted = result.data?.historyArchivesDeleted ?? 0;
+      if (historyArchivesDeleted > 0) {
+        console.log(`[Scheduler] Cleaned up ${historyArchivesDeleted} archived history file(s)`);
+      }
     } catch (error) {
-      console.error('[Scheduler] Error during memory confidence decay:', error);
+      console.error('[Scheduler] Error during memory maintenance:', error);
     }
   });
 
@@ -387,7 +521,12 @@ async function shutdown(): Promise<void> {
   console.log('[Scheduler] Shutting down...');
   isRunning = false;
   await stopAdapters();
-  await prisma.$disconnect();
+  if (prisma) {
+    await prisma.$disconnect();
+    prisma = null;
+    prismaReady = null;
+    prismaInitPromise = null;
+  }
   process.exit(0);
 }
 
@@ -399,4 +538,12 @@ if (import.meta.main) {
   start().catch(console.error);
 }
 
-export { start, processPendingTasks, executeTaskViaApi, createTaskViaApi };
+export {
+  start,
+  processPendingTasks,
+  processDueTriggers,
+  executeTaskViaApi,
+  createTaskViaApi,
+  recordTriggerFireViaApi,
+  runSchedulerMaintenanceViaApi,
+};

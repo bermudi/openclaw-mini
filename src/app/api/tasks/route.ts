@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { taskQueue } from '@/lib/services/task-queue';
 import { requireInternalAuth } from '@/lib/api-auth';
+import { storageErrorResponse } from '@/lib/api/storage-errors';
 
 // GET /api/tasks - List tasks with optional filters
 export async function GET(request: NextRequest) {
@@ -32,6 +33,9 @@ export async function GET(request: NextRequest) {
       stats,
     });
   } catch (error) {
+    const storageResponse = storageErrorResponse(error);
+    if (storageResponse) return storageResponse;
+
     const message = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json(
       { success: false, error: message },
@@ -71,6 +75,9 @@ export async function POST(request: NextRequest) {
       message: 'Task created successfully',
     });
   } catch (error) {
+    const storageResponse = storageErrorResponse(error);
+    if (storageResponse) return storageResponse;
+
     const message = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json(
       { success: false, error: message },

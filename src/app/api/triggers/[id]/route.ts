@@ -3,6 +3,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { triggerService } from '@/lib/services/trigger-service';
+import { storageErrorResponse } from '@/lib/api/storage-errors';
 
 // GET /api/triggers/[id] - Get trigger by ID
 export async function GET(
@@ -25,6 +26,9 @@ export async function GET(
       data: trigger,
     });
   } catch (error) {
+    const storageResponse = storageErrorResponse(error);
+    if (storageResponse) return storageResponse;
+
     const message = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json(
       { success: false, error: message },
@@ -57,6 +61,9 @@ export async function PUT(
       message: 'Trigger updated successfully',
     });
   } catch (error) {
+    const storageResponse = storageErrorResponse(error);
+    if (storageResponse) return storageResponse;
+
     const message = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json(
       { success: false, error: message },

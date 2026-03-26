@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentExecutor } from '@/lib/services/agent-executor';
 import { requireInternalAuth } from '@/lib/api-auth';
+import { storageErrorResponse } from '@/lib/api/storage-errors';
 
 // POST /api/tasks/[id]/execute - Execute a task
 export async function POST(
@@ -30,6 +31,9 @@ export async function POST(
       message: 'Task executed successfully',
     });
   } catch (error) {
+    const storageResponse = storageErrorResponse(error);
+    if (storageResponse) return storageResponse;
+
     const message = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json(
       { success: false, error: message },
