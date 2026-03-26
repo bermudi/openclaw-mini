@@ -1,13 +1,12 @@
 /// <reference types="bun-types" />
 
-import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import fs from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 
-// Must be set BEFORE any module imports that use them
-process.env.DATABASE_URL = 'file:./db/custom.db';
-process.env.OPENAI_API_KEY = 'test-key';
+const TEST_DB_PATH = path.join(process.cwd(), 'db', 'init-system.test.db');
+const TEST_DB_URL = `file:${TEST_DB_PATH}`;
 
 mock.module('@ai-sdk/openai', () => ({
   createOpenAI: ({ baseURL, apiKey }: { baseURL?: string; apiKey?: string }) => {
@@ -57,9 +56,30 @@ function writeConfig(configPath: string, content: string): void {
   fs.writeFileSync(configPath, content, 'utf-8');
 }
 
+beforeAll(async () => {
+  process.env.DATABASE_URL = TEST_DB_URL;
+  process.env.OPENAI_API_KEY = 'test-key';
+
+  fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
+
+  const dbPush = Bun.spawnSync({
+    cmd: ['bunx', 'prisma', 'db', 'push', '--accept-data-loss'],
+    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  if (dbPush.exitCode !== 0) {
+    throw new Error(`Failed to prepare test database: ${dbPush.stderr.toString()}`);
+  }
+
+  const { resetDbClientForTests } = await import('../src/lib/db');
+  await resetDbClientForTests();
+});
+
 beforeEach(() => {
   restoreEnv();
-  process.env.DATABASE_URL = 'file:./db/custom.db';
+  process.env.DATABASE_URL = TEST_DB_URL;
   process.env.OPENAI_API_KEY = 'test-key';
   process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
   delete process.env.OPENCLAW_CONFIG_PATH;
@@ -73,18 +93,25 @@ afterEach(async () => {
   const { resetInitForTests } = await import('../src/lib/init');
   const { resetAdapterInitializationForTests } = await import('../src/lib/adapters');
   const { resetExecRuntimeStateForTests } = await import('../src/lib/services/exec-runtime');
+  const { resetDbClientForTests } = await import('../src/lib/db');
   
   stopWatchingConfig();
   resetProviderRegistryForTests();
   resetInitForTests();
   resetAdapterInitializationForTests();
   resetExecRuntimeStateForTests();
+  await resetDbClientForTests();
   restoreEnv();
 
   for (const dir of createdDirs) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
   createdDirs.clear();
+});
+
+afterAll(async () => {
+  const { resetDbClientForTests } = await import('../src/lib/db');
+  await resetDbClientForTests();
 });
 
 describe('init system - config file checks', () => {
@@ -199,7 +226,7 @@ describe('init system - successful initialization', () => {
       },
     }`);
     process.env.OPENCLAW_CONFIG_PATH = configPath;
-    process.env.DATABASE_URL = 'file:./db/custom.db';
+    process.env.DATABASE_URL = TEST_DB_URL;
 
     const { initialize, isInitialized, resetInitForTests } = await import('../src/lib/init');
     
@@ -226,7 +253,7 @@ describe('init system - successful initialization', () => {
       },
     }`);
     process.env.OPENCLAW_CONFIG_PATH = configPath;
-    process.env.DATABASE_URL = 'file:./db/custom.db';
+    process.env.DATABASE_URL = TEST_DB_URL;
 
     const { initialize, isInitialized, resetInitForTests } = await import('../src/lib/init');
     
