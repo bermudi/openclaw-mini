@@ -20,6 +20,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => ({})) as {
       processDeliveries?: boolean;
       sweepOrphanedSubagents?: boolean;
+      sweepStaleBusyAgents?: boolean;
       cleanupOldTasks?: boolean;
       cleanupHistoryArchives?: boolean;
       decayMemoryConfidence?: boolean;
@@ -28,14 +29,16 @@ export async function POST(request: NextRequest) {
     const operations = {
       processDeliveries: body.processDeliveries ?? true,
       sweepOrphanedSubagents: body.sweepOrphanedSubagents ?? true,
+      sweepStaleBusyAgents: body.sweepStaleBusyAgents ?? true,
       cleanupOldTasks: body.cleanupOldTasks ?? false,
       cleanupHistoryArchives: body.cleanupHistoryArchives ?? false,
       decayMemoryConfidence: body.decayMemoryConfidence ?? false,
     };
 
-    const [deliveryStats, sweptCount, cleanedTasks, historyArchivesDeleted, memoryDecay] = await Promise.all([
+    const [deliveryStats, sweptCount, staleBusyAgents, cleanedTasks, historyArchivesDeleted, memoryDecay] = await Promise.all([
       operations.processDeliveries ? processPendingDeliveries() : Promise.resolve(null),
       operations.sweepOrphanedSubagents ? taskQueue.sweepOrphanedSubagents() : Promise.resolve(0),
+      operations.sweepStaleBusyAgents ? taskQueue.sweepStaleBusyAgents() : Promise.resolve(null),
       operations.cleanupOldTasks ? taskQueue.cleanupOldTasks() : Promise.resolve(0),
       operations.cleanupHistoryArchives ? cleanupHistoryArchivesForAllAgents() : Promise.resolve(0),
       operations.decayMemoryConfidence ? memoryService.decayMemoryConfidence() : Promise.resolve(null),
@@ -46,6 +49,7 @@ export async function POST(request: NextRequest) {
       data: {
         deliveries: deliveryStats,
         orphanedSubagentsSwept: sweptCount,
+        staleBusyAgents,
         tasksCleaned: cleanedTasks,
         historyArchivesDeleted,
         memoryDecay,

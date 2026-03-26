@@ -282,7 +282,7 @@ test('scheduler health endpoint exposes sqlite busy counters and maintenance res
     where: { id: recentTask.id },
     data: {
       status: 'completed',
-      completedAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
+      completedAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000),
     },
   })
 
@@ -323,6 +323,232 @@ test('scheduler health endpoint exposes sqlite busy counters and maintenance res
   })
   expect(remainingTasks.some(task => task.id === recentTask.id)).toBe(true)
   expect(remainingTasks.some(task => task.id === staleTask.id)).toBe(false)
+})
+
+test('restarted worker cannot claim a second task for the same agent', async () => {
+  const agent = await db.agent.create({
+    data: { name: 'restart-agent' },
+  })
+  const activeTask = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    payload: { text: 'active' },
+    source: 'restart:test',
+  })
+  const queuedTask = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    payload: { text: 'queued' },
+    source: 'restart:test',
+  })
+
+  const claimed = await taskQueue.startTask(activeTask.id)
+  expect(claimed?.status).toBe('processing')
+
+  const restart = Bun.spawnSync({
+    cmd: [
+      'bun',
+      '--eval',
+      `process.env.DATABASE_URL = ${JSON.stringify(TEST_DB_URL)}; const { taskQueue } = await import('./src/lib/services/task-queue'); const result = await taskQueue.startTask(${JSON.stringify(queuedTask.id)}); console.log(JSON.stringify({ claimed: Boolean(result), status: result?.status ?? null }));`,
+    ],
+    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+
+  expect(restart.exitCode).toBe(0)
+
+  const restartOutput = restart.stdout.toString().trim().split(/\r?\n/).filter(Boolean).at(-1) ?? ''
+  const restartResult = JSON.parse(restartOutput) as {
+    claimed: boolean;
+    status: string | null;
+  }
+
+  expect(restartResult.claimed).toBe(false)
+  expect(restartResult.status).toBeNull()
+
+  const queuedRecord = await db.task.findUnique({ where: { id: queuedTask.id } })
+  expect(queuedRecord?.status).toBe('pending')
+})
+
+test('startTask returns null for non-pending tasks instead of throwing', async () => {
+  const agent = await db.agent.create({
+    data: { name: 'invalid-claim-agent' },
+  })
+  const task = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    payload: { text: 'done' },
+    source: 'invalid-state:test',
+  })
+
+  await db.task.update({
+    where: { id: task.id },
+    data: {
+      status: 'completed',
+      completedAt: new Date(),
+    },
+  })
+
+  await expect(taskQueue.startTask(task.id)).resolves.toBeNull()
+})
+
+test('scheduler health sweep resets stale busy agents without active tasks', async () => {
+  const agent = await db.agent.create({
+    data: { name: 'stale-busy-agent' },
+  })
+  await db.agent.update({ where: { id: agent.id }, data: { status: 'busy' } })
+
+  const response = await schedulerHealthRoute.POST(bearerRequest('http://localhost/api/scheduler/health', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      processDeliveries: false,
+      sweepOrphanedSubagents: false,
+      sweepStaleBusyAgents: true,
+      cleanupOldTasks: false,
+    }),
+  }))
+
+  const body = await response.json() as {
+    success: boolean;
+    data: {
+      staleBusyAgents: {
+        inspected: number;
+        recovered: number;
+        errored: number;
+      } | null;
+    };
+  }
+
+  expect(response.status).toBe(200)
+  expect(body.success).toBe(true)
+  expect(body.data.staleBusyAgents?.recovered).toBe(1)
+  expect(body.data.staleBusyAgents?.errored).toBe(0)
+
+  const updatedAgent = await db.agent.findUnique({ where: { id: agent.id } })
+  expect(updatedAgent?.status).toBe('idle')
+
+  const auditLog = await db.auditLog.findFirst({
+    where: {
+      entityType: 'agent',
+      entityId: agent.id,
+      action: 'agent_recovered_idle',
+    },
+    orderBy: { createdAt: 'desc' },
+  })
+  expect(auditLog).not.toBeNull()
+})
+
+test('scheduler health sweep uses processing-task timestamps for stale detection', async () => {
+  const agent = await db.agent.create({
+    data: { name: 'timestamp-stale-agent' },
+  })
+  const task = await db.task.create({
+    data: {
+      agentId: agent.id,
+      type: 'message',
+      status: 'processing',
+      payload: JSON.stringify({ text: 'stuck' }),
+      startedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+    },
+  })
+
+  await db.agent.update({
+    where: { id: agent.id },
+    data: { status: 'busy' },
+  })
+
+  const response = await schedulerHealthRoute.POST(bearerRequest('http://localhost/api/scheduler/health', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      processDeliveries: false,
+      sweepOrphanedSubagents: false,
+      sweepStaleBusyAgents: true,
+      cleanupOldTasks: false,
+    }),
+  }))
+
+  const body = await response.json() as {
+    success: boolean;
+    data: {
+      staleBusyAgents: {
+        inspected: number;
+        recovered: number;
+        errored: number;
+      } | null;
+    };
+  }
+
+  expect(response.status).toBe(200)
+  expect(body.success).toBe(true)
+  expect(body.data.staleBusyAgents?.errored).toBe(1)
+
+  const updatedAgent = await db.agent.findUnique({ where: { id: agent.id } })
+  expect(updatedAgent?.status).toBe('error')
+
+  const updatedTask = await db.task.findUnique({ where: { id: task.id } })
+  expect(updatedTask?.status).toBe('processing')
+})
+
+test('scheduler health sweep marks unrecoverable stale busy agents as error', async () => {
+  const agent = await db.agent.create({
+    data: { name: 'stale-error-agent' },
+  })
+  const task = await db.task.create({
+    data: {
+      agentId: agent.id,
+      type: 'message',
+      status: 'processing',
+      payload: JSON.stringify({ text: 'stuck' }),
+      startedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+    },
+  })
+  await db.agent.update({ where: { id: agent.id }, data: { status: 'busy' } })
+
+  const response = await schedulerHealthRoute.POST(bearerRequest('http://localhost/api/scheduler/health', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      processDeliveries: false,
+      sweepOrphanedSubagents: false,
+      sweepStaleBusyAgents: true,
+      cleanupOldTasks: false,
+    }),
+  }))
+
+  const body = await response.json() as {
+    success: boolean;
+    data: {
+      staleBusyAgents: {
+        inspected: number;
+        recovered: number;
+        errored: number;
+      } | null;
+    };
+  }
+
+  expect(response.status).toBe(200)
+  expect(body.success).toBe(true)
+  expect(body.data.staleBusyAgents?.recovered).toBe(0)
+  expect(body.data.staleBusyAgents?.errored).toBe(1)
+
+  const updatedAgent = await db.agent.findUnique({ where: { id: agent.id } })
+  expect(updatedAgent?.status).toBe('error')
+
+  const auditLog = await db.auditLog.findFirst({
+    where: {
+      entityType: 'agent',
+      entityId: agent.id,
+      action: 'agent_recovery_failed',
+    },
+    orderBy: { createdAt: 'desc' },
+  })
+  expect(auditLog).not.toBeNull()
+
+  const taskRecord = await db.task.findUnique({ where: { id: task.id } })
+  expect(taskRecord?.status).toBe('processing')
 })
 
 test('sqlite busy helper maps lock errors to 503 guidance', () => {

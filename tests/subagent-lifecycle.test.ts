@@ -535,6 +535,50 @@ test('7.3 failTask cascades to children via failChildTasks', async () => {
   expect(updatedChild?.error).toBe('Parent task failed');
 });
 
+test('7.3 parent failure cascade stays single-pass on repeat invocation', async () => {
+  const agent = await agentService.createAgent({ name: 'Agent' });
+
+  const parent = await db.task.create({
+    data: { agentId: agent.id, type: 'message', status: 'processing', payload: '{}' },
+  });
+  const child = await db.task.create({
+    data: { agentId: agent.id, type: 'subagent', status: 'pending', payload: '{}', parentTaskId: parent.id },
+  });
+
+  await taskQueue.failChildTasks(parent.id, 'Parent task failed');
+  const firstChildState = await db.task.findUnique({ where: { id: child.id } });
+  const firstCompletedAt = firstChildState?.completedAt?.getTime() ?? null;
+
+  await new Promise(resolve => setTimeout(resolve, 20));
+  await taskQueue.failChildTasks(parent.id, 'Parent task failed');
+
+  const updatedChild = await db.task.findUnique({ where: { id: child.id } });
+  expect(updatedChild?.status).toBe('failed');
+  expect(updatedChild?.error).toBe('Parent task failed');
+  expect(updatedChild?.completedAt?.getTime() ?? undefined).toBe(firstCompletedAt ?? undefined);
+});
+
+test('7.3 failTask only cascades once even when called twice', async () => {
+  const agent = await agentService.createAgent({ name: 'Agent' });
+
+  const parent = await db.task.create({
+    data: { agentId: agent.id, type: 'message', status: 'pending', payload: '{}' },
+  });
+  const child = await db.task.create({
+    data: { agentId: agent.id, type: 'subagent', status: 'pending', payload: '{}', parentTaskId: parent.id },
+  });
+
+  await taskQueue.failTask(parent.id, 'something went wrong');
+  await taskQueue.failTask(parent.id, 'something went wrong again');
+
+  const updatedParent = await db.task.findUnique({ where: { id: parent.id } });
+  const updatedChild = await db.task.findUnique({ where: { id: child.id } });
+
+  expect(updatedParent?.status).toBe('failed');
+  expect(updatedChild?.status).toBe('failed');
+  expect(updatedChild?.error).toBe('Parent task failed');
+});
+
 // ============================================================
 // 7.4 Orphan Sweep Tests
 // ============================================================

@@ -96,8 +96,10 @@ class AgentExecutorService {
     }
 
     // Start task
-    await taskQueue.startTask(taskId);
-    await agentService.setAgentStatus(task.agentId, 'busy');
+    const claimedTask = await taskQueue.startTask(taskId);
+    if (!claimedTask) {
+      return { success: false, error: 'Task could not be claimed' };
+    }
 
     // Log audit event
     await auditService.log({
@@ -374,10 +376,7 @@ class AgentExecutorService {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-      // Fail task (failTask internally cascades via failChildTasks; 4.2 adds an explicit belt-and-suspenders call)
       await taskQueue.failTask(taskId, errorMessage);
-      await taskQueue.failChildTasks(taskId, 'Parent task failed');
-      await agentService.setAgentStatus(task.agentId, 'error');
 
       if (task.type === 'subagent' && task.parentTaskId) {
         void eventBus.emit('subagent:failed', {

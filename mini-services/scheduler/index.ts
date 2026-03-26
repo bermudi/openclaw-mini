@@ -7,6 +7,7 @@ import { initializeAdapters, getRegisteredAdapters } from '../../src/lib/adapter
 import { getRuntimeConfig, getPrismaLogConfig } from '../../src/lib/config/runtime';
 import { buildInternalAuthHeaders, ensureInternalAuthConfigured } from '../../src/lib/internal-auth';
 import { createConfiguredPrismaClient } from '../../src/lib/prisma-client';
+import { taskQueue } from '../../src/lib/services/task-queue';
 
 let prisma: PrismaClient | null = null;
 let prismaReady: Promise<void> | null = null;
@@ -164,6 +165,7 @@ async function recordTriggerFireViaApi(input: {
 async function runSchedulerMaintenanceViaApi(input?: {
   processDeliveries?: boolean;
   sweepOrphanedSubagents?: boolean;
+  sweepStaleBusyAgents?: boolean;
   cleanupOldTasks?: boolean;
   cleanupHistoryArchives?: boolean;
   decayMemoryConfidence?: boolean;
@@ -173,6 +175,11 @@ async function runSchedulerMaintenanceViaApi(input?: {
     deliveries?: {
       sent: number;
       failed: number;
+    } | null;
+    staleBusyAgents?: {
+      inspected: number;
+      recovered: number;
+      errored: number;
     } | null;
     tasksCleaned?: number;
     historyArchivesDeleted?: number;
@@ -195,6 +202,11 @@ async function runSchedulerMaintenanceViaApi(input?: {
       deliveries?: {
         sent: number;
         failed: number;
+      } | null;
+      staleBusyAgents?: {
+        inspected: number;
+        recovered: number;
+        errored: number;
       } | null;
       tasksCleaned?: number;
       historyArchivesDeleted?: number;
@@ -323,6 +335,7 @@ async function cleanupOldTasks() {
     const result = await runSchedulerMaintenanceViaApi({
       processDeliveries: false,
       sweepOrphanedSubagents: false,
+      sweepStaleBusyAgents: false,
       cleanupOldTasks: true,
     });
 
@@ -373,6 +386,7 @@ async function runDeliveryLoop() {
     const result = await runSchedulerMaintenanceViaApi({
       processDeliveries: true,
       sweepOrphanedSubagents: false,
+      sweepStaleBusyAgents: true,
       cleanupOldTasks: false,
     });
 
@@ -481,6 +495,7 @@ async function start() {
       const result = await runSchedulerMaintenanceViaApi({
         processDeliveries: false,
         sweepOrphanedSubagents: false,
+        sweepStaleBusyAgents: false,
         cleanupOldTasks: false,
         cleanupHistoryArchives: true,
         decayMemoryConfidence: true,
