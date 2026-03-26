@@ -27,13 +27,7 @@ The event bus SHALL provide an `emit(type, data)` method to publish events and a
 - **THEN** the Promise SHALL resolve without throwing
 - **AND** the event SHALL be logged as failed to broadcast
 
-### Requirement: Emit failure observability
-Failed broadcasts SHALL produce structured telemetry so operators can detect stale real-time/event behavior.
-
-#### Scenario: Emit failure increments failure signal
-- **WHEN** an event broadcast fails in `eventBus.emit()`
-- **THEN** the system SHALL record a structured error log containing event type and source
-- **AND** the system SHALL increment a failure counter/metric for broadcast failures
+## ADDED Requirements
 
 ### Requirement: Cross-process event delivery
 Events emitted from any process (Next.js app, scheduler, future services) SHALL be delivered to listeners in all processes. The backplane client in each process SHALL receive events from the WebSocket service and forward them to local listeners.
@@ -51,7 +45,14 @@ Events emitted from any process (Next.js app, scheduler, future services) SHALL 
 - **AND** the backplane client SHALL forward to local listeners
 - **AND** the original emitter's local listeners SHALL NOT receive the event twice (self-origin filtering)
 
-## ADDED Requirements
+
+### Requirement: Emit failure observability
+Failed broadcasts SHALL produce structured telemetry so operators can detect stale real-time/event behavior.
+
+#### Scenario: Emit failure increments failure signal
+- **WHEN** an event broadcast fails in `eventBus.emit()`
+- **THEN** the system SHALL record a structured error log containing event type and source
+- **AND** the system SHALL increment a failure counter/metric for broadcast failures
 
 ### Requirement: Async emit API
 The `emit()` method SHALL be asynchronous and return a `Promise<void>`. Callers MAY await the Promise to ensure delivery, or MAY ignore it for fire-and-forget semantics.
