@@ -21,6 +21,7 @@ let schedulerModule: typeof import('../mini-services/scheduler/index')
 let schedulerHealthRoute: typeof import('../src/app/api/scheduler/health/route')
 let taskRoute: typeof import('../src/app/api/tasks/route')
 let triggerFireRoute: typeof import('../src/app/api/internal/triggers/[id]/fire/route')
+let triggerManualFireRoute: typeof import('../src/app/api/triggers/[id]/fire/route')
 let wsClient: typeof import('../src/lib/services/ws-client').wsClient
 let sqliteConcurrency: typeof import('../src/lib/sqlite-concurrency')
 
@@ -129,6 +130,7 @@ beforeAll(async () => {
   schedulerHealthRoute = await import('../src/app/api/scheduler/health/route')
   taskRoute = await import('../src/app/api/tasks/route')
   triggerFireRoute = await import('../src/app/api/internal/triggers/[id]/fire/route')
+  triggerManualFireRoute = await import('../src/app/api/triggers/[id]/fire/route')
   ;({ wsClient } = await import('../src/lib/services/ws-client'))
   sqliteConcurrency = await import('../src/lib/sqlite-concurrency')
 })
@@ -184,10 +186,9 @@ test('single-writer flow routes scheduler lifecycle writes through APIs', async 
   })
   expect(createdTask).not.toBeNull()
 
-  const recordResult = await schedulerModule.recordTriggerFireViaApi({
+  const recordResult = await schedulerModule.fireTriggerViaApi({
     triggerId: trigger.id,
-    lastTriggered: '2026-03-25T00:00:00.000Z',
-    nextTrigger: '2026-03-25T00:30:00.000Z',
+    referenceTime: '2026-03-25T00:00:00.000Z',
   })
   expect(recordResult.success).toBe(true)
 
@@ -607,7 +608,7 @@ test('concurrent scheduler and API task writes keep both updates through the sin
   fetchSpy.mockRestore()
 })
 
-test('trigger fire internal API updates trigger without direct scheduler writes', async () => {
+test('scheduled trigger fire updates trigger through internal API boundary', async () => {
   const agent = await db.agent.create({
     data: { name: 'trigger-agent' },
   })
@@ -623,10 +624,7 @@ test('trigger fire internal API updates trigger without direct scheduler writes'
     bearerRequest(`http://localhost/api/internal/triggers/${trigger.id}/fire`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        lastTriggered: '2026-03-25T09:00:00.000Z',
-        nextTrigger: '2026-03-26T09:00:00.000Z',
-      }),
+      body: JSON.stringify({ referenceTime: '2026-03-25T09:00:00.000Z' }),
     }),
     { params: Promise.resolve({ id: trigger.id }) },
   )
@@ -635,6 +633,49 @@ test('trigger fire internal API updates trigger without direct scheduler writes'
   const updated = await db.trigger.findUnique({ where: { id: trigger.id } })
   expect(updated?.lastTriggered?.toISOString()).toBe('2026-03-25T09:00:00.000Z')
   expect(updated?.nextTrigger?.toISOString()).toBe('2026-03-26T09:00:00.000Z')
+  const body = await response.json() as { data?: { task?: { source?: string } } }
+  expect(body.data?.task?.source).toBe('cron:cron-trigger')
+})
+
+test('cron utility calculates next runs in UTC and rejects invalid expressions', async () => {
+  const { calculateNextTimeTrigger, validateCronExpression } = await import('../src/lib/services/time-trigger')
+
+  expect(calculateNextTimeTrigger('cron', { cronExpression: '0 9 * * *' }, new Date('2026-03-26T08:30:00Z'))?.toISOString()).toBe('2026-03-26T09:00:00.000Z')
+  expect(calculateNextTimeTrigger('cron', { cronExpression: '0 9 * * *' }, new Date('2026-03-26T10:00:00Z'))?.toISOString()).toBe('2026-03-27T09:00:00.000Z')
+  expect(calculateNextTimeTrigger('cron', { cronExpression: '0 * * * *' }, new Date('2026-03-26T10:15:00Z'))?.toISOString()).toBe('2026-03-26T11:00:00.000Z')
+  expect(calculateNextTimeTrigger('cron', { cronExpression: '0 9 * * 1' }, new Date('2026-03-24T08:30:00Z'))?.toISOString()).toBe('2026-03-30T09:00:00.000Z')
+
+  expect(() => validateCronExpression('not-a-cron')).toThrow('Invalid cron expression')
+})
+
+test('manual fire keeps schedule state while enqueuing a manual task', async () => {
+  const agent = await db.agent.create({
+    data: { name: 'manual-fire-agent' },
+  })
+  const trigger = await triggerService.createTrigger({
+    agentId: agent.id,
+    name: 'manual-cron',
+    type: 'cron',
+    config: { cronExpression: '0 9 * * *' },
+    enabled: true,
+  })
+  const initialNextTrigger = trigger.nextTrigger?.toISOString()
+
+  const response = await triggerManualFireRoute.POST(
+    bearerRequest(`http://localhost/api/triggers/${trigger.id}/fire`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    }),
+    { params: Promise.resolve({ id: trigger.id }) },
+  )
+
+  expect(response.status).toBe(200)
+  const body = await response.json() as { data?: { task?: { source?: string } } }
+  expect(body.data?.task?.source).toBe('manual:cron:manual-cron')
+
+  const updated = await db.trigger.findUnique({ where: { id: trigger.id } })
+  expect(updated?.lastTriggered).toBeNull()
+  expect(updated?.nextTrigger?.toISOString()).toBe(initialNextTrigger)
 })
 
 test('task creation still emits websocket-backed side effects through authoritative API', async () => {

@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Validate input type
-    const validTypes = ['message', 'heartbeat', 'cron', 'webhook', 'hook', 'a2a'];
+    const validTypes = ['message', 'webhook', 'hook', 'a2a'];
     if (!validTypes.includes(input.type)) {
       return NextResponse.json(
         { success: false, error: `Invalid input type. Must be one of: ${validTypes.join(', ')}` },

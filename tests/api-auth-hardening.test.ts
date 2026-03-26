@@ -32,6 +32,7 @@ let auditRoute: typeof import('../src/app/api/audit/route');
 let skillsRoute: typeof import('../src/app/api/skills/route');
 let workspaceRoute: typeof import('../src/app/api/workspace/route');
 let toolsRoute: typeof import('../src/app/api/tools/route');
+let triggerManualFireRoute: typeof import('../src/app/api/triggers/[id]/fire/route');
 let schedulerModule: typeof import('../mini-services/scheduler/index');
 let wsModule: typeof import('../mini-services/openclaw-ws/index');
 let agentService: typeof import('../src/lib/services/agent-service').agentService;
@@ -122,6 +123,7 @@ beforeAll(async () => {
   skillsRoute = await import('../src/app/api/skills/route');
   workspaceRoute = await import('../src/app/api/workspace/route');
   toolsRoute = await import('../src/app/api/tools/route');
+  triggerManualFireRoute = await import('../src/app/api/triggers/[id]/fire/route');
   schedulerModule = await import('../mini-services/scheduler/index');
   wsModule = await import('../mini-services/openclaw-ws/index');
 
@@ -300,6 +302,36 @@ describe('service-to-service and websocket auth', () => {
     expect(headers.get('content-type')).toBe('application/json');
 
     fetchSpy.mockRestore();
+  });
+
+  test('manual trigger fire requires auth and rejects unsupported trigger types', async () => {
+    const agent = await agentService.createAgent({ name: 'Manual Fire Agent' });
+    const webhookTrigger = await db.trigger.create({
+      data: {
+        agentId: agent.id,
+        name: 'webhook-trigger',
+        type: 'webhook',
+        config: JSON.stringify({ endpoint: '/hook' }),
+      },
+    });
+
+    const unauthorizedResponse = await triggerManualFireRoute.POST(
+      new NextRequest(`http://localhost/api/triggers/${webhookTrigger.id}/fire`, { method: 'POST' }),
+      { params: Promise.resolve({ id: webhookTrigger.id }) },
+    );
+    expect(unauthorizedResponse.status).toBe(401);
+
+    const unsupportedResponse = await triggerManualFireRoute.POST(
+      bearerRequest(`http://localhost/api/triggers/${webhookTrigger.id}/fire`, {
+        method: 'POST',
+      }),
+      { params: Promise.resolve({ id: webhookTrigger.id }) },
+    );
+    const unsupportedBody = await unsupportedResponse.json() as { success?: boolean; error?: string };
+
+    expect(unsupportedResponse.status).toBe(400);
+    expect(unsupportedBody.success).toBe(false);
+    expect(unsupportedBody.error).toContain('heartbeat and cron triggers');
   });
 
   test('websocket /broadcast rejects missing token and accepts valid bearer token', async () => {

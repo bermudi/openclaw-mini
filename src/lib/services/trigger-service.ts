@@ -2,8 +2,15 @@
 // Manage scheduled and event-based triggers
 
 import { db } from '@/lib/db';
-import { Trigger, TriggerType, TriggerConfig } from '@/lib/types';
+import { Task, Trigger, TriggerType, TriggerConfig } from '@/lib/types';
 import { hookSubscriptionManager } from './hook-subscription-manager';
+import { taskQueue } from './task-queue';
+import {
+  calculateNextTimeTrigger,
+  TriggerFireError,
+  TriggerValidationError,
+  validateCronExpression,
+} from './time-trigger';
 
 export interface CreateTriggerInput {
   agentId: string;
@@ -19,9 +26,14 @@ export interface UpdateTriggerInput {
   enabled?: boolean;
 }
 
-export interface RecordTriggerFireInput {
-  lastTriggered: Date;
-  nextTrigger: Date;
+export interface FireTimeBasedTriggerInput {
+  mode: 'scheduled' | 'manual';
+  referenceTime?: Date;
+}
+
+export interface FireTimeBasedTriggerResult {
+  trigger: Trigger;
+  task: Task;
 }
 
 class TriggerService {
@@ -29,6 +41,9 @@ class TriggerService {
    * Create a new trigger
    */
   async createTrigger(input: CreateTriggerInput): Promise<Trigger> {
+    this.validateTriggerConfig(input.type, input.config);
+    const nextTrigger = calculateNextTimeTrigger(input.type, input.config);
+
     const trigger = await db.trigger.create({
       data: {
         agentId: input.agentId,
@@ -36,7 +51,7 @@ class TriggerService {
         type: input.type,
         config: JSON.stringify(input.config),
         enabled: input.enabled ?? true,
-        nextTrigger: this.calculateNextTrigger(input.type, input.config),
+        nextTrigger: nextTrigger ?? null,
       },
     });
 
@@ -111,13 +126,21 @@ class TriggerService {
       return null;
     }
 
+    if (input.config) {
+      this.validateTriggerConfig(trigger.type as TriggerType, input.config);
+    }
+
+    const nextTrigger = input.config
+      ? calculateNextTimeTrigger(trigger.type as TriggerType, input.config)
+      : undefined;
+
     const updated = await db.trigger.update({
       where: { id: triggerId },
       data: {
         ...(input.name && { name: input.name }),
         ...(input.config && { 
           config: JSON.stringify(input.config),
-          nextTrigger: this.calculateNextTrigger(trigger.type as TriggerType, input.config),
+          nextTrigger: nextTrigger ?? null,
         }),
         ...(input.enabled !== undefined && { enabled: input.enabled }),
       },
@@ -188,47 +211,101 @@ class TriggerService {
     return this.mapTrigger(updated);
   }
 
-  async recordTriggerFire(triggerId: string, input: RecordTriggerFireInput): Promise<Trigger | null> {
+  async fireTimeBasedTrigger(
+    triggerId: string,
+    input: FireTimeBasedTriggerInput,
+  ): Promise<FireTimeBasedTriggerResult> {
     const trigger = await db.trigger.findUnique({
       where: { id: triggerId },
     });
 
     if (!trigger) {
-      return null;
+      throw new TriggerFireError('Trigger not found', 404);
     }
 
-    const updated = await db.trigger.update({
-      where: { id: triggerId },
-      data: {
-        lastTriggered: input.lastTriggered,
-        nextTrigger: input.nextTrigger,
-      },
+    if (!trigger.enabled) {
+      throw new TriggerFireError('Trigger is disabled', 400);
+    }
+
+    if (trigger.type !== 'heartbeat' && trigger.type !== 'cron') {
+      throw new TriggerFireError('Manual fire only supports heartbeat and cron triggers', 400);
+    }
+
+    const referenceTime = input.referenceTime ?? new Date();
+    const triggerType = trigger.type as 'heartbeat' | 'cron';
+    const parsedTrigger = this.mapTrigger(trigger);
+    const payload = triggerType === 'cron'
+      ? {
+          triggerId,
+          scheduledTime: referenceTime.toISOString(),
+          timestamp: referenceTime.toISOString(),
+        }
+      : {
+          triggerId,
+          timestamp: referenceTime.toISOString(),
+        };
+
+    const task = await this.createTriggerTask({
+      agentId: trigger.agentId,
+      triggerType,
+      triggerName: trigger.name,
+      mode: input.mode,
+      payload,
     });
 
-    return this.mapTrigger(updated);
-  }
+    if (input.mode === 'scheduled') {
+      const nextTrigger = calculateNextTimeTrigger(triggerType, parsedTrigger.config, referenceTime);
 
-  /**
-   * Calculate next trigger time based on type and config
-   */
-  private calculateNextTrigger(type: TriggerType, config: TriggerConfig): Date {
-    const next = new Date();
+      if (!nextTrigger) {
+        throw new TriggerFireError('Unable to calculate next trigger', 400);
+      }
 
-    switch (type) {
-      case 'heartbeat':
-        next.setMinutes(next.getMinutes() + (config.interval ?? 30));
-        break;
-      case 'cron':
-        // Simplified: next day at same time for MVP
-        next.setDate(next.getDate() + 1);
-        break;
-      case 'webhook':
-      case 'hook':
-        // These are event-driven, no next trigger
-        return next;
+      const updated = await db.trigger.update({
+        where: { id: triggerId },
+        data: {
+          lastTriggered: referenceTime,
+          nextTrigger,
+        },
+      });
+
+      return {
+        trigger: this.mapTrigger(updated),
+        task,
+      };
     }
 
-    return next;
+    return {
+      trigger: parsedTrigger,
+      task,
+    };
+  }
+
+  private async createTriggerTask(input: {
+    agentId: string;
+    triggerType: 'heartbeat' | 'cron';
+    triggerName: string;
+    mode: 'scheduled' | 'manual';
+    payload: Record<string, unknown>;
+  }): Promise<Task> {
+    return taskQueue.createTask({
+      agentId: input.agentId,
+      type: input.triggerType,
+      priority: input.triggerType === 'cron' ? 6 : 7,
+      payload: input.payload,
+      source: `${input.mode === 'manual' ? 'manual:' : ''}${input.triggerType}:${input.triggerName}`,
+    });
+  }
+
+  private validateTriggerConfig(type: TriggerType, config: TriggerConfig): void {
+    if (type !== 'cron') {
+      return;
+    }
+
+    if (!config.cronExpression?.trim()) {
+      throw new TriggerValidationError('Cron triggers require a cronExpression');
+    }
+
+    validateCronExpression(config.cronExpression);
   }
 
   /**

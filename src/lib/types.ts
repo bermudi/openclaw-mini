@@ -257,19 +257,6 @@ export interface MessageInput {
   visionInputs?: VisionInput[];
 }
 
-export interface HeartbeatInput {
-  type: 'heartbeat';
-  triggerId: string;
-  timestamp: Date;
-}
-
-export interface CronInput {
-  type: 'cron';
-  triggerId: string;
-  scheduledTime: Date;
-  timestamp: Date;
-}
-
 export interface WebhookInput {
   type: 'webhook';
   source: string;
@@ -291,7 +278,7 @@ export interface A2AInput {
   data?: Record<string, unknown>;
 }
 
-export type Input = MessageInput | HeartbeatInput | CronInput | WebhookInput | HookInput | A2AInput;
+export type Input = MessageInput | WebhookInput | HookInput | A2AInput;
 
 // API Response Types
 export interface ApiResponse<T = unknown> {

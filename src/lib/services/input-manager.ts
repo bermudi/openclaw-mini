@@ -8,13 +8,10 @@ import {
   DeliveryTarget,
   Input, 
   MessageInput, 
-  HeartbeatInput, 
-  CronInput, 
   WebhookInput, 
   HookInput, 
   A2AInput,
   ChannelType,
-  TaskType 
 } from '@/lib/types';
 
 export interface ProcessInputResult {
@@ -32,10 +29,6 @@ class InputManagerService {
     switch (input.type) {
       case 'message':
         return this.processMessage(input, targetAgentId);
-      case 'heartbeat':
-        return this.processHeartbeat(input);
-      case 'cron':
-        return this.processCron(input);
       case 'webhook':
         return this.processWebhook(input, targetAgentId);
       case 'hook':
@@ -109,79 +102,6 @@ class InputManagerService {
     });
 
     return { success: true, taskId: task.id, sessionId: session.id };
-  }
-
-  /**
-   * Process heartbeat trigger
-   */
-  private async processHeartbeat(input: HeartbeatInput): Promise<ProcessInputResult> {
-    const trigger = await db.trigger.findUnique({
-      where: { id: input.triggerId },
-    });
-
-    if (!trigger || !trigger.enabled) {
-      return { success: false, error: 'Trigger not found or disabled' };
-    }
-
-    // Update trigger timestamps
-    await db.trigger.update({
-      where: { id: input.triggerId },
-      data: {
-        lastTriggered: new Date(),
-        nextTrigger: this.calculateNextHeartbeat(trigger.config),
-      },
-    });
-
-    // Create task
-    const task = await taskQueue.createTask({
-      agentId: trigger.agentId,
-      type: 'heartbeat',
-      priority: 7, // Heartbeats have lower priority
-      payload: {
-        triggerId: input.triggerId,
-        timestamp: input.timestamp,
-      },
-      source: `heartbeat:${trigger.name}`,
-    });
-
-    return { success: true, taskId: task.id };
-  }
-
-  /**
-   * Process cron trigger
-   */
-  private async processCron(input: CronInput): Promise<ProcessInputResult> {
-    const trigger = await db.trigger.findUnique({
-      where: { id: input.triggerId },
-    });
-
-    if (!trigger || !trigger.enabled) {
-      return { success: false, error: 'Trigger not found or disabled' };
-    }
-
-    // Update trigger timestamps
-    await db.trigger.update({
-      where: { id: input.triggerId },
-      data: {
-        lastTriggered: new Date(),
-        nextTrigger: this.calculateNextCron(trigger.config),
-      },
-    });
-
-    // Create task
-    const task = await taskQueue.createTask({
-      agentId: trigger.agentId,
-      type: 'cron',
-      priority: 6,
-      payload: {
-        triggerId: input.triggerId,
-        scheduledTime: input.scheduledTime,
-        timestamp: input.timestamp,
-      },
-      source: `cron:${trigger.name}`,
-    });
-
-    return { success: true, taskId: task.id };
   }
 
   /**
@@ -357,39 +277,6 @@ class InputManagerService {
     return session;
   }
 
-  /**
-   * Calculate next heartbeat time
-   */
-  private calculateNextHeartbeat(configStr: string): Date {
-    try {
-      const config = JSON.parse(configStr);
-      const interval = config.interval ?? 30; // Default 30 minutes
-      const next = new Date();
-      next.setMinutes(next.getMinutes() + interval);
-      return next;
-    } catch {
-      const next = new Date();
-      next.setMinutes(next.getMinutes() + 30);
-      return next;
-    }
-  }
-
-  /**
-   * Calculate next cron time (simplified)
-   */
-  private calculateNextCron(configStr: string): Date {
-    try {
-      const config = JSON.parse(configStr);
-      // For MVP, just add 24 hours as a simple implementation
-      const next = new Date();
-      next.setDate(next.getDate() + 1);
-      return next;
-    } catch {
-      const next = new Date();
-      next.setDate(next.getDate() + 1);
-      return next;
-    }
-  }
 }
 
 export const inputManager = new InputManagerService();

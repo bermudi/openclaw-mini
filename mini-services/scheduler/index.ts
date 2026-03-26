@@ -7,7 +7,6 @@ import { initializeAdapters, getRegisteredAdapters } from '../../src/lib/adapter
 import { getRuntimeConfig, getPrismaLogConfig } from '../../src/lib/config/runtime';
 import { buildInternalAuthHeaders, ensureInternalAuthConfigured } from '../../src/lib/internal-auth';
 import { createConfiguredPrismaClient } from '../../src/lib/prisma-client';
-import { taskQueue } from '../../src/lib/services/task-queue';
 
 let prisma: PrismaClient | null = null;
 let prismaReady: Promise<void> | null = null;
@@ -139,24 +138,39 @@ async function createTaskViaApi(input: {
   return { success: true, data: body.data };
 }
 
+async function fireTriggerViaApi(input: {
+  triggerId: string;
+  referenceTime?: string;
+}): Promise<{ success: boolean; data?: { trigger: unknown; task: unknown }; error?: string }> {
+  const response = await fetch(`${APP_BASE_URL}/api/internal/triggers/${input.triggerId}/fire`, {
+    method: 'POST',
+    headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      ...(input.referenceTime && { referenceTime: input.referenceTime }),
+    }),
+  });
+
+  const body = await response.json() as { success?: boolean; data?: { trigger: unknown; task: unknown }; error?: string };
+
+  if (!response.ok || !body.success || !body.data) {
+    return { success: false, error: body.error ?? `Trigger fire failed with status ${response.status}` };
+  }
+
+  return { success: true, data: body.data };
+}
+
 async function recordTriggerFireViaApi(input: {
   triggerId: string;
   lastTriggered: string;
   nextTrigger: string;
 }): Promise<{ success: boolean; error?: string }> {
-  const response = await fetch(`${APP_BASE_URL}/api/internal/triggers/${input.triggerId}/fire`, {
-    method: 'POST',
-    headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({
-      lastTriggered: input.lastTriggered,
-      nextTrigger: input.nextTrigger,
-    }),
+  const result = await fireTriggerViaApi({
+    triggerId: input.triggerId,
+    referenceTime: input.lastTriggered,
   });
 
-  const body = await response.json() as { success?: boolean; error?: string };
-
-  if (!response.ok || !body.success) {
-    return { success: false, error: body.error ?? `Trigger update failed with status ${response.status}` };
+  if (!result.success) {
+    return { success: false, error: result.error };
   }
 
   return { success: true };
@@ -237,6 +251,7 @@ async function processDueTriggers() {
     const dueTriggers = await prisma.trigger.findMany({
       where: {
         enabled: true,
+        type: { in: ['heartbeat', 'cron'] },
         nextTrigger: { lte: now }
       },
       include: { agent: true }
@@ -246,84 +261,23 @@ async function processDueTriggers() {
       console.log(`[Scheduler] Firing trigger ${trigger.name} (${trigger.type})`);
       
       try {
-        const taskResult = await createTaskViaApi({
-          agentId: trigger.agentId,
-          type: trigger.type === 'cron' ? 'cron' : 'heartbeat',
-          priority: trigger.type === 'cron' ? 6 : 7,
-          payload: trigger.type === 'cron'
-            ? {
-                triggerId: trigger.id,
-                scheduledTime: now.toISOString(),
-                timestamp: now.toISOString(),
-              }
-            : {
-                triggerId: trigger.id,
-                timestamp: now.toISOString(),
-              },
-          source: `${trigger.type}:${trigger.name}`,
-        });
-
-        if (!taskResult.success || !taskResult.data?.id) {
-          throw new Error(taskResult.error ?? `Failed to create task for trigger ${trigger.id}`);
-        }
-
-        // Update trigger timestamps
-        const config = JSON.parse(trigger.config);
-        let nextTrigger: Date;
-
-        if (trigger.type === 'heartbeat' && config.interval) {
-          nextTrigger = new Date(now.getTime() + config.interval * 60000);
-        } else if (trigger.type === 'cron' && config.cronExpression) {
-          // Parse cron and get next occurrence
-          nextTrigger = getNextCronDate(config.cronExpression);
-        } else {
-          // Default: add 1 hour
-          nextTrigger = new Date(now.getTime() + 3600000);
-        }
-
-        const triggerUpdateResult = await recordTriggerFireViaApi({
+        const fireResult = await fireTriggerViaApi({
           triggerId: trigger.id,
-          lastTriggered: now.toISOString(),
-          nextTrigger: nextTrigger.toISOString(),
+          referenceTime: now.toISOString(),
         });
 
-        if (!triggerUpdateResult.success) {
-          throw new Error(triggerUpdateResult.error ?? `Failed to record trigger fire ${trigger.id}`);
+        if (!fireResult.success || !fireResult.data) {
+          throw new Error(fireResult.error ?? `Failed to fire trigger ${trigger.id}`);
         }
 
         triggersFired++;
-        console.log(`[Scheduler] Created task ${taskResult.data.id} for trigger ${trigger.name}`);
+        console.log(`[Scheduler] Fired trigger ${trigger.name}`);
       } catch (error) {
         console.error(`[Scheduler] Failed to fire trigger ${trigger.id}:`, error);
       }
     }
   } catch (error) {
     console.error('[Scheduler] Error processing triggers:', error);
-  }
-}
-
-// ============================================
-// Cron Expression Parser
-// ============================================
-type CronExpressionParser = {
-  parseExpression?: (expression: string) => {
-    next: () => {
-      toDate: () => Date;
-    };
-  };
-};
-
-function getNextCronDate(expression: string): Date {
-  try {
-    const schedule = (cron as CronExpressionParser).parseExpression?.(expression);
-    if (!schedule) {
-      throw new Error('Cron expression parsing is unavailable');
-    }
-    return schedule.next().toDate();
-  } catch (error) {
-    console.error('[Scheduler] Invalid cron expression:', expression);
-    // Fallback: 1 hour from now
-    return new Date(Date.now() + 3600000);
   }
 }
 
@@ -559,6 +513,7 @@ export {
   processDueTriggers,
   executeTaskViaApi,
   createTaskViaApi,
+  fireTriggerViaApi,
   recordTriggerFireViaApi,
   runSchedulerMaintenanceViaApi,
 };

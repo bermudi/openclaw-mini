@@ -21,9 +21,12 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
+    const status = typeof error === 'object' && error && 'status' in error && typeof (error as { status?: unknown }).status === 'number'
+      ? (error as { status: number }).status
+      : 500;
     return NextResponse.json(
       { success: false, error: message },
-      { status: 500 }
+      { status }
     );
   }
 }
@@ -59,9 +62,12 @@ export async function POST(request: NextRequest) {
     if (storageResponse) return storageResponse;
 
     const message = error instanceof Error ? error.message : 'Unknown error';
+    const status = typeof error === 'object' && error && 'status' in error && typeof (error as { status?: unknown }).status === 'number'
+      ? (error as { status: number }).status
+      : 500;
     return NextResponse.json(
       { success: false, error: message },
-      { status: 500 }
+      { status }
     );
   }
 }
