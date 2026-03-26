@@ -3,6 +3,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { memoryService } from '@/lib/services/memory-service';
+import { requireInternalAuth } from '@/lib/api-auth';
 
 // GET /api/agents/[id]/memory - Get agent memories
 export async function GET(
@@ -10,6 +11,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const authResponse = await requireInternalAuth(_request);
+    if (authResponse) return authResponse;
+
     const { id } = await params;
     const memories = await memoryService.getAgentMemories(id);
 
@@ -32,6 +36,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const { id } = await params;
     const body = await request.json();
     const { key, value, entry, category } = body;

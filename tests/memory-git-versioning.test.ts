@@ -70,6 +70,7 @@ beforeAll(async () => {
   process.env.DATABASE_URL = TEST_DB_URL;
   process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? 'test-key';
   process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? 'test-key';
+  process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
   process.env.GIT_MEMORY_ENABLED = undefined as unknown as string;
   delete process.env.GIT_MEMORY_ENABLED;
 
@@ -107,6 +108,7 @@ beforeEach(async () => {
   await resetDb();
   cleanupAgentMemoryDirs();
   cleanupTempDirs();
+  process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
   delete process.env.GIT_MEMORY_ENABLED;
   MemoryGit.resetAvailabilityCache();
 });
@@ -116,6 +118,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  delete process.env.OPENCLAW_ALLOW_INSECURE_LOCAL;
   cleanupAgentMemoryDirs();
   cleanupTempDirs();
   await resetDb();

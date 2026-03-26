@@ -20,6 +20,16 @@ OpenClaw Mini is a lightweight OpenClaw-inspired agent runtime built with Next.j
    bun run dev
    ```
 
+## Internal API auth
+
+OpenClaw Mini now protects admin APIs and trusted service boundaries with `Authorization: Bearer <token>`.
+
+- Set `OPENCLAW_API_KEY` for the Next.js admin APIs, scheduler, and WebSocket `/broadcast` ingress.
+- The scheduler and internal WS client automatically send this bearer token once it is configured.
+- Startup fails fast if `OPENCLAW_API_KEY` is missing.
+- For local-only testing, you can temporarily set `OPENCLAW_ALLOW_INSECURE_LOCAL=true` to bypass internal auth with a warning.
+- Webhook signature verification remains separate; webhook secrets still use their own signature headers.
+
 ## Runtime provider configuration
 
 Provider and model configuration now lives in `openclaw.json`.

@@ -181,6 +181,7 @@ beforeAll(async () => {
   process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? 'test-key';
   process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? 'test-key';
   process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
+  process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-agent-architecture-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
   process.env.OPENCLAW_SKILLS_DIR = SKILLS_DIR;
@@ -221,6 +222,7 @@ beforeEach(async () => {
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();
   await resetDb();
+  process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
   resetWorkspaceDir();
   skillService.clearSkillCache();
   resetSkillsDir();
@@ -236,6 +238,7 @@ beforeEach(async () => {
 afterAll(async () => {
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();
+  delete process.env.OPENCLAW_ALLOW_INSECURE_LOCAL;
   await resetDb();
   await db.$disconnect();
   cleanupMemoryDirs();
@@ -647,7 +650,7 @@ test('GET /api/skills returns built-in and managed provenance', async () => {
 
     skillService.clearSkillCache();
     const skillsRoute = await import('../src/app/api/skills/route');
-    const response = await skillsRoute.GET();
+    const response = await skillsRoute.GET(new NextRequest('http://localhost/api/skills'));
     const body = await response.json() as {
       success: boolean;
       data: Array<{ name: string; source: string }>;

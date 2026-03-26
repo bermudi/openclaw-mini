@@ -142,6 +142,7 @@ beforeAll(async () => {
   process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? 'test-key';
   process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? 'test-key';
   process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
+  process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-channel-adapters-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
   process.env.OPENCLAW_MEMORY_DIR = MEMORY_ROOT;
@@ -173,6 +174,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();
+  process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
   deliveryService.resetAdaptersForTests();
   adapterIndex.resetAdapterInitializationForTests();
   mockSentMessages.length = 0;
@@ -181,6 +183,7 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  delete process.env.OPENCLAW_ALLOW_INSECURE_LOCAL;
   await resetDb();
   await db.$disconnect();
   cleanupMemoryDirs();

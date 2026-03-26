@@ -3,10 +3,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getTool, getToolMeta, getToolSchemas } from '@/lib/tools';
+import { requireInternalAuth } from '@/lib/api-auth';
 
 // GET /api/tools - List all available tools
 export async function GET(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const { searchParams } = new URL(request.url);
     const toolName = searchParams.get('name');
 
@@ -54,6 +58,9 @@ export async function GET(request: NextRequest) {
 // POST /api/tools - Execute a tool directly (for testing)
 export async function POST(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const body = await request.json();
     const { tool: toolName, params } = body;
 

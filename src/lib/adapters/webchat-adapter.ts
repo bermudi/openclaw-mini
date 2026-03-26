@@ -1,4 +1,5 @@
 import type { ChannelAdapter, DeliveryTarget } from '@/lib/types';
+import { buildInternalAuthHeaders } from '@/lib/internal-auth';
 
 const WS_URL = process.env.OPENCLAW_WS_URL ?? 'http://localhost:3003';
 
@@ -10,7 +11,7 @@ export class WebChatAdapter implements ChannelAdapter {
 
     const response = await fetch(`${WS_URL}/broadcast`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         event: {
           type: 'session:updated',

@@ -16,6 +16,7 @@ import { registerOptionalTools } from '@/lib/tools';
 import { memoryIndexingService } from '@/lib/services/memory-indexing';
 import { getRuntimeConfig } from '@/lib/config/runtime';
 import { getExecStartupDiagnostics } from '@/lib/services/exec-runtime';
+import { getInternalAuthStartupStatus, INTERNAL_AUTH_ENV_VAR, INSECURE_LOCAL_AUTH_ENV_VAR } from '@/lib/internal-auth';
 
 let initialized = false;
 let initResult: InitResult | null = null;
@@ -113,6 +114,24 @@ export async function initialize(): Promise<InitResult> {
       result.softWarnings.push({
         type: 'exec-runtime',
         warning: 'Docker/Podman not detected; sandbox and locked-down exec tiers will fail until a supported container runtime is installed',
+      });
+    }
+  }
+
+  // 4b. Internal admin/service auth
+  if (result.hardFailures.length === 0) {
+    const authStatus = getInternalAuthStartupStatus();
+
+    if (authStatus.error) {
+      result.hardFailures.push({
+        type: 'internal-auth',
+        error: authStatus.error,
+        guidance: `Set ${INTERNAL_AUTH_ENV_VAR} for secure bearer auth, or set ${INSECURE_LOCAL_AUTH_ENV_VAR}=true for local-only testing.`,
+      });
+    } else if (authStatus.warning) {
+      result.softWarnings.push({
+        type: 'internal-auth',
+        warning: authStatus.warning,
       });
     }
   }

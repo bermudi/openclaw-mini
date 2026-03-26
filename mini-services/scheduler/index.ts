@@ -7,10 +7,13 @@ import { initializeAdapters, getRegisteredAdapters } from '../../src/lib/adapter
 import { processPendingDeliveries } from '../../src/lib/services/delivery-service';
 import { memoryService } from '../../src/lib/services/memory-service';
 import { getRuntimeConfig, getPrismaLogConfig } from '../../src/lib/config/runtime';
+import { buildInternalAuthHeaders, ensureInternalAuthConfigured } from '../../src/lib/internal-auth';
 
 const prisma = new PrismaClient({
   log: getPrismaLogConfig(),
 });
+
+const APP_BASE_URL = process.env.OPENCLAW_APP_URL || 'http://localhost:3000';
 
 // Status tracking
 let isRunning = false;
@@ -54,13 +57,8 @@ async function processPendingTasks() {
 
       // Execute the task via API call to main app
       try {
-        const response = await fetch(`http://localhost:3000/api/tasks/${task.id}/execute`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
-        });
+        const result = await executeTaskViaApi(task.id);
 
-        const result = await response.json();
-        
         if (result.success) {
           tasksProcessed++;
           console.log(`[Scheduler] Task ${task.id} completed successfully`);
@@ -74,6 +72,15 @@ async function processPendingTasks() {
   } catch (error) {
     console.error('[Scheduler] Error processing tasks:', error);
   }
+}
+
+async function executeTaskViaApi(taskId: string): Promise<{ success: boolean; error?: string }> {
+  const response = await fetch(`${APP_BASE_URL}/api/tasks/${taskId}/execute`, {
+    method: 'POST',
+    headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
+  });
+
+  return response.json();
 }
 
 // ============================================
@@ -297,6 +304,7 @@ async function checkAdapterHealth(): Promise<void> {
 }
 
 async function start() {
+  ensureInternalAuthConfigured('Scheduler');
   isRunning = true;
   initializeAdapters();
   await startAdapters();
@@ -359,4 +367,8 @@ process.on('SIGINT', () => { void shutdown(); });
 process.on('SIGTERM', () => { void shutdown(); });
 
 // Start the service
-start().catch(console.error);
+if (import.meta.main) {
+  start().catch(console.error);
+}
+
+export { start, processPendingTasks, executeTaskViaApi };

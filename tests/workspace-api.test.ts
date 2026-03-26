@@ -12,10 +12,12 @@ let workspaceDir = '';
 beforeEach(() => {
   workspaceDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-workspace-api-'));
   process.env.OPENCLAW_WORKSPACE_DIR = workspaceDir;
+  process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
 });
 
 afterEach(() => {
   delete process.env.OPENCLAW_WORKSPACE_DIR;
+  delete process.env.OPENCLAW_ALLOW_INSECURE_LOCAL;
   if (workspaceDir) {
     fs.rmSync(workspaceDir, { recursive: true, force: true });
   }

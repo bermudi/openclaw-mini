@@ -3,6 +3,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { agentExecutor } from '@/lib/services/agent-executor';
+import { requireInternalAuth } from '@/lib/api-auth';
 
 // POST /api/tasks/[id]/execute - Execute a task
 export async function POST(
@@ -10,6 +11,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const authResponse = await requireInternalAuth(_request);
+    if (authResponse) return authResponse;
+
     const { id } = await params;
     const result = await agentExecutor.executeTask(id);
 

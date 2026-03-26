@@ -10,6 +10,7 @@ import { taskQueue } from '@/lib/services/task-queue';
 import { sessionService } from '@/lib/services/session-service';
 import { db } from '@/lib/db';
 import { auditService } from '@/lib/services/audit-service';
+import { buildInternalAuthHeaders } from '@/lib/internal-auth';
 import { getSkillForSubAgent } from '@/lib/services/skill-service';
 import { getBuiltInSkillsDir, getManagedSkillsDir } from '@/lib/services/skill-loaders';
 import { getOverrideFieldsApplied } from '@/lib/subagent-config';
@@ -1217,7 +1218,7 @@ registerTool(
       try {
         const response = await fetch(`http://localhost:3000/api/agents/${agentId}/memory`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             key: 'system/history',
             entry: `[${resolvedCategory.toUpperCase()}] ${event}`,

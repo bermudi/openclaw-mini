@@ -3,10 +3,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { taskQueue } from '@/lib/services/task-queue';
+import { requireInternalAuth } from '@/lib/api-auth';
 
 // GET /api/tasks - List tasks with optional filters
 export async function GET(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const { searchParams } = new URL(request.url);
     const agentId = searchParams.get('agentId') ?? undefined;
     const status = searchParams.get('status') ?? undefined;
@@ -39,6 +43,9 @@ export async function GET(request: NextRequest) {
 // POST /api/tasks - Create a new task
 export async function POST(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const body = await request.json();
     const { agentId, sessionId, type, priority, payload, source } = body;
 

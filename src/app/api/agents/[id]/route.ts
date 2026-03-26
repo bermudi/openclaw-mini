@@ -3,6 +3,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { agentService } from '@/lib/services/agent-service';
+import { requireInternalAuth } from '@/lib/api-auth';
 import { z } from 'zod';
 
 const updateAgentSchema = z.object({
@@ -21,6 +22,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const authResponse = await requireInternalAuth(_request);
+    if (authResponse) return authResponse;
+
     const { id } = await params;
     const result = await agentService.getAgentWithStats(id);
     
@@ -50,6 +54,9 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const { id } = await params;
     const body = await request.json();
     const parsed = updateAgentSchema.safeParse(body);
@@ -93,6 +100,9 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const authResponse = await requireInternalAuth(_request);
+    if (authResponse) return authResponse;
+
     const { id } = await params;
     const deleted = await agentService.deleteAgent(id);
     

@@ -1,12 +1,16 @@
 // API Route: /api/skills
 // Skill discovery endpoint
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { loadAllSkills } from '@/lib/services/skill-service';
+import { requireInternalAuth } from '@/lib/api-auth';
 
 // GET /api/skills - List all discovered skills
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const skills = await loadAllSkills();
 
     const data = skills.map(skill => ({

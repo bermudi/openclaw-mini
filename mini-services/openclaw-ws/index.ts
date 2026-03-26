@@ -3,6 +3,12 @@
 
 import { Server } from 'socket.io';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
+import {
+  ensureInternalAuthConfigured,
+  getSourceIp,
+  logInternalAuthFailure,
+  verifyInternalBearerToken,
+} from '../../src/lib/internal-auth';
 
 const PORT = parseInt(process.env.OPENCLAW_WS_PORT || '3003', 10);
 
@@ -19,33 +25,60 @@ type WSEventType =
   | 'tool:called'
   | 'session:updated';
 
-interface WSEvent {
+export interface WSEvent {
   type: WSEventType;
   data: Record<string, unknown>;
   timestamp: string;
 }
 
-// Create HTTP server
-const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-  // CORS headers
+function setCorsHeaders(res: ServerResponse): void {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+}
 
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  // POST /broadcast - Broadcast an event
-  if (req.method === 'POST' && req.url === '/broadcast') {
+function readRequestBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
+    req.on('data', chunk => {
+      body += chunk;
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+export function createWsHttpHandler(io: Server) {
+  return async (req: IncomingMessage, res: ServerResponse) => {
+    setCorsHeaders(res);
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/broadcast') {
+      const authResult = verifyInternalBearerToken(req.headers.authorization);
+      if (!authResult.ok) {
+        await logInternalAuthFailure({
+          route: '/broadcast',
+          reason: authResult.reason,
+          service: 'openclaw-ws',
+          sourceIp: getSourceIp(req.headers, req.socket.remoteAddress),
+        });
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
       try {
-        const { agentId, event } = JSON.parse(body);
-        
+        const body = await readRequestBody(req);
+        const { agentId, event } = JSON.parse(body) as {
+          agentId?: string;
+          event?: { type?: WSEventType; data?: Record<string, unknown> };
+        };
+
         if (!event || !event.type) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Event type required' }));
@@ -69,52 +102,58 @@ const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
-      } catch (error) {
+      } catch {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid JSON' }));
       }
-    });
-    return;
-  }
+      return;
+    }
 
-  // GET /health - Health check
-  if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ 
-      status: 'healthy', 
-      connections: io.sockets.sockets.size,
-      timestamp: new Date().toISOString()
-    }));
-    return;
-  }
+    if (req.method === 'GET' && req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'healthy',
+        connections: io.sockets.sockets.size,
+        timestamp: new Date().toISOString(),
+      }));
+      return;
+    }
 
-  // GET /stats - Connection stats
-  if (req.method === 'GET' && req.url === '/stats') {
-    const rooms = io.sockets.adapter.rooms;
-    const stats = {
-      totalConnections: io.sockets.sockets.size,
-      rooms: Array.from(rooms.keys()).map(room => ({
-        name: room,
-        size: rooms.get(room)?.size || 0,
-      })),
-    };
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(stats));
-    return;
-  }
+    if (req.method === 'GET' && req.url === '/stats') {
+      const rooms = io.sockets.adapter.rooms;
+      const stats = {
+        totalConnections: io.sockets.sockets.size,
+        rooms: Array.from(rooms.keys()).map(room => ({
+          name: room,
+          size: rooms.get(room)?.size || 0,
+        })),
+      };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(stats));
+      return;
+    }
 
-  // 404 for other routes
-  res.writeHead(404, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Not found' }));
-});
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not found' }));
+  };
+}
 
-// Create Socket.IO server
-const io = new Server(httpServer, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST'],
-  },
-});
+export function createOpenClawWsService() {
+  const httpServer = createServer();
+  const io = new Server(httpServer, {
+    cors: {
+      origin: '*',
+      methods: ['GET', 'POST'],
+    },
+  });
+
+  httpServer.on('request', createWsHttpHandler(io));
+
+  return { httpServer, io };
+}
+
+const service = createOpenClawWsService();
+const { httpServer, io } = service;
 
 // Connection handling
 io.on('connection', (socket) => {
@@ -151,9 +190,16 @@ io.on('connection', (socket) => {
 });
 
 // Start server
-httpServer.listen(PORT, () => {
-  console.log(`[WS] OpenClaw WebSocket service running on port ${PORT}`);
-  console.log(`[WS] HTTP endpoints: POST /broadcast, GET /health, GET /stats`);
-});
+export function startOpenClawWsService(port: number = PORT) {
+  ensureInternalAuthConfigured('openclaw-ws');
+  httpServer.listen(port, () => {
+    console.log(`[WS] OpenClaw WebSocket service running on port ${port}`);
+    console.log('[WS] HTTP endpoints: POST /broadcast, GET /health, GET /stats');
+  });
+}
 
-export { io };
+if (import.meta.main) {
+  startOpenClawWsService();
+}
+
+export { io, httpServer };

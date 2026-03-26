@@ -61,6 +61,7 @@ beforeEach(() => {
   restoreEnv();
   process.env.DATABASE_URL = 'file:./db/custom.db';
   process.env.OPENAI_API_KEY = 'test-key';
+  process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
   delete process.env.OPENCLAW_CONFIG_PATH;
   delete process.env.OPENCLAW_CONFIG_DIR;
   delete process.env.OPENCLAW_STATE_DIR;

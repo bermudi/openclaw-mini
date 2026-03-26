@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { requireInternalAuth } from '@/lib/api-auth';
 
 export async function GET(request: NextRequest): Promise<Response> {
+  const authResponse = await requireInternalAuth(request);
+  if (authResponse) return authResponse;
+
   const { searchParams } = new URL(request.url);
   const channel = searchParams.get('channel');
   const channelKey = searchParams.get('channelKey');

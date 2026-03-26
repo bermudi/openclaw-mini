@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentService } from '@/lib/services/agent-service';
 import { memoryService } from '@/lib/services/memory-service';
+import { requireInternalAuth } from '@/lib/api-auth';
 import { z } from 'zod';
 
 const createAgentSchema = z.object({
@@ -13,8 +14,11 @@ const createAgentSchema = z.object({
 });
 
 // GET /api/agents - List all agents
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const agents = await agentService.getAgents();
     return NextResponse.json({
       success: true,
@@ -32,6 +36,9 @@ export async function GET() {
 // POST /api/agents - Create a new agent
 export async function POST(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const body = await request.json();
     const parsed = createAgentSchema.safeParse(body);
 

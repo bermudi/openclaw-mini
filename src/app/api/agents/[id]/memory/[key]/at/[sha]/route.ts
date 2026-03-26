@@ -3,6 +3,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { memoryService } from '@/lib/services/memory-service';
+import { requireInternalAuth } from '@/lib/api-auth';
 
 // GET /api/agents/[id]/memory/[key]/at/[sha]
 // Note: keys containing '/' should be URL-encoded (e.g. system%2Fpreferences)
@@ -11,6 +12,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string; key: string; sha: string }> }
 ) {
   try {
+    const authResponse = await requireInternalAuth(_request);
+    if (authResponse) return authResponse;
+
     const { id, key, sha } = await params;
 
     const value = await memoryService.getMemoryAtCommit(id, key, sha);

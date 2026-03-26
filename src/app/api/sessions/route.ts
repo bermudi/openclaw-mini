@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sessionService } from '@/lib/services/session-service';
+import { requireInternalAuth } from '@/lib/api-auth';
 
 export async function GET(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const { searchParams } = new URL(request.url);
     const agentId = searchParams.get('agentId');
     const sessionId = searchParams.get('sessionId');

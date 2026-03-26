@@ -3,10 +3,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { auditService } from '@/lib/services/audit-service';
+import { requireInternalAuth } from '@/lib/api-auth';
 
 // GET /api/audit - Get audit logs
 export async function GET(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const { searchParams } = new URL(request.url);
     const severity = searchParams.get('severity') as 'info' | 'warning' | 'error' | 'critical' | null;
     const action = searchParams.get('action');

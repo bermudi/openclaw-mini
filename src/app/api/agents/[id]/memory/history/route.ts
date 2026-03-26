@@ -3,6 +3,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { memoryService } from '@/lib/services/memory-service';
+import { requireInternalAuth } from '@/lib/api-auth';
 
 // GET /api/agents/[id]/memory/history?key=system/preferences&limit=20
 export async function GET(
@@ -10,6 +11,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const { id } = await params;
     const { searchParams } = request.nextUrl;
     const key = searchParams.get('key') ?? undefined;

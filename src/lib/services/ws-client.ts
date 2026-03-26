@@ -1,6 +1,8 @@
 // OpenClaw Agent Runtime - WebSocket Client
 // Client to broadcast events to the WebSocket service
 
+import { buildInternalAuthHeaders } from '@/lib/internal-auth';
+
 const WS_SERVICE_URL = process.env.OPENCLAW_WS_URL || 'http://localhost:3003';
 
 type WSEventType = 
@@ -28,7 +30,7 @@ class WSClientService {
     try {
       const response = await fetch(`${WS_SERVICE_URL}/broadcast`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ event }),
       });
       return response.ok;
@@ -45,7 +47,7 @@ class WSClientService {
     try {
       const response = await fetch(`${WS_SERVICE_URL}/broadcast`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ agentId, event }),
       });
       return response.ok;

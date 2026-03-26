@@ -72,6 +72,7 @@ beforeAll(async () => {
   process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? 'test-key';
   process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? 'test-key';
   process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
+  process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-harden-core-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
   process.env.OPENCLAW_MEMORY_DIR = MEMORY_ROOT;
@@ -111,6 +112,7 @@ beforeEach(async () => {
   initializeProviderRegistry();
   await resetDb();
   cleanupAgentMemoryDirs();
+  process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
   process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '40';
   process.env.OPENCLAW_SESSION_RETAIN_COUNT = '10';
   process.env.OPENCLAW_HISTORY_CAP_BYTES = '51200';
@@ -127,6 +129,7 @@ afterEach(() => {
 afterAll(async () => {
   const { resetProviderRegistryForTests } = await import('../src/lib/services/provider-registry');
   resetProviderRegistryForTests();
+  delete process.env.OPENCLAW_ALLOW_INSECURE_LOCAL;
   process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = originalEnv.threshold;
   process.env.OPENCLAW_SESSION_RETAIN_COUNT = originalEnv.retain;
   process.env.OPENCLAW_HISTORY_CAP_BYTES = originalEnv.historyCap;

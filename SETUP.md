@@ -13,17 +13,23 @@
    ```
 
 3. **Create the runtime config file:**
-   - Copy `examples/openclaw.json` to `~/.openclaw/openclaw.json`, or set `OPENCLAW_CONFIG_PATH` to a custom location.
-   - The runtime accepts JSON5, so comments are allowed in your real `openclaw.json`.
-   - Keep API keys in environment variables and reference them from the config with `${ENV_VAR}`.
+    - Copy `examples/openclaw.json` to `~/.openclaw/openclaw.json`, or set `OPENCLAW_CONFIG_PATH` to a custom location.
+    - The runtime accepts JSON5, so comments are allowed in your real `openclaw.json`.
+    - Keep API keys in environment variables and reference them from the config with `${ENV_VAR}`.
 
-4. **Copy example skills (optional, for sub-agent support):**
+4. **Configure internal admin/service auth:**
+   - Set `OPENCLAW_API_KEY` and use it as `Authorization: Bearer <token>` for protected admin APIs.
+   - The scheduler and WebSocket broadcast client reuse the same token automatically.
+   - If your app runs on a non-default origin, set `OPENCLAW_APP_URL` for scheduler callbacks.
+   - For local-only experimentation, you may set `OPENCLAW_ALLOW_INSECURE_LOCAL=true`, but startup will warn loudly because this disables internal bearer auth.
+
+5. **Copy example skills (optional, for sub-agent support):**
    ```bash
    cp -r examples/subagents skills/
    ```
    Sub-agents are defined via `skills/<name>/SKILL.md` files.
 
-5. **Start the development server:**
+6. **Start the development server:**
    ```bash
    bun run dev
    ```
@@ -32,7 +38,7 @@
    - WebSocket service on port 3003  
    - Scheduler service (for cron/heartbeat automation)
 
-6. **Open the dashboard:**
+7. **Open the dashboard:**
    Navigate to http://localhost:3000
 
 ## Architecture
@@ -96,6 +102,14 @@
 ### Webhooks
 - `GET /api/webhooks/[source]` - Webhook verification
 - `POST /api/webhooks/[source]` - Receive webhook
+
+## Auth notes
+
+- Protected routes: `/api/agents`, `/api/tasks`, `/api/sessions`, `/api/audit`, `/api/skills`, `/api/workspace`, `/api/tools`
+- Protected service ingress: `POST /broadcast` on `mini-services/openclaw-ws`
+- Failure behavior: unauthenticated or invalid bearer token requests return `401 Unauthorized`
+- Observability: auth failures are logged with route, source IP, and reason, without logging raw tokens
+- Webhooks are unchanged: external webhook auth still relies on provider-specific signatures and secrets
 
 ### Tools
 - `GET /api/tools` - List available tools

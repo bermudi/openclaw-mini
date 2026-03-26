@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { requireInternalAuth } from '@/lib/api-auth';
 import {
   initializeWorkspace,
   listWorkspaceFiles,
@@ -14,6 +15,9 @@ const updateWorkspaceFileSchema = z.object({
 
 export async function GET(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     initializeWorkspace();
 
     const { searchParams } = new URL(request.url);
@@ -60,6 +64,9 @@ export async function GET(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     initializeWorkspace();
 
     const body = await request.json();
