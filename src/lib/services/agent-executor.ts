@@ -380,7 +380,7 @@ class AgentExecutorService {
       await agentService.setAgentStatus(task.agentId, 'error');
 
       if (task.type === 'subagent' && task.parentTaskId) {
-        eventBus.emit('subagent:failed', {
+        void eventBus.emit('subagent:failed', {
           taskId,
           parentTaskId: task.parentTaskId,
           skillName: task.skillName ?? 'unknown',
@@ -457,7 +457,7 @@ class AgentExecutorService {
           `task:${taskId}`,
         );
       });
-      taskQueue.completeTaskSideEffects(task.agentId, taskId, task.type, taskResult);
+      await taskQueue.completeTaskSideEffects(task.agentId, taskId, task.type, taskResult);
     } else {
       await taskQueue.completeTask(taskId, taskResult);
     }
@@ -624,7 +624,7 @@ class AgentExecutorService {
           );
         }
       });
-      taskQueue.completeTaskSideEffects(task.agentId, task.id, task.type, taskResult);
+      await taskQueue.completeTaskSideEffects(task.agentId, task.id, task.type, taskResult);
     } else {
       await taskQueue.completeTask(task.id, taskResult);
     }
@@ -690,7 +690,7 @@ class AgentExecutorService {
     executionToolCalls: NonNullable<ExecutionResult['toolCalls']>,
   ): Promise<void> {
     if (task.type === 'subagent' && task.parentTaskId) {
-      eventBus.emit('subagent:completed', {
+      void eventBus.emit('subagent:completed', {
         taskId,
         parentTaskId: task.parentTaskId,
         skillName: task.skillName ?? 'unknown',

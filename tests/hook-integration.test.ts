@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 
-import { afterAll, beforeAll, beforeEach, expect, mock, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, expect, mock, spyOn, test } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
 import type { PrismaClient } from '@prisma/client';
@@ -20,6 +20,7 @@ let taskQueue: typeof import('../src/lib/services/task-queue').taskQueue;
 let agentService: typeof import('../src/lib/services/agent-service').agentService;
 let hookSubscriptionManager: typeof import('../src/lib/services/hook-subscription-manager').hookSubscriptionManager;
 let eventBus: typeof import('../src/lib/services/event-bus').eventBus;
+let wsClient: typeof import('../src/lib/services/ws-client').wsClient;
 
 async function resetDb() {
   await db.sessionMessage.deleteMany();
@@ -67,6 +68,7 @@ beforeAll(async () => {
   agentService = (await import('../src/lib/services/agent-service')).agentService;
   hookSubscriptionManager = (await import('../src/lib/services/hook-subscription-manager')).hookSubscriptionManager;
   eventBus = (await import('../src/lib/services/event-bus')).eventBus;
+  wsClient = (await import('../src/lib/services/ws-client')).wsClient;
 });
 
 afterAll(async () => {
@@ -82,6 +84,41 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetDb();
+  eventBus.resetMetricsForTests();
+});
+
+test('scheduler-style remote event reaches local listener once', async () => {
+  const received: Array<{ taskId: string }> = [];
+  const unsub = eventBus.on('task:created', (data) => {
+    received.push({ taskId: data.taskId });
+  });
+
+  eventBus.dispatchLocal('task:created', {
+    taskId: 'remote-task-1',
+    agentId: 'agent-1',
+    taskType: 'cron',
+    priority: 6,
+  });
+
+  unsub();
+
+  expect(received).toEqual([{ taskId: 'remote-task-1' }]);
+});
+
+test('event bus records broadcast failures without throwing', async () => {
+  const broadcastSpy = spyOn(wsClient, 'broadcast').mockResolvedValue(false);
+  const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+  await expect(eventBus.emit('task:created', {
+    taskId: 'failed-broadcast-task',
+    agentId: 'agent-1',
+    taskType: 'message',
+    priority: 3,
+  })).resolves.toBeUndefined();
+
+  expect(eventBus.getBroadcastFailureCount()).toBe(1);
+  broadcastSpy.mockRestore();
+  errorSpy.mockRestore();
 });
 
 test('task completion emits task:completed event', async () => {

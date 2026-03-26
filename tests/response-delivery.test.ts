@@ -387,7 +387,7 @@ test('completeTaskTx works inside a transaction and side effects happen only whe
     expect(fetchCalls).toHaveLength(0);
   });
 
-  taskQueueModule.taskQueue.completeTaskSideEffects(agent.id, task.id, 'message', { ok: true });
+  await taskQueueModule.taskQueue.completeTaskSideEffects(agent.id, task.id, 'message', { ok: true });
   expect(fetchCalls).toHaveLength(1);
   expect(fetchCalls[0]?.body).toContain('task:completed');
 });
@@ -672,7 +672,7 @@ test('surfaces a mounted-workspace file through exec_command and delivers it end
         },
         { toolCallId: 'exec-surface-delivery', messages: [] },
       ),
-    );
+    ) as { success?: boolean; surface?: Array<{ filePath?: string }> } | undefined;
 
     expect(execToolResult?.success).toBe(true);
     const surfacedFilePath = (execToolResult?.surface as Array<{ filePath?: string }> | undefined)?.[0]?.filePath;

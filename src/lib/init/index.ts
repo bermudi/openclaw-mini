@@ -17,6 +17,7 @@ import { memoryIndexingService } from '@/lib/services/memory-indexing';
 import { getRuntimeConfig } from '@/lib/config/runtime';
 import { getExecStartupDiagnostics } from '@/lib/services/exec-runtime';
 import { getInternalAuthStartupStatus, INTERNAL_AUTH_ENV_VAR, INSECURE_LOCAL_AUTH_ENV_VAR } from '@/lib/internal-auth';
+import { backplaneClient } from '@/lib/services/backplane-client';
 
 let initialized = false;
 let initResult: InitResult | null = null;
@@ -191,6 +192,15 @@ export async function initialize(): Promise<InitResult> {
 
     // Initialize adapters
     initializeAdapters();
+
+    try {
+      await backplaneClient.start();
+    } catch (error) {
+      result.softWarnings.push({
+        type: 'backplane-client',
+        warning: `Backplane client startup skipped: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
 
     try {
       await registerOptionalTools();

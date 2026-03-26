@@ -4,7 +4,6 @@
 import type { Prisma, PrismaClient, Task as DbTask } from '@prisma/client';
 import { db } from '@/lib/db';
 import { Task, TaskStatus, TaskType } from '@/lib/types';
-import { broadcastTaskCreated, broadcastTaskStarted, broadcastTaskCompleted, broadcastTaskFailed } from './ws-client';
 import { auditService } from './audit-service';
 import { eventBus } from './event-bus';
 import { getRuntimeConfig } from '@/lib/config/runtime';
@@ -55,9 +54,6 @@ class TaskQueueService {
 
     const mappedTask = this.mapTask(task);
 
-    // Broadcast task created event
-    broadcastTaskCreated(input.agentId, task.id, input.type);
-
     // Log audit event
     await auditService.log({
       action: 'task_created',
@@ -66,7 +62,12 @@ class TaskQueueService {
       details: { agentId: input.agentId, type: input.type, priority: input.priority ?? 5 },
     });
 
-    eventBus.emit('task:created', { taskId: task.id, agentId: input.agentId, taskType: input.type, priority: input.priority ?? 5 });
+    await eventBus.emit('task:created', {
+      taskId: task.id,
+      agentId: input.agentId,
+      taskType: input.type,
+      priority: input.priority ?? 5,
+    });
 
     return mappedTask;
   }
@@ -136,8 +137,11 @@ class TaskQueueService {
 
     const mappedTask = this.mapTask(updated);
 
-    // Broadcast task started event
-    broadcastTaskStarted(task.agentId, taskId);
+    await eventBus.emit('task:started', {
+      taskId,
+      agentId: task.agentId,
+      taskType: task.type as TaskType,
+    });
 
     return mappedTask;
   }
@@ -151,7 +155,7 @@ class TaskQueueService {
       return null;
     }
 
-    this.completeTaskSideEffects(updated.agentId, taskId, updated.type, result);
+    await this.completeTaskSideEffects(updated.agentId, taskId, updated.type, result);
 
     return updated;
   }
@@ -186,7 +190,7 @@ class TaskQueueService {
       return null;
     }
 
-    this.failTaskSideEffects(updated.agentId, taskId, updated.type, error);
+    await this.failTaskSideEffects(updated.agentId, taskId, updated.type, error);
 
     return updated;
   }
@@ -236,16 +240,14 @@ class TaskQueueService {
     }
   }
 
-  completeTaskSideEffects(agentId: string, taskId: string, taskType: string, result?: Record<string, unknown>): void {
+  async completeTaskSideEffects(agentId: string, taskId: string, taskType: string, result?: Record<string, unknown>): Promise<void> {
     this.processing.delete(agentId);
-    broadcastTaskCompleted(agentId, taskId, result);
-    eventBus.emit('task:completed', { taskId, agentId, taskType, result });
+    await eventBus.emit('task:completed', { taskId, agentId, taskType, result });
   }
 
-  failTaskSideEffects(agentId: string, taskId: string, taskType: string, error: string): void {
+  async failTaskSideEffects(agentId: string, taskId: string, taskType: string, error: string): Promise<void> {
     this.processing.delete(agentId);
-    broadcastTaskFailed(agentId, taskId, error);
-    eventBus.emit('task:failed', { taskId, agentId, taskType, error });
+    await eventBus.emit('task:failed', { taskId, agentId, taskType, error });
   }
 
   /**

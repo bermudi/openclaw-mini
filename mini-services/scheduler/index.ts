@@ -83,6 +83,28 @@ async function executeTaskViaApi(taskId: string): Promise<{ success: boolean; er
   return response.json();
 }
 
+async function createTaskViaApi(input: {
+  agentId: string;
+  type: 'heartbeat' | 'cron';
+  priority: number;
+  payload: Record<string, unknown>;
+  source: string;
+}): Promise<{ success: boolean; data?: { id: string }; error?: string }> {
+  const response = await fetch(`${APP_BASE_URL}/api/tasks`, {
+    method: 'POST',
+    headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(input),
+  });
+
+  const body = await response.json() as { success?: boolean; data?: { id: string }; error?: string };
+
+  if (!response.ok || !body.success || !body.data?.id) {
+    return { success: false, error: body.error ?? `Task creation failed with status ${response.status}` };
+  }
+
+  return { success: true, data: body.data };
+}
+
 // ============================================
 // Heartbeat/Cron Trigger Processor
 // ============================================
@@ -103,20 +125,26 @@ async function processDueTriggers() {
       console.log(`[Scheduler] Firing trigger ${trigger.name} (${trigger.type})`);
       
       try {
-        // Create a task for this trigger
-        const task = await prisma.task.create({
-          data: {
-            agentId: trigger.agentId,
-            type: trigger.type === 'cron' ? 'cron' : 'heartbeat',
-            priority: trigger.type === 'cron' ? 6 : 7,
-            status: 'pending',
-            payload: JSON.stringify({
-              triggerId: trigger.id,
-              triggeredAt: now.toISOString()
-            }),
-            source: `${trigger.type}:${trigger.name}`
-          }
+        const taskResult = await createTaskViaApi({
+          agentId: trigger.agentId,
+          type: trigger.type === 'cron' ? 'cron' : 'heartbeat',
+          priority: trigger.type === 'cron' ? 6 : 7,
+          payload: trigger.type === 'cron'
+            ? {
+                triggerId: trigger.id,
+                scheduledTime: now.toISOString(),
+                timestamp: now.toISOString(),
+              }
+            : {
+                triggerId: trigger.id,
+                timestamp: now.toISOString(),
+              },
+          source: `${trigger.type}:${trigger.name}`,
         });
+
+        if (!taskResult.success || !taskResult.data?.id) {
+          throw new Error(taskResult.error ?? `Failed to create task for trigger ${trigger.id}`);
+        }
 
         // Update trigger timestamps
         const config = JSON.parse(trigger.config);
@@ -141,7 +169,7 @@ async function processDueTriggers() {
         });
 
         triggersFired++;
-        console.log(`[Scheduler] Created task ${task.id} for trigger ${trigger.name}`);
+        console.log(`[Scheduler] Created task ${taskResult.data.id} for trigger ${trigger.name}`);
       } catch (error) {
         console.error(`[Scheduler] Failed to fire trigger ${trigger.id}:`, error);
       }
@@ -371,4 +399,4 @@ if (import.meta.main) {
   start().catch(console.error);
 }
 
-export { start, processPendingTasks, executeTaskViaApi };
+export { start, processPendingTasks, executeTaskViaApi, createTaskViaApi };

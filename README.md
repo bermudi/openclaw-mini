@@ -30,6 +30,32 @@ OpenClaw Mini now protects admin APIs and trusted service boundaries with `Autho
 - For local-only testing, you can temporarily set `OPENCLAW_ALLOW_INSECURE_LOCAL=true` to bypass internal auth with a warning.
 - Webhook signature verification remains separate; webhook secrets still use their own signature headers.
 
+## Cross-process event flow
+
+OpenClaw Mini now uses the existing WebSocket service as an internal event backplane, so hooks and other listeners keep working across the Next.js app, scheduler, and browser clients.
+
+```text
+Scheduler / Next.js service
+        |
+        | eventBus.emit() -> POST /broadcast
+        v
+  openclaw-ws service
+     |        |        \
+     |        |         \
+     |        |          -> browser dashboard clients (`admin` / agent rooms)
+     |        -> Next.js backplane client (`internal` room)
+     |
+     -> agent-specific rooms
+
+Next.js backplane client
+        |
+        -> eventBus.dispatchLocal() -> in-process listeners (hooks, subscriptions)
+```
+
+- `eventBus.emit()` is now async and returns `Promise<void>` because delivery goes through the WebSocket service.
+- Await `eventBus.emit()` when you need delivery confirmation; use `void eventBus.emit(...)` for fire-and-forget paths.
+- The backplane client tags each emitted event with a process-unique `source` value so self-originated events are not delivered twice.
+
 ## Runtime provider configuration
 
 Provider and model configuration now lives in `openclaw.json`.

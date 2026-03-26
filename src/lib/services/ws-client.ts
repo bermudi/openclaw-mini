@@ -1,37 +1,17 @@
-// OpenClaw Agent Runtime - WebSocket Client
-// Client to broadcast events to the WebSocket service
-
 import { buildInternalAuthHeaders } from '@/lib/internal-auth';
+import type { WSBroadcastEvent } from '@/lib/ws-events';
 
-const WS_SERVICE_URL = process.env.OPENCLAW_WS_URL || 'http://localhost:3003';
-
-type WSEventType = 
-  | 'task:created'
-  | 'task:started'
-  | 'task:completed'
-  | 'task:failed'
-  | 'agent:status'
-  | 'trigger:fired'
-  | 'memory:updated'
-  | 'stats:update'
-  | 'tool:called'
-  | 'session:updated';
-
-interface WSEvent {
-  type: WSEventType;
-  data: Record<string, unknown>;
+function getWsServiceUrl(): string {
+  return process.env.OPENCLAW_WS_URL || 'http://localhost:3003';
 }
 
 class WSClientService {
-  /**
-   * Broadcast an event to all connected clients
-   */
-  async broadcast(event: WSEvent): Promise<boolean> {
+  async broadcast(event: WSBroadcastEvent, agentId?: string): Promise<boolean> {
     try {
-      const response = await fetch(`${WS_SERVICE_URL}/broadcast`, {
+      const response = await fetch(`${getWsServiceUrl()}/broadcast`, {
         method: 'POST',
         headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ event }),
+        body: JSON.stringify(agentId ? { agentId, event } : { event }),
       });
       return response.ok;
     } catch (error) {
@@ -40,21 +20,8 @@ class WSClientService {
     }
   }
 
-  /**
-   * Broadcast an event to a specific agent's subscribers
-   */
-  async broadcastToAgent(agentId: string, event: WSEvent): Promise<boolean> {
-    try {
-      const response = await fetch(`${WS_SERVICE_URL}/broadcast`, {
-        method: 'POST',
-        headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ agentId, event }),
-      });
-      return response.ok;
-    } catch (error) {
-      console.error('[WSClient] Failed to broadcast to agent:', error);
-      return false;
-    }
+  async broadcastToAgent(agentId: string, event: WSBroadcastEvent): Promise<boolean> {
+    return this.broadcast(event, agentId);
   }
 
   /**
@@ -62,7 +29,7 @@ class WSClientService {
    */
   async healthCheck(): Promise<boolean> {
     try {
-      const response = await fetch(`${WS_SERVICE_URL}/health`, {
+      const response = await fetch(`${getWsServiceUrl()}/health`, {
         method: 'GET',
       });
       return response.ok;
@@ -79,7 +46,7 @@ class WSClientService {
     rooms: Array<{ name: string; size: number }>;
   } | null> {
     try {
-      const response = await fetch(`${WS_SERVICE_URL}/stats`);
+      const response = await fetch(`${getWsServiceUrl()}/stats`);
       if (response.ok) {
         return response.json();
       }
@@ -91,46 +58,3 @@ class WSClientService {
 }
 
 export const wsClient = new WSClientService();
-
-// Convenience functions for common events
-export const broadcastTaskCreated = (agentId: string, taskId: string, taskType: string) =>
-  wsClient.broadcastToAgent(agentId, {
-    type: 'task:created',
-    data: { taskId, taskType },
-  });
-
-export const broadcastTaskStarted = (agentId: string, taskId: string) =>
-  wsClient.broadcastToAgent(agentId, {
-    type: 'task:started',
-    data: { taskId },
-  });
-
-export const broadcastTaskCompleted = (agentId: string, taskId: string, result?: unknown) =>
-  wsClient.broadcastToAgent(agentId, {
-    type: 'task:completed',
-    data: { taskId, result },
-  });
-
-export const broadcastTaskFailed = (agentId: string, taskId: string, error: string) =>
-  wsClient.broadcastToAgent(agentId, {
-    type: 'task:failed',
-    data: { taskId, error },
-  });
-
-export const broadcastAgentStatus = (agentId: string, status: string) =>
-  wsClient.broadcast({
-    type: 'agent:status',
-    data: { agentId, status },
-  });
-
-export const broadcastTriggerFired = (agentId: string, triggerId: string, triggerName: string) =>
-  wsClient.broadcastToAgent(agentId, {
-    type: 'trigger:fired',
-    data: { triggerId, triggerName },
-  });
-
-export const broadcastToolCalled = (agentId: string, toolName: string, success: boolean) =>
-  wsClient.broadcastToAgent(agentId, {
-    type: 'tool:called',
-    data: { toolName, success },
-  });

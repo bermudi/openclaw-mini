@@ -142,9 +142,9 @@ class MemoryService {
       await memoryIndexingService.markMemoryForIndexing(memory.id, input.agentId, 'write');
     }
 
-    eventBus.emit('memory:updated', { agentId: input.agentId, key: input.key });
+    void eventBus.emit('memory:updated', { agentId: input.agentId, key: input.key });
     if (!input._skipIndexing) {
-      eventBus.emit('memory:index-requested', {
+      void eventBus.emit('memory:index-requested', {
         agentId: input.agentId,
         memoryId: memory.id,
         key: input.key,

@@ -1064,14 +1064,14 @@ describe('exec_command tool advanced runtime behavior', () => {
     const unauthorizedPoll = await toolsModule.withToolExecutionContext(
       { agentId: 'agent-b', taskId: 'task-b-poll', taskType: 'message' },
       () => processTool.execute?.({ action: 'poll', sessionId: sessionId!, offset: 0, limit: 100 }, { toolCallId: 'process-unauthorized-poll', messages: [] }),
-    );
+    ) as { success?: boolean; error?: string } | undefined;
     expect(unauthorizedPoll?.success).toBe(false);
     expect(unauthorizedPoll?.error).toContain('not accessible');
 
     const unauthorizedKill = await toolsModule.withToolExecutionContext(
       { agentId: 'agent-b', taskId: 'task-b-kill', taskType: 'message' },
       () => processTool.execute?.({ action: 'kill', sessionId: sessionId! }, { toolCallId: 'process-unauthorized-kill', messages: [] }),
-    );
+    ) as { success?: boolean; error?: string } | undefined;
     expect(unauthorizedKill?.success).toBe(false);
     expect(unauthorizedKill?.error).toContain('not accessible');
 
@@ -1100,7 +1100,7 @@ describe('exec_command tool advanced runtime behavior', () => {
         },
         { toolCallId: 'exec-follow-up-launch', messages: [] },
       ),
-    );
+    ) as { success?: boolean; data?: { sessionId?: string } } | undefined;
 
     expect(launchResult?.success).toBe(true);
     const sessionId = (launchResult?.data as { sessionId?: string } | undefined)?.sessionId;
@@ -1112,7 +1112,7 @@ describe('exec_command tool advanced runtime behavior', () => {
         { action: 'write', sessionId: sessionId!, input: 'follow-up task handoff\n' },
         { toolCallId: 'process-follow-up-write', messages: [] },
       ),
-    );
+    ) as { success?: boolean } | undefined;
     expect(writeResult?.success).toBe(true);
 
     let combinedOutput = '';
@@ -1124,7 +1124,7 @@ describe('exec_command tool advanced runtime behavior', () => {
           { action: 'poll', sessionId: sessionId!, offset: 0, limit: 4000 },
           { toolCallId: 'process-follow-up-poll', messages: [] },
         ),
-      );
+      ) as { success?: boolean; data?: { output?: string } } | undefined;
 
       expect(pollResult?.success).toBe(true);
       combinedOutput = (pollResult?.data as { output?: string } | undefined)?.output ?? '';

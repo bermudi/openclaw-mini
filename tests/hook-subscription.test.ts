@@ -6,12 +6,21 @@ import path from 'path';
 import type { PrismaClient } from '@prisma/client';
 import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture } from './runtime-config-fixture';
 
+mock.module('../src/lib/services/ws-client', () => ({
+  wsClient: {
+    broadcast: mock(async () => true),
+    broadcastToAgent: mock(async () => true),
+    healthCheck: mock(async () => true),
+    getStats: mock(async () => null),
+  },
+}));
+
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'hook-subscription.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
 
 let db: PrismaClient;
 let runtimeConfigFixture: RuntimeConfigFixture | null = null;
-let EventBus: typeof import('../src/lib/services/event-bus').EventBus;
+let eventBus: typeof import('../src/lib/services/event-bus').eventBus;
 let HookSubscriptionManagerModule: typeof import('../src/lib/services/hook-subscription-manager');
 let inputManagerModule: typeof import('../src/lib/services/input-manager');
 
@@ -63,7 +72,7 @@ beforeAll(async () => {
   const dbModule = await import('../src/lib/db');
   db = dbModule.db;
 
-  EventBus = (await import('../src/lib/services/event-bus')).EventBus;
+  eventBus = (await import('../src/lib/services/event-bus')).eventBus;
   HookSubscriptionManagerModule = await import('../src/lib/services/hook-subscription-manager');
   inputManagerModule = await import('../src/lib/services/input-manager');
 });
@@ -81,10 +90,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetDb();
+  eventBus.resetMetricsForTests();
 });
 
 test('trigger with matching event fires processHook', async () => {
-  const bus = new EventBus();
   const agent = await createAgent();
 
   const trigger = await db.trigger.create({
@@ -108,7 +117,7 @@ test('trigger with matching event fires processHook', async () => {
   const { hookSubscriptionManager } = HookSubscriptionManagerModule;
   await hookSubscriptionManager.subscribeHookTrigger(trigger.id);
 
-  bus.emit('task:completed', { taskId: 't1', agentId: agent.id, taskType: 'message' });
+  await eventBus.emit('task:completed', { taskId: 't1', agentId: agent.id, taskType: 'message' });
 
   // processHook is async fire-and-forget; wait a tick
   await new Promise(resolve => setTimeout(resolve, 10));
@@ -119,7 +128,6 @@ test('trigger with matching event fires processHook', async () => {
 });
 
 test('disabled trigger is not subscribed on initialize', async () => {
-  const bus = new EventBus();
   const agent = await createAgent();
 
   await db.trigger.create({
@@ -138,7 +146,7 @@ test('disabled trigger is not subscribed on initialize', async () => {
     return { success: true };
   });
 
-  bus.emit('task:completed', { taskId: 't1', agentId: agent.id, taskType: 'message' });
+  await eventBus.emit('task:completed', { taskId: 't1', agentId: agent.id, taskType: 'message' });
 
   await new Promise(resolve => setTimeout(resolve, 10));
 
@@ -148,10 +156,9 @@ test('disabled trigger is not subscribed on initialize', async () => {
 });
 
 test('condition matching - fires when condition matches', async () => {
-  const bus = new EventBus();
   const hookCalls: Array<Record<string, unknown>> = [];
 
-  const unsub = bus.on('task:completed', (data) => {
+  const unsub = eventBus.on('task:completed', (data) => {
     const dataRecord = data as Record<string, unknown>;
     const condition = { taskType: 'message' };
 
@@ -161,8 +168,8 @@ test('condition matching - fires when condition matches', async () => {
     }
   });
 
-  bus.emit('task:completed', { taskId: 't1', agentId: 'a1', taskType: 'message' });
-  bus.emit('task:completed', { taskId: 't2', agentId: 'a1', taskType: 'heartbeat' });
+  await eventBus.emit('task:completed', { taskId: 't1', agentId: 'a1', taskType: 'message' });
+  await eventBus.emit('task:completed', { taskId: 't2', agentId: 'a1', taskType: 'heartbeat' });
 
   expect(hookCalls.length).toBe(1);
   expect(hookCalls[0]?.taskId).toBe('t1');
@@ -171,10 +178,9 @@ test('condition matching - fires when condition matches', async () => {
 });
 
 test('condition matching - does not fire when condition does not match', async () => {
-  const bus = new EventBus();
   const hookCalls: unknown[] = [];
 
-  const unsub = bus.on('task:completed', (data) => {
+  const unsub = eventBus.on('task:completed', (data) => {
     const dataRecord = data as Record<string, unknown>;
     const condition = { taskType: 'message' };
 
@@ -184,7 +190,7 @@ test('condition matching - does not fire when condition does not match', async (
     }
   });
 
-  bus.emit('task:completed', { taskId: 't1', agentId: 'a1', taskType: 'heartbeat' });
+  await eventBus.emit('task:completed', { taskId: 't1', agentId: 'a1', taskType: 'heartbeat' });
 
   expect(hookCalls.length).toBe(0);
 
@@ -192,16 +198,15 @@ test('condition matching - does not fire when condition does not match', async (
 });
 
 test('no condition means unconditional - fires for all events of matching type', async () => {
-  const bus = new EventBus();
   const hookCalls: unknown[] = [];
 
-  const unsub = bus.on('task:completed', (data) => {
+  const unsub = eventBus.on('task:completed', (data) => {
     hookCalls.push(data);
   });
 
-  bus.emit('task:completed', { taskId: 't1', agentId: 'a1', taskType: 'message' });
-  bus.emit('task:completed', { taskId: 't2', agentId: 'a1', taskType: 'heartbeat' });
-  bus.emit('task:completed', { taskId: 't3', agentId: 'a2', taskType: 'cron' });
+  await eventBus.emit('task:completed', { taskId: 't1', agentId: 'a1', taskType: 'message' });
+  await eventBus.emit('task:completed', { taskId: 't2', agentId: 'a1', taskType: 'heartbeat' });
+  await eventBus.emit('task:completed', { taskId: 't3', agentId: 'a2', taskType: 'cron' });
 
   expect(hookCalls.length).toBe(3);
 
@@ -209,10 +214,9 @@ test('no condition means unconditional - fires for all events of matching type',
 });
 
 test('multiple condition fields - all must match', async () => {
-  const bus = new EventBus();
   const hookCalls: unknown[] = [];
 
-  const unsub = bus.on('task:completed', (data) => {
+  const unsub = eventBus.on('task:completed', (data) => {
     const dataRecord = data as Record<string, unknown>;
     const condition = { taskType: 'message', agentId: 'agent-1' };
 
@@ -222,9 +226,9 @@ test('multiple condition fields - all must match', async () => {
     }
   });
 
-  bus.emit('task:completed', { taskId: 't1', agentId: 'agent-1', taskType: 'message' });
-  bus.emit('task:completed', { taskId: 't2', agentId: 'agent-2', taskType: 'message' });
-  bus.emit('task:completed', { taskId: 't3', agentId: 'agent-1', taskType: 'heartbeat' });
+  await eventBus.emit('task:completed', { taskId: 't1', agentId: 'agent-1', taskType: 'message' });
+  await eventBus.emit('task:completed', { taskId: 't2', agentId: 'agent-2', taskType: 'message' });
+  await eventBus.emit('task:completed', { taskId: 't3', agentId: 'agent-1', taskType: 'heartbeat' });
 
   expect(hookCalls.length).toBe(1);
 
@@ -254,8 +258,7 @@ test('unsubscribeHookTrigger stops delivery', async () => {
   await hookSubscriptionManager.subscribeHookTrigger(trigger.id);
   hookSubscriptionManager.unsubscribeHookTrigger(trigger.id);
 
-  const { eventBus } = await import('../src/lib/services/event-bus');
-  eventBus.emit('task:created', { taskId: 't1', agentId: agent.id, taskType: 'message', priority: 5 });
+  await eventBus.emit('task:created', { taskId: 't1', agentId: agent.id, taskType: 'message', priority: 5 });
 
   await new Promise(resolve => setTimeout(resolve, 10));
 

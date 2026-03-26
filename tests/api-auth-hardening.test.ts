@@ -276,6 +276,32 @@ describe('service-to-service and websocket auth', () => {
     fetchSpy.mockRestore();
   });
 
+  test('scheduler creates trigger tasks via authenticated task API', async () => {
+    const fetchSpy = spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ success: true, data: { id: 'task-456' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    await schedulerModule.createTaskViaApi({
+      agentId: 'agent-123',
+      type: 'heartbeat',
+      priority: 7,
+      payload: { triggerId: 'trigger-1', timestamp: '2026-03-25T00:00:00.000Z' },
+      source: 'heartbeat:test',
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit | undefined];
+    const headers = new Headers(init?.headers);
+    expect(url).toContain('/api/tasks');
+    expect(headers.get('authorization')).toBe(`Bearer ${AUTH_TOKEN}`);
+    expect(headers.get('content-type')).toBe('application/json');
+
+    fetchSpy.mockRestore();
+  });
+
   test('websocket /broadcast rejects missing token and accepts valid bearer token', async () => {
     delete process.env.OPENCLAW_ALLOW_INSECURE_LOCAL;
     const emittedEvents: Array<{ room: string | null; name: string; payload: unknown }> = [];

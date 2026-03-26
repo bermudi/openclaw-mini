@@ -301,18 +301,4 @@ export interface ApiResponse<T = unknown> {
   message?: string;
 }
 
-// WebSocket Event Types
-export type WSEventType = 
-  | 'task:created'
-  | 'task:started'
-  | 'task:completed'
-  | 'task:failed'
-  | 'agent:status'
-  | 'trigger:fired'
-  | 'memory:updated';
-
-export interface WSEvent {
-  type: WSEventType;
-  data: Record<string, unknown>;
-  timestamp: Date;
-}
+export type { WSEventType, WSEvent } from '@/lib/ws-events';

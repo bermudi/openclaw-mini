@@ -97,7 +97,7 @@ class SessionService {
           sessionScope,
         },
       });
-      eventBus.emit('session:created', { sessionId: session.id, agentId, channel, channelKey });
+      void eventBus.emit('session:created', { sessionId: session.id, agentId, channel, channelKey });
     }
 
     const messages = await this.getSessionMessages(session.id);

@@ -9,27 +9,9 @@ import {
   logInternalAuthFailure,
   verifyInternalBearerToken,
 } from '../../src/lib/internal-auth';
+import type { WSBroadcastEvent, WSEvent } from '../../src/lib/ws-events';
 
 const PORT = parseInt(process.env.OPENCLAW_WS_PORT || '3003', 10);
-
-// Event types for type safety
-type WSEventType = 
-  | 'task:created'
-  | 'task:started'
-  | 'task:completed'
-  | 'task:failed'
-  | 'agent:status'
-  | 'trigger:fired'
-  | 'memory:updated'
-  | 'stats:update'
-  | 'tool:called'
-  | 'session:updated';
-
-export interface WSEvent {
-  type: WSEventType;
-  data: Record<string, unknown>;
-  timestamp: string;
-}
 
 function setCorsHeaders(res: ServerResponse): void {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -76,7 +58,7 @@ export function createWsHttpHandler(io: Server) {
         const body = await readRequestBody(req);
         const { agentId, event } = JSON.parse(body) as {
           agentId?: string;
-          event?: { type?: WSEventType; data?: Record<string, unknown> };
+          event?: WSBroadcastEvent;
         };
 
         if (!event || !event.type) {
@@ -88,12 +70,14 @@ export function createWsHttpHandler(io: Server) {
         const wsEvent: WSEvent = {
           type: event.type,
           data: event.data || {},
+          source: event.source,
           timestamp: new Date().toISOString(),
         };
 
         if (agentId) {
           io.to(`agent:${agentId}`).emit('event', wsEvent);
           io.to('admin').emit('event', wsEvent);
+          io.to('internal').emit('event', wsEvent);
           console.log(`[WS] Broadcast to agent ${agentId}: ${wsEvent.type}`);
         } else {
           io.emit('event', wsEvent);
@@ -181,6 +165,16 @@ io.on('connection', (socket) => {
   socket.on('unsubscribe:all', () => {
     socket.leave('admin');
     console.log(`[WS] Client ${socket.id} unsubscribed from all events`);
+  });
+
+  socket.on('subscribe:internal', () => {
+    socket.join('internal');
+    console.log(`[WS] Client ${socket.id} subscribed to internal events`);
+  });
+
+  socket.on('unsubscribe:internal', () => {
+    socket.leave('internal');
+    console.log(`[WS] Client ${socket.id} unsubscribed from internal events`);
   });
 
   // Handle disconnect
