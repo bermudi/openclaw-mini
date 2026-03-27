@@ -2,15 +2,19 @@
 // Single trigger operations
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireInternalAuth } from '@/lib/api-auth';
 import { triggerService } from '@/lib/services/trigger-service';
 import { storageErrorResponse } from '@/lib/api/storage-errors';
 
 // GET /api/triggers/[id] - Get trigger by ID
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const { id } = await params;
     const trigger = await triggerService.getTrigger(id);
     
@@ -46,6 +50,9 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const { id } = await params;
     const body = await request.json();
     
@@ -80,10 +87,13 @@ export async function PUT(
 
 // DELETE /api/triggers/[id] - Delete trigger
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const { id } = await params;
     const deleted = await triggerService.deleteTrigger(id);
     

@@ -2,12 +2,16 @@
 // Channel binding management
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireInternalAuth } from '@/lib/api-auth';
 import { db } from '@/lib/db';
 import { Prisma } from '@prisma/client';
 
 // GET /api/channels/bindings - List all channel bindings
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const bindings = await db.channelBinding.findMany({
       include: {
         agent: {
@@ -45,6 +49,9 @@ export async function GET() {
 // POST /api/channels/bindings - Create a new channel binding
 export async function POST(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     let body: { channel?: string; channelKey?: string; agentId?: string };
     try {
       body = await request.json();

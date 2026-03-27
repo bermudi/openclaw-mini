@@ -184,6 +184,7 @@ beforeAll(async () => {
   process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? 'test-key';
   process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
   process.env.TELEGRAM_BOT_TOKEN = 'test-telegram-token';
+  process.env.OPENCLAW_API_KEY = 'test-api-key';
   process.env.WHATSAPP_AUTH_DIR = WHATSAPP_AUTH_ROOT;
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-attachments-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
@@ -238,6 +239,7 @@ afterAll(async () => {
   }
   if (fs.existsSync(TEST_DB_PATH)) fs.rmSync(TEST_DB_PATH, { force: true });
   delete process.env.OPENCLAW_MEMORY_DIR;
+  delete process.env.OPENCLAW_API_KEY;
   delete process.env.WHATSAPP_AUTH_DIR;
   delete process.env.TELEGRAM_BOT_TOKEN;
 
@@ -725,10 +727,14 @@ describe('5.3 WhatsApp attachment handling', () => {
       ext: 'jpg',
     });
 
-    const fetchCalls: Array<{ url: string; body: unknown }> = [];
+    const fetchCalls: Array<{ url: string; body: unknown; headers: Headers }> = [];
     const originalFetch = global.fetch;
     global.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      fetchCalls.push({ url: url.toString(), body: init?.body ? JSON.parse(init.body as string) : null });
+      fetchCalls.push({
+        url: url.toString(),
+        body: init?.body ? JSON.parse(init.body as string) : null,
+        headers: new Headers(init?.headers),
+      });
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     }) as typeof fetch;
 
@@ -764,6 +770,7 @@ describe('5.3 WhatsApp attachment handling', () => {
     expect(body.visionInputs).toBeTruthy();
     expect((body.visionInputs as Array<{ mimeType: string }>)[0]?.mimeType).toBe('image/jpeg');
     expect(body.content).toBe('Look at this');
+    expect(inputCall?.headers.get('authorization')).toBe('Bearer test-api-key');
   });
 
   test('inbound document message creates attachment', async () => {
@@ -776,10 +783,14 @@ describe('5.3 WhatsApp attachment handling', () => {
       ext: 'pdf',
     });
 
-    const fetchCalls: Array<{ url: string; body: unknown }> = [];
+    const fetchCalls: Array<{ url: string; body: unknown; headers: Headers }> = [];
     const originalFetch = global.fetch;
     global.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      fetchCalls.push({ url: url.toString(), body: init?.body ? JSON.parse(init.body as string) : null });
+      fetchCalls.push({
+        url: url.toString(),
+        body: init?.body ? JSON.parse(init.body as string) : null,
+        headers: new Headers(init?.headers),
+      });
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     }) as typeof fetch;
 
@@ -814,6 +825,7 @@ describe('5.3 WhatsApp attachment handling', () => {
     const body = inputCall?.body as Record<string, unknown>;
     expect(body.attachments).toBeTruthy();
     expect((body.attachments as Array<{ filename: string }>)[0]?.filename).toBe('contract.pdf');
+    expect(inputCall?.headers.get('authorization')).toBe('Bearer test-api-key');
   });
 });
 

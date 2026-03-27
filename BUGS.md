@@ -1,14 +1,8 @@
 ## What's Still Broken
 
-### 1. Auth Gaps on Critical Routes
+### 1. Browser Clients Need Trusted Deployment
 
-Three routes remain **completely unauthenticated**:
-
--   **`/api/input`** — This is the main entry point for injecting messages, webhooks, hooks, and a2a events into the system. Anyone can send arbitrary tasks to any agent. This is arguably the most dangerous route to leave open.
--   **`/api/triggers` (GET and POST)** — Anyone can create heartbeat/cron triggers for any agent, or enumerate all existing triggers.
--   **`/api/triggers/[id]` (PATCH/DELETE)** — Anyone can modify or delete triggers.
-
-`/api/channels/bindings` still uses a legacy `validateApiKey` pattern instead of `requireInternalAuth`. The WhatsApp QR route is also unprotected, though that's lower risk.
+The browser-facing dashboard and `/chat` page still depend on either `OPENCLAW_ALLOW_INSECURE_LOCAL=true` or an authenticating reverse proxy. They do not embed bearer tokens, so they are only safe in local or protected deployments.
 
 ### 2. calculateNextCron Is Still Broken
 
@@ -69,12 +63,11 @@ While the `/broadcast` HTTP endpoint now requires a bearer token, the Socket.IO 
 
 | # | Issue | Severity |
 | --- | --- | --- |
-| 1 | `/api/input` has no auth — arbitrary task injection | **Critical** |
+| 1 | Browser clients need trusted deployment | **Low** |
 | 2 | Agent stuck in `error` status forever after any failure | **High** |
-| 3 | `/api/triggers` has no auth — trigger creation/enumeration | **High** |
-| 4 | Socket.IO subscriptions unauthenticated | **Medium** |
-| 5 | Cron scheduling is completely non-functional | **Medium** |
-| 6 | Scheduler reads can race with API writes on triggers | **Medium** |
-| 7 | Payload `as` casts with no validation on unauthed input path | **Medium** |
+| 3 | Socket.IO subscriptions unauthenticated | **Medium** |
+| 4 | Cron scheduling is completely non-functional | **Medium** |
+| 5 | Scheduler reads can race with API writes on triggers | **Medium** |
+| 6 | Payload `as` casts with no validation on input path | **Medium** |
 
-The auth infrastructure is solid — the problem is just incomplete coverage on the remaining routes, particularly the most sensitive one (`/api/input`). The `error` status death spiral is the other high-priority fix — a single 429 from an LLM provider will brick an agent until someone manually resets it via the API.
+The auth infrastructure is solid — the remaining risk is mostly around browser deployment assumptions and the `error` status death spiral. A single 429 from an LLM provider can still brick an agent until someone manually resets it via the API.

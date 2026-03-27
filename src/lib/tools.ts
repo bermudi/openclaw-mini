@@ -8,6 +8,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
 import { taskQueue } from '@/lib/services/task-queue';
 import { sessionService } from '@/lib/services/session-service';
+import { inputManager } from '@/lib/services/input-manager';
 import { db } from '@/lib/db';
 import { auditService } from '@/lib/services/audit-service';
 import { buildInternalAuthHeaders } from '@/lib/internal-auth';
@@ -1165,26 +1166,19 @@ registerTool(
     }),
     execute: async ({ fromAgentId, toAgentId, message, data }): Promise<ToolResult> => {
       try {
-        const response = await fetch('http://localhost:3000/api/input', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            input: {
-              type: 'a2a',
-              fromAgentId,
-              toAgentId,
-              message,
-              data,
-            },
-          }),
+        const result = await inputManager.processInput({
+          type: 'a2a',
+          fromAgentId,
+          toAgentId,
+          message,
+          data,
         });
 
-        const result = await response.json();
-
-        if (result.success) {
-          return { success: true, data: { taskId: result.data.taskId } };
+        if (result.success && result.taskId) {
+          return { success: true, data: { taskId: result.taskId } };
         }
-        return { success: false, error: result.error };
+
+        return { success: false, error: result.error ?? 'Failed to send message' };
       } catch (error) {
         return { success: false, error: `Failed to send message: ${error}` };
       }

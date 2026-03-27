@@ -32,6 +32,11 @@ let auditRoute: typeof import('../src/app/api/audit/route');
 let skillsRoute: typeof import('../src/app/api/skills/route');
 let workspaceRoute: typeof import('../src/app/api/workspace/route');
 let toolsRoute: typeof import('../src/app/api/tools/route');
+let inputRoute: typeof import('../src/app/api/input/route');
+let triggersRoute: typeof import('../src/app/api/triggers/route');
+let triggerRoute: typeof import('../src/app/api/triggers/[id]/route');
+let channelBindingsRoute: typeof import('../src/app/api/channels/bindings/route');
+let channelBindingRoute: typeof import('../src/app/api/channels/bindings/[id]/route');
 let triggerManualFireRoute: typeof import('../src/app/api/triggers/[id]/fire/route');
 let schedulerModule: typeof import('../mini-services/scheduler/index');
 let wsModule: typeof import('../mini-services/openclaw-ws/index');
@@ -123,6 +128,11 @@ beforeAll(async () => {
   skillsRoute = await import('../src/app/api/skills/route');
   workspaceRoute = await import('../src/app/api/workspace/route');
   toolsRoute = await import('../src/app/api/tools/route');
+  inputRoute = await import('../src/app/api/input/route');
+  triggersRoute = await import('../src/app/api/triggers/route');
+  triggerRoute = await import('../src/app/api/triggers/[id]/route');
+  channelBindingsRoute = await import('../src/app/api/channels/bindings/route');
+  channelBindingRoute = await import('../src/app/api/channels/bindings/[id]/route');
   triggerManualFireRoute = await import('../src/app/api/triggers/[id]/fire/route');
   schedulerModule = await import('../mini-services/scheduler/index');
   wsModule = await import('../mini-services/openclaw-ws/index');
@@ -253,6 +263,114 @@ describe('admin API auth enforcement', () => {
     expect(skillsResponse.status).toBe(200);
     expect(workspaceResponse.status).toBe(200);
     expect(toolsResponse.status).toBe(200);
+  });
+});
+
+describe('newly hardened control-plane routes', () => {
+  test('rejects /api/input without auth and accepts valid auth', async () => {
+    const agent = await agentService.createAgent({ name: 'Input Agent' });
+    await agentService.setDefaultAgent(agent.id);
+
+    const unauthorizedResponse = await inputRoute.POST(new NextRequest('http://localhost/api/input', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        input: {
+          type: 'message',
+          channel: 'webchat',
+          channelKey: 'input-session',
+          content: 'hello',
+        },
+      }),
+    }));
+
+    expect(unauthorizedResponse.status).toBe(401);
+
+    const authorizedResponse = await inputRoute.POST(bearerRequest('http://localhost/api/input', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        input: {
+          type: 'message',
+          channel: 'webchat',
+          channelKey: 'input-session',
+          content: 'hello',
+        },
+      }),
+    }));
+
+    expect(authorizedResponse.status).toBe(200);
+    const body = await authorizedResponse.json() as { success?: boolean; data?: { taskId?: string } };
+    expect(body.success).toBe(true);
+    expect(body.data?.taskId).toBeDefined();
+  });
+
+  test('rejects /api/triggers and /api/triggers/[id] without auth', async () => {
+    const agent = await agentService.createAgent({ name: 'Trigger Agent' });
+    const trigger = await db.trigger.create({
+      data: {
+        agentId: agent.id,
+        name: 'heartbeat',
+        type: 'heartbeat',
+        config: JSON.stringify({ interval: 30 }),
+      },
+    });
+
+    const listResponse = await triggersRoute.GET(new NextRequest('http://localhost/api/triggers'));
+    expect(listResponse.status).toBe(401);
+
+    const createResponse = await triggersRoute.POST(new NextRequest('http://localhost/api/triggers', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        agentId: agent.id,
+        name: 'heartbeat',
+        type: 'heartbeat',
+        config: { interval: 30 },
+      }),
+    }));
+    expect(createResponse.status).toBe(401);
+
+    const getResponse = await triggerRoute.GET(new NextRequest(`http://localhost/api/triggers/${trigger.id}`), {
+      params: Promise.resolve({ id: trigger.id }),
+    });
+    expect(getResponse.status).toBe(401);
+
+    const updateResponse = await triggerRoute.PUT(new NextRequest(`http://localhost/api/triggers/${trigger.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    }), {
+      params: Promise.resolve({ id: trigger.id }),
+    });
+    expect(updateResponse.status).toBe(401);
+
+    const deleteResponse = await triggerRoute.DELETE(new NextRequest(`http://localhost/api/triggers/${trigger.id}`, { method: 'DELETE' }), {
+      params: Promise.resolve({ id: trigger.id }),
+    });
+    expect(deleteResponse.status).toBe(401);
+  });
+
+  test('rejects /api/channels/bindings without auth', async () => {
+    const agent = await agentService.createAgent({ name: 'Binding Agent' });
+    const binding = await db.channelBinding.create({
+      data: { channel: 'slack', channelKey: 'room-1', agentId: agent.id },
+    });
+
+    const listResponse = await channelBindingsRoute.GET(new NextRequest('http://localhost/api/channels/bindings'));
+    expect(listResponse.status).toBe(401);
+
+    const createResponse = await channelBindingsRoute.POST(new NextRequest('http://localhost/api/channels/bindings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channel: 'slack', channelKey: 'room-2', agentId: agent.id }),
+    }));
+    expect(createResponse.status).toBe(401);
+
+    const deleteResponse = await channelBindingRoute.DELETE(new NextRequest(`http://localhost/api/channels/bindings/${binding.id}`, { method: 'DELETE' }), {
+      params: Promise.resolve({ id: binding.id }),
+    });
+    expect(deleteResponse.status).toBe(401);
   });
 });
 

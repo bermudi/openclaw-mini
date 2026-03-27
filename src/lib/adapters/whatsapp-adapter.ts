@@ -2,6 +2,7 @@ import { rmSync, existsSync, mkdirSync, writeFileSync } from 'fs';
 import { Boom } from '@hapi/boom';
 import * as path from 'path';
 import type { ChannelAdapter, DeliveryTarget, VisionInput, Attachment, DownloadedFile } from '@/lib/types';
+import { buildInternalAuthHeaders } from '@/lib/internal-auth';
 import { inboundFileService } from '@/lib/services/inbound-file-service';
 
 type BaileysSocketLike = {
@@ -341,7 +342,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
     try {
       await fetch(`${appUrl}/api/input`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           type: 'message',
           channel: 'whatsapp',
@@ -424,7 +425,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
       await fetch(`${appUrl}/api/input`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           type: 'message',
           channel: 'whatsapp',

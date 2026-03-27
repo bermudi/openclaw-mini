@@ -150,6 +150,7 @@ beforeAll(async () => {
   process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? 'test-key';
   process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? 'test-key';
   process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
+  process.env.OPENCLAW_API_KEY = 'test-api-key';
   process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
   process.env.WHATSAPP_AUTH_DIR = WHATSAPP_AUTH_ROOT;
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-channel-adapters-');
@@ -193,6 +194,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   delete process.env.OPENCLAW_ALLOW_INSECURE_LOCAL;
+  delete process.env.OPENCLAW_API_KEY;
   delete process.env.WHATSAPP_AUTH_DIR;
   await resetDb();
   await db.$disconnect();
@@ -429,10 +431,14 @@ describe('6.3 WhatsApp adapter unit tests', () => {
   });
 
   test('inbound messages.upsert routes to /api/input', async () => {
-    const fetchCalls: Array<{ url: string; body: unknown }> = [];
+    const fetchCalls: Array<{ url: string; body: unknown; headers: Headers }> = [];
     const originalFetch = global.fetch;
     global.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      fetchCalls.push({ url: url.toString(), body: init?.body ? JSON.parse(init.body as string) : null });
+      fetchCalls.push({
+        url: url.toString(),
+        body: init?.body ? JSON.parse(init.body as string) : null,
+        headers: new Headers(init?.headers),
+      });
       return new Response(JSON.stringify({ success: true }), { status: 200 });
     }) as typeof fetch;
 
@@ -466,6 +472,7 @@ describe('6.3 WhatsApp adapter unit tests', () => {
     expect(body.channel).toBe('whatsapp');
     expect(body.channelKey).toBe('5511@s.whatsapp.net');
     expect(body.content).toBe('hello agent');
+    expect(inputCall?.headers.get('authorization')).toBe('Bearer test-api-key');
   });
 
   test('non-text messages are ignored', async () => {

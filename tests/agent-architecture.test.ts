@@ -1415,45 +1415,55 @@ test('sub-agent policy rejects disallowed tool and skill invocations', async () 
   ).rejects.toThrow("Skill 'planner' is not permitted for this sub-agent");
 });
 
-test('channel binding delete requires API key auth', async () => {
+test('channel binding delete requires bearer auth', async () => {
+  const previousInsecureLocal = process.env.OPENCLAW_ALLOW_INSECURE_LOCAL;
+  delete process.env.OPENCLAW_ALLOW_INSECURE_LOCAL;
   process.env.OPENCLAW_API_KEY = 'super-secret-key';
 
-  const agent = await agentService.createAgent({ name: 'Bound Agent' });
-  const binding = await db.channelBinding.create({
-    data: { channel: 'slack', channelKey: 'room-1', agentId: agent.id },
-  });
+  try {
+    const agent = await agentService.createAgent({ name: 'Bound Agent' });
+    const binding = await db.channelBinding.create({
+      data: { channel: 'slack', channelKey: 'room-1', agentId: agent.id },
+    });
 
-  const unauthorizedRequest = new NextRequest(`http://localhost/api/channels/bindings/${binding.id}`, {
-    method: 'DELETE',
-  });
-  const unauthorizedResponse = await channelBindingByIdRoute.DELETE(
-    unauthorizedRequest,
-    { params: Promise.resolve({ id: binding.id }) },
-  );
-  expect(unauthorizedResponse.status).toBe(401);
+    const unauthorizedRequest = new NextRequest(`http://localhost/api/channels/bindings/${binding.id}`, {
+      method: 'DELETE',
+    });
+    const unauthorizedResponse = await channelBindingByIdRoute.DELETE(
+      unauthorizedRequest,
+      { params: Promise.resolve({ id: binding.id }) },
+    );
+    expect(unauthorizedResponse.status).toBe(401);
 
-  const forbiddenRequest = new NextRequest(`http://localhost/api/channels/bindings/${binding.id}`, {
-    method: 'DELETE',
-    headers: { authorization: 'Bearer wrong-key' },
-  });
-  const forbiddenResponse = await channelBindingByIdRoute.DELETE(
-    forbiddenRequest,
-    { params: Promise.resolve({ id: binding.id }) },
-  );
-  expect(forbiddenResponse.status).toBe(403);
+    const invalidRequest = new NextRequest(`http://localhost/api/channels/bindings/${binding.id}`, {
+      method: 'DELETE',
+      headers: { authorization: 'Bearer wrong-key' },
+    });
+    const invalidResponse = await channelBindingByIdRoute.DELETE(
+      invalidRequest,
+      { params: Promise.resolve({ id: binding.id }) },
+    );
+    expect(invalidResponse.status).toBe(401);
 
-  const authorizedRequest = new NextRequest(`http://localhost/api/channels/bindings/${binding.id}`, {
-    method: 'DELETE',
-    headers: { 'x-api-key': 'super-secret-key' },
-  });
-  const authorizedResponse = await channelBindingByIdRoute.DELETE(
-    authorizedRequest,
-    { params: Promise.resolve({ id: binding.id }) },
-  );
-  expect(authorizedResponse.status).toBe(200);
+    const authorizedRequest = new NextRequest(`http://localhost/api/channels/bindings/${binding.id}`, {
+      method: 'DELETE',
+      headers: { authorization: 'Bearer super-secret-key' },
+    });
+    const authorizedResponse = await channelBindingByIdRoute.DELETE(
+      authorizedRequest,
+      { params: Promise.resolve({ id: binding.id }) },
+    );
+    expect(authorizedResponse.status).toBe(200);
 
-  const deletedBinding = await db.channelBinding.findUnique({ where: { id: binding.id } });
-  expect(deletedBinding).toBeNull();
+    const deletedBinding = await db.channelBinding.findUnique({ where: { id: binding.id } });
+    expect(deletedBinding).toBeNull();
+  } finally {
+    if (previousInsecureLocal === undefined) {
+      delete process.env.OPENCLAW_ALLOW_INSECURE_LOCAL;
+    } else {
+      process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = previousInsecureLocal;
+    }
+  }
 });
 
 test('end-to-end input routes without agentId and prompt includes skill summaries', async () => {

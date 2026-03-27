@@ -28,6 +28,7 @@ OpenClaw Mini now protects admin APIs and trusted service boundaries with `Autho
 - The scheduler and internal WS client automatically send this bearer token once it is configured.
 - Startup fails fast if `OPENCLAW_API_KEY` is missing.
 - For local-only testing, you can temporarily set `OPENCLAW_ALLOW_INSECURE_LOCAL=true` to bypass internal auth with a warning.
+- Browser clients (`/chat` and dashboard send-message actions) do not embed bearer tokens; they only work in local insecure mode or behind an authenticating reverse proxy.
 - Webhook signature verification remains separate; webhook secrets still use their own signature headers.
 
 ## Cross-process event flow

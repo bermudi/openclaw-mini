@@ -22,6 +22,7 @@
    - The scheduler and WebSocket broadcast client reuse the same token automatically.
    - If your app runs on a non-default origin, set `OPENCLAW_APP_URL` for scheduler callbacks.
    - For local-only experimentation, you may set `OPENCLAW_ALLOW_INSECURE_LOCAL=true`, but startup will warn loudly because this disables internal bearer auth.
+   - Browser clients (`/chat` and the dashboard send-message flow) do not ship bearer tokens, so they require insecure-local mode or an authenticating reverse proxy.
 
 5. **Copy example skills (optional, for sub-agent support):**
    ```bash

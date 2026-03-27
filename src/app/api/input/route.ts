@@ -2,12 +2,16 @@
 // Unified input processing endpoint
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireInternalAuth } from '@/lib/api-auth';
 import { inputManager } from '@/lib/services/input-manager';
 import { Input } from '@/lib/types';
 
 // POST /api/input - Process any input type
 export async function POST(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const body = await request.json();
     const { input, agentId } = body as { input: Input; agentId?: string };
 

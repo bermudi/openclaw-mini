@@ -2,12 +2,16 @@
 // Trigger management endpoints
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireInternalAuth } from '@/lib/api-auth';
 import { triggerService } from '@/lib/services/trigger-service';
 import { storageErrorResponse } from '@/lib/api/storage-errors';
 
 // GET /api/triggers - List all triggers
 export async function GET(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const { searchParams } = new URL(request.url);
     const agentId = searchParams.get('agentId');
 
@@ -34,6 +38,9 @@ export async function GET(request: NextRequest) {
 // POST /api/triggers - Create a new trigger
 export async function POST(request: NextRequest) {
   try {
+    const authResponse = await requireInternalAuth(request);
+    if (authResponse) return authResponse;
+
     const body = await request.json();
     const { agentId, name, type, config, enabled } = body;
 
