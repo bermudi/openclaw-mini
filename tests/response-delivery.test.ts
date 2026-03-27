@@ -68,7 +68,7 @@ async function ensureOutboundDeliveryModel(): Promise<void> {
   delete process.env.DATABASE_URL;
   const dbPush = Bun.spawnSync({
     cmd: ['bunx', 'prisma', 'db', 'push', '--accept-data-loss'],
-    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
+    env: { ...process.env, DATABASE_URL: TEST_DB_URL, NO_ENV_FILE: '1' },
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -83,7 +83,7 @@ async function ensureOutboundDeliveryModel(): Promise<void> {
 async function runTestDbPush(): Promise<void> {
   const dbPush = Bun.spawnSync({
     cmd: ['bunx', 'prisma', 'db', 'push'],
-    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
+    env: { ...process.env, DATABASE_URL: TEST_DB_URL, NO_ENV_FILE: '1' },
     stdout: 'pipe',
     stderr: 'pipe',
   });
