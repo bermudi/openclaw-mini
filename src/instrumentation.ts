@@ -2,6 +2,7 @@
 // Runs at server startup via Next.js instrumentation API
 
 import { markSkillCacheDirty, resetSkillCacheDirtyForTests } from '@/lib/services/skill-cache-signal';
+import { initialize } from '@/lib/init';
 
 let skillCacheSighupHandler: (() => void) | null = null;
 
@@ -14,14 +15,6 @@ type NodeProcessLike = {
 function getNodeProcess(): NodeProcessLike | undefined {
   return Reflect.get(globalThis, 'process') as NodeProcessLike | undefined;
 }
-
-interface InitResultLike {
-  success: boolean;
-}
-
-const loadInitModule = new Function('specifier', 'return import(specifier);') as (
-  specifier: string,
-) => Promise<{ initialize: () => Promise<InitResultLike> }>;
 
 export function registerSkillCacheSignalHandler(): void {
   if (skillCacheSighupHandler) {
@@ -51,7 +44,6 @@ export async function register() {
   // Only run in Node.js runtime (not Edge)
   const nextRuntime = getNodeProcess()?.env?.NEXT_RUNTIME;
   if (nextRuntime === 'nodejs' || !nextRuntime) {
-    const { initialize } = await loadInitModule('@/lib/init');
     const result = await initialize();
 
     if (!result.success) {

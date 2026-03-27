@@ -354,7 +354,7 @@ async function runDeliveryLoop() {
     console.error('[Scheduler] Error processing deliveries:', error);
   } finally {
     if (isRunning) {
-      setTimeout(runDeliveryLoop, 2000);
+      setTimeout(runDeliveryLoop, 5000);
     }
   }
 }
