@@ -714,9 +714,23 @@ export class MemoryIndexingService {
         createdChunks.push(mapChunk(created));
       }
 
-      const updatedState = await db.memoryIndexState.update({
+      const updatedState = await db.memoryIndexState.upsert({
         where: { memoryId },
-        data: {
+        create: {
+          memoryId,
+          agentId: memory.agentId,
+          status: 'indexed',
+          lastContentHash: nextHash,
+          lastIndexedAt: new Date(),
+          lastError: null,
+          attempts: 1,
+          embeddingProvider: descriptor.provider,
+          embeddingModel: descriptor.model,
+          embeddingVersion: descriptor.version,
+          embeddingDimensions: descriptor.dimensions,
+          vectorMode: getRuntimeConfig().memory.vectorRetrievalMode,
+        },
+        update: {
           status: 'indexed',
           lastIndexedAt: new Date(),
           lastError: null,
@@ -729,9 +743,22 @@ export class MemoryIndexingService {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const failedState = await db.memoryIndexState.update({
+      const failedState = await db.memoryIndexState.upsert({
         where: { memoryId },
-        data: {
+        create: {
+          memoryId,
+          agentId: memory.agentId,
+          status: 'failed',
+          lastContentHash: nextHash,
+          lastError: message,
+          attempts: 1,
+          embeddingProvider: descriptor.provider,
+          embeddingModel: descriptor.model,
+          embeddingVersion: descriptor.version,
+          embeddingDimensions: descriptor.dimensions,
+          vectorMode: getRuntimeConfig().memory.vectorRetrievalMode,
+        },
+        update: {
           status: 'failed',
           lastError: message,
         },
@@ -1090,6 +1117,8 @@ export class MemoryIndexingService {
     agentId: string,
     options: AutomaticRecallOptions,
   ): Promise<AutomaticRecallResult> {
+    await this.ensureIndexStructures();
+
     const pinnedKeys = options.pinnedKeys ?? DEFAULT_PINNED_KEYS;
     const pinnedMemories = await db.memory.findMany({
       where: {
@@ -1115,7 +1144,7 @@ export class MemoryIndexingService {
     const hybrid = await this.collectHybridCandidates(agentId, {
       query: options.query,
       limit: getRuntimeConfig().memory.maxSearchResults,
-      includeLowConfidence: false,
+      includeLowConfidence: true,
     });
 
     const recalledPool = hybrid.combined.filter(candidate => !pinnedKeys.includes(candidate.key));
@@ -1125,7 +1154,6 @@ export class MemoryIndexingService {
     const pinnedOmitted: MemoryRecallCandidate[] = [];
     const recalledSelected: MemoryRecallCandidate[] = [];
     const recalledOmitted: MemoryRecallCandidate[] = [];
-
     for (const candidate of pinnedCandidates) {
       if (candidate.tokenEstimate <= remainingBudget) {
         pinnedSelected.push(candidate);
@@ -1142,7 +1170,7 @@ export class MemoryIndexingService {
       }
       if (candidate.tokenEstimate <= remainingBudget) {
         recalledSelected.push(candidate);
-        remainingBudget -= candidate.tokenEstimate;
+        remainingBudget = Math.max(remainingBudget - candidate.tokenEstimate, 0);
       } else {
         recalledOmitted.push(candidate);
       }

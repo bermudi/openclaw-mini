@@ -260,7 +260,7 @@ class TriggerService {
         throw new TriggerFireError('Unable to calculate next trigger', 400);
       }
 
-      const updated = await db.trigger.update({
+      const updateResult = await db.trigger.updateMany({
         where: {
           id: triggerId,
           nextTrigger: { lte: referenceTime },
@@ -271,6 +271,11 @@ class TriggerService {
         },
       });
 
+      if (updateResult.count !== 1) {
+        throw new TriggerFireError('Trigger was already processed', 409);
+      }
+
+      const updated = await db.trigger.findUnique({ where: { id: triggerId } });
       if (!updated) {
         throw new TriggerFireError('Trigger was already processed', 409);
       }

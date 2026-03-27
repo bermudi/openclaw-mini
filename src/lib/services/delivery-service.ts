@@ -308,7 +308,11 @@ async function markDeliveryFailed(id: string, lastError: string, attempts?: numb
 }
 
 function isUniqueConstraintError(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+    return true;
+  }
+
+  return error instanceof Error && /Unique constraint failed on the fields:\s*\(`dedupeKey`\)/.test(error.message);
 }
 
 function getErrorMessage(error: unknown): string {

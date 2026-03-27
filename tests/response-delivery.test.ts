@@ -6,6 +6,7 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { NextRequest } from 'next/server';
 import type { PrismaClient } from '@prisma/client';
+import { spyOn } from 'bun:test';
 import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture, writeRuntimeConfig } from './runtime-config-fixture';
 
 let mockResponseText = 'stub response';
@@ -24,6 +25,7 @@ type InputManagerModule = typeof import('../src/lib/services/input-manager');
 type AgentExecutorModule = typeof import('../src/lib/services/agent-executor');
 type TelegramWebhookRouteModule = typeof import('../src/app/api/channels/telegram/webhook/route');
 type AdapterIndexModule = typeof import('../src/lib/adapters');
+type EventBusModule = typeof import('../src/lib/services/event-bus');
 
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'response-delivery.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
@@ -98,6 +100,7 @@ let inputManagerModule: InputManagerModule;
 let agentExecutorModule: typeof import('../src/lib/services/agent-executor');
 let telegramWebhookRoute: TelegramWebhookRouteModule;
 let adapterIndexModule: AdapterIndexModule;
+let eventBusModule: EventBusModule;
 let initialMemoryDirs = new Set<string>();
 let runtimeConfigFixture: RuntimeConfigFixture | null = null;
 
@@ -204,6 +207,7 @@ beforeAll(async () => {
   agentExecutorModule = await import('../src/lib/services/agent-executor');
   telegramWebhookRoute = await import('../src/app/api/channels/telegram/webhook/route');
   adapterIndexModule = await import('../src/lib/adapters');
+  eventBusModule = await import('../src/lib/services/event-bus');
   await ensureOutboundDeliveryModel();
 
   await resetDb();
@@ -396,13 +400,8 @@ test('dispatchDelivery marks permanent failures and missing adapters as failed',
 
 test('completeTaskTx works inside a transaction and side effects happen only when invoked after commit', async () => {
   const agent = await createDefaultAgent();
-  const task = await createPendingTask(agent.id);
-  const fetchCalls: Array<{ url: string; body: string }> = [];
-
-  global.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    fetchCalls.push({ url: input.toString(), body: String(init?.body ?? '') });
-    return new Response('{}', { status: 200 });
-  }) as typeof fetch;
+  const task = await createPendingTask(agent.id, { type: 'heartbeat', payload: { ok: true } });
+  const emitSpy = spyOn(eventBusModule.eventBus, 'emit').mockResolvedValue(undefined);
 
   await db.$transaction(async (tx) => {
     const updated = await taskQueueModule.taskQueue.completeTaskTx(tx, task.id, { ok: true });
@@ -410,12 +409,13 @@ test('completeTaskTx works inside a transaction and side effects happen only whe
 
     expect(updated?.status).toBe('completed');
     expect(insideTxTask?.status).toBe('completed');
-    expect(fetchCalls).toHaveLength(0);
+    expect(emitSpy).toHaveBeenCalledTimes(0);
   });
 
-  await taskQueueModule.taskQueue.completeTaskSideEffects(agent.id, task.id, 'message', { ok: true });
-  expect(fetchCalls).toHaveLength(1);
-  expect(fetchCalls[0]?.body).toContain('task:completed');
+  await taskQueueModule.taskQueue.completeTaskSideEffects(agent.id, task.id, 'heartbeat', { ok: true });
+  expect(emitSpy).toHaveBeenCalledTimes(1);
+  expect(emitSpy).toHaveBeenCalledWith('task:completed', expect.objectContaining({ taskId: task.id, agentId: agent.id }));
+  emitSpy.mockRestore();
 });
 
 test('message executor creates outbound deliveries, non-message tasks do not, empty responses skip delivery, and dedupeKey stays stable', async () => {

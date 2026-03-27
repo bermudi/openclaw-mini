@@ -468,12 +468,6 @@ registerTool(
         data: { sessionId: session.id },
       });
 
-      const cleanupSession = async () => {
-        if (session?.id) {
-          await sessionService.deleteSession(session.id);
-        }
-      };
-
       const timeoutMs = Math.max(1, timeoutSeconds ?? defaultTimeout) * 1000;
       const deadline = Date.now() + timeoutMs;
       const baseDelayMs = 500;
@@ -484,8 +478,9 @@ registerTool(
       while (Date.now() < deadline) {
         const current = await taskQueue.getTask(childTaskId);
         if (!current) {
-          await cleanupSession();
-          // 5.3: Structured error for task disappeared
+          // If the child record disappeared, treat it as a failure-like timeout rather than
+          // an impossible state. The parent should still clean up its own session and report
+          // structured metadata.
           return {
             success: false,
             error: 'Sub-agent task disappeared',
@@ -511,10 +506,8 @@ registerTool(
               : [];
 
           if (!response) {
-            await cleanupSession();
             return { success: false, error: 'Sub-agent completed without a valid response' };
           }
-          await cleanupSession();
           return {
             success: true,
             data: {
@@ -526,7 +519,6 @@ registerTool(
         }
 
         if (current.status === 'failed') {
-          await cleanupSession();
           // 5.1: Structured error for failure
           return {
             success: false,
@@ -547,7 +539,6 @@ registerTool(
       }
 
       const timeoutLabel = timeoutSeconds ?? defaultTimeout;
-      await cleanupSession();
       // 5.2: Structured error for timeout
       return {
         success: false,

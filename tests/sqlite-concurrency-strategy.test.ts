@@ -164,6 +164,12 @@ test('single-writer flow routes scheduler lifecycle writes through APIs', async 
     config: { interval: 30 },
     enabled: true,
   })
+  await db.trigger.update({
+    where: { id: trigger.id },
+    data: {
+      nextTrigger: new Date('2026-03-25T00:00:00.000Z'),
+    },
+  })
 
   const fetchSpy = spyOn(global, 'fetch').mockImplementation((async (input, init) => {
     const url = typeof input === 'string' ? input : input.url
@@ -618,6 +624,12 @@ test('scheduled trigger fire updates trigger through internal API boundary', asy
     type: 'cron',
     config: { cronExpression: '0 9 * * *' },
     enabled: true,
+  })
+  await db.trigger.update({
+    where: { id: trigger.id },
+    data: {
+      nextTrigger: new Date('2026-03-25T09:00:00.000Z'),
+    },
   })
 
   const response = await triggerFireRoute.POST(

@@ -942,7 +942,10 @@ class ProcessSupervisor {
   }
 
   private requestCancel(sessionId: string, reason: ProcessTerminationReason): void {
-    const session = this.requireSession(sessionId);
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return;
+    }
     if (session.settled) {
       return;
     }

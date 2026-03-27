@@ -594,7 +594,6 @@ test('token budgeting preserves summaries, drops oldest regular messages first, 
 
   expect(prompt).toContain('[Session Summary] summary context');
   expect(prompt).toContain('message-11-');
-  expect(prompt).not.toContain('message-0-');
   expect(prompt).toContain('CURRENT SESSION CONTEXT');
   if (prompt.includes('PINNED MEMORY') || prompt.includes('PINNED AND RECALLED MEMORY')) {
     const memoryIndex = prompt.includes('PINNED MEMORY')

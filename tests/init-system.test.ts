@@ -61,6 +61,9 @@ beforeAll(async () => {
   process.env.OPENAI_API_KEY = 'test-key';
 
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
+  fs.rmSync(TEST_DB_PATH, { force: true });
+  fs.rmSync(`${TEST_DB_PATH}-wal`, { force: true });
+  fs.rmSync(`${TEST_DB_PATH}-shm`, { force: true });
 
   const dbPush = Bun.spawnSync({
     cmd: ['bunx', 'prisma', 'db', 'push', '--accept-data-loss'],
