@@ -261,12 +261,19 @@ class TriggerService {
       }
 
       const updated = await db.trigger.update({
-        where: { id: triggerId },
+        where: {
+          id: triggerId,
+          nextTrigger: { lte: referenceTime },
+        },
         data: {
           lastTriggered: referenceTime,
           nextTrigger,
         },
       });
+
+      if (!updated) {
+        throw new TriggerFireError('Trigger was already processed', 409);
+      }
 
       return {
         trigger: this.mapTrigger(updated),
