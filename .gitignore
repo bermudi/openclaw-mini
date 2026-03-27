@@ -53,3 +53,5 @@ server.log
 
 # test artifacts
 /data/memories/
+prisma/db/*.db-shm
+prisma/db/*.db-wal
