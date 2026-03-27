@@ -19,6 +19,37 @@ let migrateSessionContextToMessages: typeof import('../src/lib/services/session-
 let setCountTokensImplementationForTests: typeof import('../src/lib/utils/token-counter').setCountTokensImplementationForTests;
 let setCountTokensThrowOnErrorForTests: typeof import('../src/lib/utils/token-counter').setCountTokensThrowOnErrorForTests;
 
+async function ensureSessionMessageTable(): Promise<void> {
+  const tables = await db.$queryRaw<Array<{ name: string }>>`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_messages'`;
+  if (tables.length > 0) {
+    return;
+  }
+
+  const dbPush = Bun.spawnSync({
+    cmd: ['bunx', 'prisma', 'db', 'push', '--accept-data-loss'],
+    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  if (dbPush.exitCode !== 0) {
+    throw new Error(`Failed to prepare harden-core test database: ${dbPush.stderr.toString()}`);
+  }
+}
+
+async function runTestDbPush(): Promise<void> {
+  const dbPush = Bun.spawnSync({
+    cmd: ['bunx', 'prisma', 'db', 'push'],
+    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  if (dbPush.exitCode !== 0) {
+    throw new Error(`Failed to prepare harden-core test database: ${dbPush.stderr.toString()}`);
+  }
+}
+
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'harden-core.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
 const MEMORY_ROOT = path.join(tmpdir(), 'openclaw-mini-harden-memories');
@@ -80,16 +111,7 @@ beforeAll(async () => {
   resetProviderRegistryForTests();
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
 
-  const dbPush = Bun.spawnSync({
-    cmd: ['bunx', 'prisma', 'db', 'push'],
-    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-
-  if (dbPush.exitCode !== 0) {
-    throw new Error(`Failed to prepare harden-core test database: ${dbPush.stderr.toString()}`);
-  }
+  await runTestDbPush();
 
   db = (await import('../src/lib/db')).db;
   sessionService = (await import('../src/lib/services/session-service')).sessionService;
@@ -102,6 +124,7 @@ beforeAll(async () => {
   const tokenCounterModule = await import('../src/lib/utils/token-counter');
   setCountTokensImplementationForTests = tokenCounterModule.setCountTokensImplementationForTests;
   setCountTokensThrowOnErrorForTests = tokenCounterModule.setCountTokensThrowOnErrorForTests;
+  await ensureSessionMessageTable();
 
   await resetDb();
 });

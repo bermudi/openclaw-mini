@@ -414,6 +414,7 @@ describe('startup validation and webhook signature separation', () => {
 
   test('startup allows insecure local mode with a warning', async () => {
     delete process.env.OPENCLAW_API_KEY;
+    delete process.env.OPENCLAW_REQUIRE_STRICT_AUTH;
     process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
     resetInitForTests();
 

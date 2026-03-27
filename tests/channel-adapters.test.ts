@@ -34,6 +34,7 @@ type MessagesListener = (event: {
 const mockSocketEvents: Record<string, ((...args: unknown[]) => void)[]> = {};
 const mockSentMessages: Array<{ jid: string; content: Record<string, unknown> }> = [];
 let mockLogout: (() => Promise<void>) = async () => {};
+const mockDownloadedMedia: Array<{ msgId: string; buffer: Buffer; ext: string }> = [];
 
 const createMockSocket = () => ({
   ev: {
@@ -60,6 +61,12 @@ mock.module('@whiskeysockets/baileys', () => ({
     badSession: 500,
     connectionReplaced: 440,
   },
+  downloadMediaMessage: async (msg: { key: { remoteJid: string } }) => {
+    const msgId = msg.key.remoteJid;
+    const found = mockDownloadedMedia.find(m => m.msgId === msgId);
+    return found?.buffer ?? Buffer.from('test-media-content');
+  },
+  extensionForMediaMessage: (_msg: unknown) => 'jpg',
 }));
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -69,6 +76,7 @@ mock.module('@whiskeysockets/baileys', () => ({
 const TEST_DB_PATH = path.join(process.cwd(), 'db', 'channel-adapters.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
 const MEMORY_ROOT = path.join(tmpdir(), 'openclaw-mini-channel-memories');
+const WHATSAPP_AUTH_ROOT = path.join(tmpdir(), 'openclaw-mini-whatsapp-auth');
 
 let db: PrismaClient;
 let deliveryService: typeof import('../src/lib/services/delivery-service');
@@ -143,6 +151,7 @@ beforeAll(async () => {
   process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? 'test-key';
   process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
   process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
+  process.env.WHATSAPP_AUTH_DIR = WHATSAPP_AUTH_ROOT;
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-channel-adapters-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
   process.env.OPENCLAW_MEMORY_DIR = MEMORY_ROOT;
@@ -184,6 +193,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   delete process.env.OPENCLAW_ALLOW_INSECURE_LOCAL;
+  delete process.env.WHATSAPP_AUTH_DIR;
   await resetDb();
   await db.$disconnect();
   cleanupMemoryDirs();
@@ -194,6 +204,7 @@ afterAll(async () => {
   if (fs.existsSync(TEST_DB_PATH)) fs.rmSync(TEST_DB_PATH, { force: true });
   delete process.env.OPENCLAW_MEMORY_DIR;
   if (fs.existsSync(MEMORY_ROOT)) fs.rmSync(MEMORY_ROOT, { recursive: true, force: true });
+  if (fs.existsSync(WHATSAPP_AUTH_ROOT)) fs.rmSync(WHATSAPP_AUTH_ROOT, { recursive: true, force: true });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -477,7 +488,7 @@ describe('6.3 WhatsApp adapter unit tests', () => {
     const msgListeners = mockSocketEvents['messages.upsert'] as MessagesListener[] | undefined;
     msgListeners?.forEach(cb => cb({
       type: 'notify',
-      messages: [{ key: { remoteJid: '5511@s.whatsapp.net' }, message: { imageMessage: {} } as never }],
+      messages: [{ key: { remoteJid: '5511@s.whatsapp.net' }, message: { protocolMessage: {} } as never }],
     }));
 
     await new Promise(r => setTimeout(r, 10));

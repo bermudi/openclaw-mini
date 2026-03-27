@@ -115,7 +115,8 @@ const TEST_DB_PATH = path.join(process.cwd(), 'db', 'attachments.test.db');
 const TEST_DB_URL = `file:${TEST_DB_PATH}`;
 const MEMORY_ROOT = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-attachments-memories-'));
 const INBOUND_ROOT = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-attachments-inbound-'));
-const createdTempDirs = new Set<string>([MEMORY_ROOT, INBOUND_ROOT]);
+const WHATSAPP_AUTH_ROOT = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-attachments-whatsapp-auth-'));
+const createdTempDirs = new Set<string>([MEMORY_ROOT, INBOUND_ROOT, WHATSAPP_AUTH_ROOT]);
 
 function createTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(tmpdir(), prefix));
@@ -183,6 +184,7 @@ beforeAll(async () => {
   process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? 'test-key';
   process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
   process.env.TELEGRAM_BOT_TOKEN = 'test-telegram-token';
+  process.env.WHATSAPP_AUTH_DIR = WHATSAPP_AUTH_ROOT;
   runtimeConfigFixture = createRuntimeConfigFixture('openclaw-mini-attachments-');
   process.env.OPENCLAW_CONFIG_PATH = runtimeConfigFixture.configPath;
   process.env.OPENCLAW_MEMORY_DIR = MEMORY_ROOT;
@@ -236,6 +238,7 @@ afterAll(async () => {
   }
   if (fs.existsSync(TEST_DB_PATH)) fs.rmSync(TEST_DB_PATH, { force: true });
   delete process.env.OPENCLAW_MEMORY_DIR;
+  delete process.env.WHATSAPP_AUTH_DIR;
   delete process.env.TELEGRAM_BOT_TOKEN;
 
   // Reset inbound root override

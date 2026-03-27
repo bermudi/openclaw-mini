@@ -1,32 +1,96 @@
-import makeWASocket, {
-  DisconnectReason,
-  useMultiFileAuthState,
-  downloadMediaMessage,
-  extensionForMediaMessage,
-  type WASocket,
-  type BaileysEventMap,
-} from '@whiskeysockets/baileys';
 import { rmSync, existsSync, mkdirSync, writeFileSync } from 'fs';
 import { Boom } from '@hapi/boom';
 import * as path from 'path';
 import type { ChannelAdapter, DeliveryTarget, VisionInput, Attachment, DownloadedFile } from '@/lib/types';
 import { inboundFileService } from '@/lib/services/inbound-file-service';
 
-const AUTH_DIR = 'data/whatsapp-auth';
+type BaileysSocketLike = {
+  ev: { on(event: string, cb: (...args: unknown[]) => void): void };
+  sendMessage(jid: string, content: Record<string, unknown>): Promise<{ key?: { id?: string } }>;
+  logout(): Promise<void>;
+};
+
+type BaileysModuleLike = {
+  default?: (options: { auth: unknown; printQRInTerminal: boolean }) => BaileysSocketLike;
+  makeWASocket?: (options: { auth: unknown; printQRInTerminal: boolean }) => BaileysSocketLike;
+  useMultiFileAuthState?: (dir: string) => Promise<{ state: unknown; saveCreds: () => Promise<void> }>;
+  DisconnectReason?: { loggedOut: unknown; badSession: unknown; connectionReplaced: unknown };
+  downloadMediaMessage?: (message: unknown, type: 'buffer', options: Record<string, unknown>) => Promise<Uint8Array | Buffer>;
+  extensionForMediaMessage?: (message: unknown) => string | undefined;
+};
+
+const dynamicImportBaileys = new Function('specifier', 'return import(specifier);') as (specifier: string) => Promise<BaileysModuleLike>;
+
+async function getBaileysModule(): Promise<BaileysModuleLike> {
+  return dynamicImportBaileys('@whiskeysockets/baileys');
+}
+
+function getMakeWASocket(module: BaileysModuleLike): ((options: { auth: unknown; printQRInTerminal: boolean }) => BaileysSocketLike) | null {
+  return module.makeWASocket ?? module.default ?? null;
+}
+
+function getDisconnectReason(module: BaileysModuleLike): BaileysModuleLike['DisconnectReason'] | null {
+  return module.DisconnectReason ?? null;
+}
+
+function getMediaHelpers(module: BaileysModuleLike): {
+  downloadMediaMessage: BaileysModuleLike['downloadMediaMessage'] | null;
+  extensionForMediaMessage: BaileysModuleLike['extensionForMediaMessage'] | null;
+} {
+  const candidates: Array<Record<string, unknown> | null> = [];
+  const seen = new Set<unknown>();
+
+  const pushCandidate = (value: unknown): void => {
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    if (typeof value === 'object' || typeof value === 'function') {
+      candidates.push(value as Record<string, unknown>);
+      const nested = (value as Record<string, unknown>).default;
+      if (nested && nested !== value) pushCandidate(nested);
+    }
+  };
+
+  pushCandidate(module);
+  pushCandidate(module.default);
+
+  const pickHelper = <T extends 'downloadMediaMessage' | 'extensionForMediaMessage'>(name: T): BaileysModuleLike[T] | null => {
+    for (const candidate of candidates) {
+      const value = candidate?.[name];
+      if (typeof value === 'function') return value as BaileysModuleLike[T];
+    }
+
+    return null;
+  };
+
+  return {
+    downloadMediaMessage: pickHelper('downloadMediaMessage'),
+    extensionForMediaMessage: pickHelper('extensionForMediaMessage'),
+  };
+}
+
+const AUTH_DIR = process.env.WHATSAPP_AUTH_DIR || 'data/whatsapp-auth';
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MULTIPLIER = 2;
 const RECONNECT_MAX_RETRIES = 5;
 const RECONNECT_JITTER_MS = 1_000;
 
-type ConnectionState = BaileysEventMap['connection.update'];
+type ConnectionState = {
+  connection?: 'open' | 'close' | string;
+  lastDisconnect?: { error?: Boom };
+  qr?: string;
+};
 
 export class WhatsAppAdapter implements ChannelAdapter {
   readonly channel = 'whatsapp' as const;
-  private socket: WASocket | null = null;
+  private socket: BaileysSocketLike | null = null;
   private connected = false;
   private reconnectAttempts = 0;
   private stopping = false;
   private qrCallback: ((qr: string) => void) | null = null;
+  private mediaHelpers: {
+    downloadMediaMessage: BaileysModuleLike['downloadMediaMessage'] | null;
+    extensionForMediaMessage: BaileysModuleLike['extensionForMediaMessage'] | null;
+  } = { downloadMediaMessage: null, extensionForMediaMessage: null };
 
   async start(): Promise<void> {
     this.stopping = false;
@@ -66,7 +130,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
     }
 
     const result = await this.socket.sendMessage(chatId, { text });
-    const externalMessageId = result?.key.id ?? undefined;
+    const externalMessageId = result.key?.id;
     return { externalMessageId };
   }
 
@@ -90,7 +154,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       fileName: opts?.filename,
       caption: opts?.caption,
     });
-    const externalMessageId = result?.key.id ?? undefined;
+    const externalMessageId = result.key?.id;
     return { externalMessageId };
   }
 
@@ -125,6 +189,15 @@ export class WhatsAppAdapter implements ChannelAdapter {
       mkdirSync(destDir, { recursive: true });
     }
 
+    const helpers = this.mediaHelpers.downloadMediaMessage || this.mediaHelpers.extensionForMediaMessage
+      ? this.mediaHelpers
+      : getMediaHelpers(await getBaileysModule());
+    const { downloadMediaMessage, extensionForMediaMessage } = helpers;
+
+    if (!downloadMediaMessage || !extensionForMediaMessage) {
+      throw new Error('WhatsApp media helpers are unavailable');
+    }
+
     const messageWrapper = messageType === 'image'
       ? { key: { remoteJid: jid }, message: { imageMessage: { mediaKey, mimetype } } } as never
       : { key: { remoteJid: jid }, message: { documentMessage: { mediaKey, mimetype, fileName } } } as never;
@@ -140,15 +213,24 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
   private async connect(): Promise<void> {
     try {
+      const baileys = await getBaileysModule();
+      const makeWASocket = getMakeWASocket(baileys);
+      const DisconnectReason = getDisconnectReason(baileys);
+      if (!makeWASocket || typeof baileys.useMultiFileAuthState !== 'function' || !DisconnectReason) {
+        throw new Error('WhatsApp adapter is unavailable');
+      }
+
+      this.mediaHelpers = getMediaHelpers(baileys);
+
       // eslint-disable-next-line react-hooks/rules-of-hooks
-      const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+      const { state, saveCreds } = await baileys.useMultiFileAuthState(AUTH_DIR);
 
       const sock = makeWASocket({ auth: state, printQRInTerminal: false });
       this.socket = sock;
 
       sock.ev.on('creds.update', saveCreds);
 
-      sock.ev.on('connection.update', (update: ConnectionState) => {
+      const onConnectionUpdate = (update: ConnectionState): void => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr && this.qrCallback) {
@@ -186,9 +268,12 @@ export class WhatsAppAdapter implements ChannelAdapter {
             void this.scheduleReconnect();
           }
         }
-      });
+      };
 
-      sock.ev.on('messages.upsert', ({ messages, type }) => {
+      sock.ev.on('connection.update', onConnectionUpdate as unknown as (...args: unknown[]) => void);
+
+      const onMessagesUpsert = (event: { messages: Array<{ key: { remoteJid?: string; id?: string }; message?: { conversation?: string; extendedTextMessage?: { text?: string }; imageMessage?: { mediaKey?: Uint8Array; mimetype?: string; caption?: string }; documentMessage?: { mediaKey?: Uint8Array; mimetype?: string; fileName?: string; caption?: string } } }>; type: string }): void => {
+        const { messages, type } = event;
         if (type !== 'notify') return;
 
         for (const msg of messages) {
@@ -199,13 +284,18 @@ export class WhatsAppAdapter implements ChannelAdapter {
           const imageMessage = msg.message?.imageMessage as { mediaKey?: Uint8Array; mimetype?: string; caption?: string } | undefined;
           const documentMessage = msg.message?.documentMessage as { mediaKey?: Uint8Array; mimetype?: string; fileName?: string; caption?: string } | undefined;
 
-          if (imageMessage || documentMessage) {
+          const hasImagePayload = !!imageMessage && (!!imageMessage.mediaKey || !!imageMessage.mimetype || !!imageMessage.caption);
+          const hasDocumentPayload = !!documentMessage && (!!documentMessage.mediaKey || !!documentMessage.mimetype || !!documentMessage.fileName || !!documentMessage.caption);
+
+          if (hasImagePayload || hasDocumentPayload) {
             void this.routeInboundMedia(jid, msg.key.id ?? 'unknown', imageMessage, documentMessage);
-          } else if (text) {
+          } else if (text && msg.message && ('conversation' in msg.message || 'extendedTextMessage' in msg.message)) {
             void this.routeInbound(jid, text);
           }
         }
-      });
+      };
+
+      sock.ev.on('messages.upsert', onMessagesUpsert as unknown as (...args: unknown[]) => void);
     } catch (error) {
       this.connected = false;
       console.error('[WhatsApp] Failed to start connection:', error);
@@ -282,8 +372,17 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
     const appUrl = process.env.OPENCLAW_APP_URL ?? 'http://localhost:3000';
     const downloadsDir = inboundFileService.getDownloadsDir('whatsapp');
+    const baileys = await getBaileysModule();
+    const helpers = this.mediaHelpers.downloadMediaMessage || this.mediaHelpers.extensionForMediaMessage
+      ? this.mediaHelpers
+      : getMediaHelpers(baileys);
 
     try {
+      const { downloadMediaMessage, extensionForMediaMessage } = helpers;
+      if (!downloadMediaMessage || !extensionForMediaMessage) {
+        throw new Error('WhatsApp media helpers are unavailable');
+      }
+
       let visionInputs: VisionInput[] | undefined;
       let attachments: Attachment[] | undefined;
       let caption = '';
@@ -345,3 +444,5 @@ export class WhatsAppAdapter implements ChannelAdapter {
     }
   }
 }
+
+type BaileysHelpersModule = Record<string, unknown>;

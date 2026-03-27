@@ -13,8 +13,8 @@ import {
 import { clearSkillCache, loadAllSkills } from '../src/lib/services/skill-service';
 import { getTool } from '../src/lib/tools';
 
-const REPO_ROOT = process.cwd();
-const BUILT_IN_SKILLS_DIR = path.join(REPO_ROOT, 'skills');
+let REPO_ROOT = '';
+let BUILT_IN_SKILLS_DIR = '';
 
 let runtimeConfigFixture: RuntimeConfigFixture | null = null;
 let workspaceDir = '';
@@ -57,6 +57,8 @@ async function resetProviderRegistry(): Promise<void> {
 }
 
 beforeAll(async () => {
+  REPO_ROOT = process.cwd();
+  BUILT_IN_SKILLS_DIR = path.join(REPO_ROOT, 'skills');
   originalConfigPath = process.env.OPENCLAW_CONFIG_PATH;
   originalSkillsDir = process.env.OPENCLAW_SKILLS_DIR;
   process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? 'test-key';

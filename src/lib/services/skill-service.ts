@@ -26,6 +26,7 @@ import {
   createSubAgentOverridesSchema,
   formatSubAgentOverrideIssues,
 } from '@/lib/subagent-config';
+import { consumeSkillCacheDirty, resetSkillCacheDirtyForTests } from './skill-cache-signal';
 import { ensureProviderRegistryInitialized, providerRegistry } from '@/lib/services/provider-registry';
 
 const DEFAULT_CACHE_TTL_MS = 60_000;
@@ -263,6 +264,10 @@ function getDefaultLoaders(): SkillLoader[] {
 }
 
 export async function loadAllSkills(): Promise<LoadedSkill[]> {
+  if (consumeSkillCacheDirty()) {
+    clearSkillCache();
+  }
+
   if (shouldUseCache()) {
     return Array.from(cache.skills.values());
   }
@@ -315,4 +320,5 @@ export function clearSkillCache(): void {
   cache.skills = new Map();
   cache.loadedAt = 0;
   binaryAvailabilityCache.clear();
+  resetSkillCacheDirtyForTests();
 }

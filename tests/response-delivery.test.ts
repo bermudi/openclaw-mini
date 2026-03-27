@@ -56,6 +56,40 @@ type DeliveryModel = {
   count(args: { where: { taskId: string } }): Promise<number>;
 };
 type DeliveryDbClient = PrismaClient & { outboundDelivery: DeliveryModel };
+
+async function ensureOutboundDeliveryModel(): Promise<void> {
+  const result = await db.$queryRaw<Array<{ name: string }>>`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'outbound_deliveries'`;
+  if (result.length > 0) {
+    return;
+  }
+
+  delete process.env.DATABASE_URL;
+  const dbPush = Bun.spawnSync({
+    cmd: ['bunx', 'prisma', 'db', 'push', '--accept-data-loss'],
+    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  process.env.DATABASE_URL = TEST_DB_URL;
+
+  if (dbPush.exitCode !== 0) {
+    throw new Error(`Failed to prepare response delivery test database: ${dbPush.stderr.toString()}`);
+  }
+}
+
+async function runTestDbPush(): Promise<void> {
+  const dbPush = Bun.spawnSync({
+    cmd: ['bunx', 'prisma', 'db', 'push'],
+    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  if (dbPush.exitCode !== 0) {
+    throw new Error(`Failed to prepare response delivery test database: ${dbPush.stderr.toString()}`);
+  }
+}
 let deliveryService: DeliveryServiceModule;
 let telegramAdapterModule: TelegramAdapterModule;
 let taskQueueModule: TaskQueueModule;
@@ -159,16 +193,7 @@ beforeAll(async () => {
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
   captureInitialMemoryDirs();
 
-  const dbPush = Bun.spawnSync({
-    cmd: ['bunx', 'prisma', 'db', 'push'],
-    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-
-  if (dbPush.exitCode !== 0) {
-    throw new Error(`Failed to prepare response delivery test database: ${dbPush.stderr.toString()}`);
-  }
+  await runTestDbPush();
 
   db = (await import('../src/lib/db')).db;
   deliveryService = await import('../src/lib/services/delivery-service');
@@ -179,6 +204,7 @@ beforeAll(async () => {
   agentExecutorModule = await import('../src/lib/services/agent-executor');
   telegramWebhookRoute = await import('../src/app/api/channels/telegram/webhook/route');
   adapterIndexModule = await import('../src/lib/adapters');
+  await ensureOutboundDeliveryModel();
 
   await resetDb();
 });

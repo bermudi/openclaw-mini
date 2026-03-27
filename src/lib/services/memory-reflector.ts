@@ -75,17 +75,20 @@ export function contentSimilar(a: string, b: string): boolean {
 function extractJsonFromResponse(text: string): unknown {
   const trimmed = text.trim();
 
-  const codeBlock = /```(?:json)?\s*([\s\S]*?)```/.exec(trimmed);
+  const assistantPrefix = trimmed.match(/^assistant\s*[:\-]\s*/i);
+  const stripped = assistantPrefix ? trimmed.slice(assistantPrefix[0].length).trim() : trimmed;
+
+  const codeBlock = /```(?:json)?\s*([\s\S]*?)```/.exec(stripped);
   if (codeBlock) {
     return JSON.parse(codeBlock[1]!.trim());
   }
 
-  const arrayMatch = /(\[[\s\S]*\])/.exec(trimmed);
+  const arrayMatch = /(\[[\s\S]*\])/.exec(stripped);
   if (arrayMatch) {
     return JSON.parse(arrayMatch[1]!);
   }
 
-  return JSON.parse(trimmed);
+  return JSON.parse(stripped);
 }
 
 function validateExtraction(item: unknown): item is RawExtraction {

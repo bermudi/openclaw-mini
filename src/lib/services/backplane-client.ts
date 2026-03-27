@@ -2,6 +2,15 @@ import { io, type Socket } from 'socket.io-client';
 import { eventBus, type EventMap } from './event-bus';
 import type { WSEvent } from '@/lib/ws-events';
 
+type BackplaneEventBus = Pick<typeof eventBus, 'dispatchLocal' | 'getSourceId'>;
+
+type SocketFactory = typeof io;
+
+export interface BackplaneClientDependencies {
+  ioFactory?: SocketFactory;
+  eventBus?: BackplaneEventBus;
+}
+
 function getWsServiceUrl(): string {
   return process.env.OPENCLAW_WS_URL || 'http://localhost:3003';
 }
@@ -9,6 +18,16 @@ function getWsServiceUrl(): string {
 export class BackplaneClientService {
   private socket: Socket | null = null;
   private startPromise: Promise<void> | null = null;
+
+  constructor(private readonly dependencies: BackplaneClientDependencies = {}) {}
+
+  private getEventBus(): BackplaneEventBus {
+    return this.dependencies.eventBus ?? eventBus;
+  }
+
+  private getSocketFactory(): SocketFactory {
+    return this.dependencies.ioFactory ?? io;
+  }
 
   async start(): Promise<void> {
     if (this.socket?.connected) {
@@ -19,7 +38,7 @@ export class BackplaneClientService {
       return this.startPromise;
     }
 
-    const socket = io(getWsServiceUrl(), {
+    const socket = this.getSocketFactory()(getWsServiceUrl(), {
       autoConnect: false,
       transports: ['websocket', 'polling'],
       reconnection: true,
@@ -79,6 +98,8 @@ export class BackplaneClientService {
   }
 
   private bindSocket(socket: Socket): void {
+    const bus = this.getEventBus();
+
     socket.on('connect', () => {
       console.log('[BackplaneClient] Connected to WebSocket backplane');
       socket.emit('subscribe:internal');
@@ -106,15 +127,15 @@ export class BackplaneClientService {
         return;
       }
 
-      if (event.source && event.source === eventBus.getSourceId()) {
+      if (event.source && event.source === bus.getSourceId()) {
         return;
       }
 
-      this.dispatchInternalEvent(event);
+      this.dispatchInternalEvent(bus, event);
     });
   }
 
-  private dispatchInternalEvent(event: WSEvent): void {
+  private dispatchInternalEvent(bus: BackplaneEventBus, event: WSEvent): void {
     switch (event.type) {
       case 'task:created':
       case 'task:started':
@@ -125,7 +146,7 @@ export class BackplaneClientService {
       case 'memory:index-requested':
       case 'subagent:completed':
       case 'subagent:failed':
-        eventBus.dispatchLocal(event.type, event.data as EventMap[typeof event.type]);
+        bus.dispatchLocal(event.type, event.data as EventMap[typeof event.type]);
         return;
       default:
         return;

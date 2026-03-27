@@ -3,6 +3,7 @@ import { auditService } from '@/lib/services/audit-service';
 
 export const INTERNAL_AUTH_ENV_VAR = 'OPENCLAW_API_KEY';
 export const INSECURE_LOCAL_AUTH_ENV_VAR = 'OPENCLAW_ALLOW_INSECURE_LOCAL';
+export const STRICT_AUTH_ENV_VAR = 'OPENCLAW_REQUIRE_STRICT_AUTH';
 
 export type InternalAuthFailureReason =
   | 'missing_token'
@@ -29,6 +30,10 @@ function normalizeConfiguredToken(): string | null {
 
 function parseBooleanEnv(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === 'true';
+}
+
+function isStrictAuthRequired(): boolean {
+  return parseBooleanEnv(process.env[STRICT_AUTH_ENV_VAR]);
 }
 
 function compareTokens(expectedToken: string, providedToken: string): boolean {
@@ -59,6 +64,10 @@ function getHeaderValue(
 }
 
 export function isInsecureLocalAuthAllowed(): boolean {
+  if (isStrictAuthRequired()) {
+    return false;
+  }
+
   return parseBooleanEnv(process.env[INSECURE_LOCAL_AUTH_ENV_VAR]);
 }
 

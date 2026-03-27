@@ -1,6 +1,7 @@
 /// <reference types="bun-types" />
 
 import { beforeEach, expect, mock, spyOn, test } from 'bun:test';
+import { BackplaneClientService } from '../src/lib/services/backplane-client';
 
 type Handler = (...args: unknown[]) => void;
 
@@ -79,34 +80,32 @@ const ioMock = mock(() => new FakeSocket());
 const dispatchLocalMock = mock(() => {});
 const getSourceIdMock = mock(() => 'self-source');
 
-mock.module('socket.io-client', () => ({
-  io: ioMock,
-}));
-
-mock.module('../src/lib/services/event-bus', () => ({
-  eventBus: {
-    dispatchLocal: dispatchLocalMock,
-    getSourceId: getSourceIdMock,
-  },
-}));
-
-let BackplaneClientService: typeof import('../src/lib/services/backplane-client').BackplaneClientService;
 let socket: FakeSocket;
 
-beforeEach(async () => {
-  ioMock.mockImplementation(() => {
-    socket = new FakeSocket();
-    return socket;
+function createClient(): BackplaneClientService {
+  return new BackplaneClientService({
+    ioFactory: ioMock as unknown as typeof import('socket.io-client').io,
+    eventBus: {
+      dispatchLocal: dispatchLocalMock,
+      getSourceId: getSourceIdMock,
+    },
   });
+}
+
+beforeEach(() => {
+  ioMock.mockReset();
   dispatchLocalMock.mockReset();
   getSourceIdMock.mockReset();
-  getSourceIdMock.mockImplementation(() => 'self-source');
 
-  ({ BackplaneClientService } = await import('../src/lib/services/backplane-client'));
+  socket = new FakeSocket();
+  ioMock.mockImplementation(() => {
+    return socket;
+  });
+  getSourceIdMock.mockImplementation(() => 'self-source');
 });
 
 test('start connects and subscribes to internal room', async () => {
-  const client = new BackplaneClientService();
+  const client = createClient();
 
   await client.start();
 
@@ -115,7 +114,7 @@ test('start connects and subscribes to internal room', async () => {
 });
 
 test('stop disconnects cleanly', async () => {
-  const client = new BackplaneClientService();
+  const client = createClient();
 
   await client.start();
   await client.stop();
@@ -124,7 +123,7 @@ test('stop disconnects cleanly', async () => {
 });
 
 test('forwards remote events to local dispatch without rebroadcast', async () => {
-  const client = new BackplaneClientService();
+  const client = createClient();
 
   await client.start();
   socket.trigger('event', {
@@ -143,7 +142,7 @@ test('forwards remote events to local dispatch without rebroadcast', async () =>
 });
 
 test('ignores self-originated events', async () => {
-  const client = new BackplaneClientService();
+  const client = createClient();
 
   await client.start();
   socket.trigger('event', {
@@ -157,7 +156,7 @@ test('ignores self-originated events', async () => {
 });
 
 test('reconnect logs and re-subscribes to internal room', async () => {
-  const client = new BackplaneClientService();
+  const client = createClient();
   const infoSpy = spyOn(console, 'info').mockImplementation(() => {});
 
   await client.start();

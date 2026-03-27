@@ -50,6 +50,19 @@ async function resetDb() {
   await db.agent.deleteMany();
 }
 
+async function runTestDbPush(): Promise<void> {
+  const dbPush = Bun.spawnSync({
+    cmd: ['bunx', 'prisma', 'db', 'push'],
+    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  if (dbPush.exitCode !== 0) {
+    throw new Error(`Failed to prepare test database: ${dbPush.stderr.toString()}`);
+  }
+}
+
 async function createAgent(name: string) {
   const agent = await agentService.createAgent({ name });
   createdAgentIds.add(agent.id);
@@ -73,16 +86,7 @@ beforeAll(async () => {
 
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
 
-  const dbPush = Bun.spawnSync({
-    cmd: ['bunx', 'prisma', 'db', 'push'],
-    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-
-  if (dbPush.exitCode !== 0) {
-    throw new Error(`Failed to prepare test database: ${dbPush.stderr.toString()}`);
-  }
+  await runTestDbPush();
 
   db = (await import('../src/lib/db')).db;
   memoryService = (await import('../src/lib/services/memory-service')).memoryService;
