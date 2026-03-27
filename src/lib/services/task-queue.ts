@@ -337,9 +337,12 @@ class TaskQueueService {
   }
 
   async failTaskSideEffects(agentId: string, taskId: string, taskType: string, error: string): Promise<void> {
+    const hasProcessingTask = await this.hasProcessingTask(db, agentId);
+
+    // Keep the agent busy only if another task is still processing; otherwise let the scheduler resume it.
     await db.agent.updateMany({
       where: { id: agentId },
-      data: { status: 'error' },
+      data: { status: hasProcessingTask ? 'busy' : 'idle' },
     });
     await eventBus.emit('task:failed', { taskId, agentId, taskType, error });
   }

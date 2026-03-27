@@ -171,6 +171,25 @@ test('task failure emits task:failed event', async () => {
   expect(received[0]?.error).toBe('something went wrong');
 });
 
+test('task failure returns agent to idle so it can accept new work', async () => {
+  const agent = await agentService.createAgent({ name: 'recovery-agent' });
+
+  const task = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'heartbeat',
+    payload: {},
+  });
+
+  const claimed = await taskQueue.startTask(task.id);
+  expect(claimed?.status).toBe('processing');
+
+  const failed = await taskQueue.failTask(task.id, 'transient model error');
+  expect(failed?.status).toBe('failed');
+
+  const updatedAgent = await db.agent.findUnique({ where: { id: agent.id } });
+  expect(updatedAgent?.status).toBe('idle');
+});
+
 test('task creation emits task:created event', async () => {
   const agent = await agentService.createAgent({ name: 'create-event-agent' });
 
