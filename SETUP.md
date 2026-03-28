@@ -24,13 +24,19 @@
    - For local-only experimentation, you may set `OPENCLAW_ALLOW_INSECURE_LOCAL=true`, but startup will warn loudly because this disables internal bearer auth.
    - Browser clients (`/chat` and the dashboard send-message flow) do not ship bearer tokens, so they require insecure-local mode or an authenticating reverse proxy.
 
-5. **Copy example skills (optional, for sub-agent support):**
+5. **Choose Telegram inbound transport (optional):**
+   - Leave `TELEGRAM_TRANSPORT` unset for webhook mode.
+   - Set `TELEGRAM_TRANSPORT=polling` for long polling in local or single-instance deployments.
+   - Polling mode is single-consumer only; do not run multiple schedulers against the same bot token.
+   - Keep `TELEGRAM_WEBHOOK_SECRET` configured when you use webhook mode.
+
+6. **Copy example skills (optional, for sub-agent support):**
    ```bash
    cp -r examples/subagents skills/
    ```
    Sub-agents are defined via `skills/<name>/SKILL.md` files.
 
-6. **Start the development server:**
+7. **Start the development server:**
    ```bash
    bun run dev
    ```

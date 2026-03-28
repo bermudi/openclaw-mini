@@ -31,6 +31,13 @@ OpenClaw Mini now protects admin APIs and trusted service boundaries with `Autho
 - Browser clients (`/chat` and dashboard send-message actions) do not embed bearer tokens; they only work in local insecure mode or behind an authenticating reverse proxy.
 - Webhook signature verification remains separate; webhook secrets still use their own signature headers.
 
+## Telegram transport
+
+- `TELEGRAM_TRANSPORT` controls inbound Telegram delivery.
+- The default is `webhook`; set it to `polling` for local or single-instance long polling.
+- Polling mode is single-consumer only, so run one scheduler instance per bot token.
+- Keep `TELEGRAM_WEBHOOK_SECRET` configured when using webhook mode.
+
 ## Cross-process event flow
 
 OpenClaw Mini now uses the existing WebSocket service as an internal event backplane, so hooks and other listeners keep working across the Next.js app, scheduler, and browser clients.

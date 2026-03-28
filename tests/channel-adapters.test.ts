@@ -1,12 +1,13 @@
 /// <reference types="bun-types" />
 
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import fs from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { NextRequest } from 'next/server';
 import type { PrismaClient } from '@prisma/client';
 import { cleanupRuntimeConfigFixture, createRuntimeConfigFixture, type RuntimeConfigFixture } from './runtime-config-fixture';
+import type { Input } from '../src/lib/types';
 
 mock.module('ai', () => ({
   generateText: async () => ({ text: 'stub response', steps: [] }),
@@ -305,9 +306,29 @@ describe('6.1 adapter lifecycle — delivery routing', () => {
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe('6.2 Telegram adapter lifecycle', () => {
-  test('start() sets connected, stop() sets disconnected, isConnected() returns correct state', async () => {
+  test('default webhook mode start() sets connected, stop() sets disconnected, isConnected() returns correct state', async () => {
     const { TelegramAdapter } = await import('../src/lib/adapters/telegram-adapter');
+    delete process.env.TELEGRAM_TRANSPORT;
     const adapter = new TelegramAdapter('test-token');
+
+    const bot = (adapter as unknown as {
+      bot: {
+        api: { deleteWebhook: () => Promise<true> };
+        start: () => Promise<void>;
+        stop: () => Promise<void>;
+        isRunning: () => boolean;
+        on: (filter: string, cb: (...args: unknown[]) => void) => void;
+      };
+    }).bot;
+
+    let deleteWebhookCalled = false;
+    let startCalled = false;
+    let stopCalled = false;
+    bot.api.deleteWebhook = async () => { deleteWebhookCalled = true; return true; };
+    bot.start = async () => { startCalled = true; };
+    bot.stop = async () => { stopCalled = true; };
+    bot.isRunning = () => false;
+    bot.on = () => {};
 
     expect(adapter.isConnected()).toBe(false);
 
@@ -316,35 +337,92 @@ describe('6.2 Telegram adapter lifecycle', () => {
 
     await adapter.stop();
     expect(adapter.isConnected()).toBe(false);
+
+    expect(deleteWebhookCalled).toBe(false);
+    expect(startCalled).toBe(false);
+    expect(stopCalled).toBe(false);
   });
 
-  test('sendText() still works after start', async () => {
+  test('polling mode removes webhook before starting and forwards updates through the shared ingest path', async () => {
     const { TelegramAdapter } = await import('../src/lib/adapters/telegram-adapter');
-    const adapter = new TelegramAdapter('test-token');
-    await adapter.start();
+    const adapter = new TelegramAdapter('test-token', 'polling');
 
-    const sendCalls: string[] = [];
-    const bot = (adapter as unknown as { bot: { api: { sendMessage: (id: string, text: string) => Promise<{ message_id: number }> } } }).bot;
-    bot.api.sendMessage = async (id: string, text: string) => {
-      sendCalls.push(text);
-      return { message_id: 1 };
-    };
+    const bot = (adapter as unknown as {
+      bot: {
+        api: { deleteWebhook: () => Promise<true> };
+        start: () => Promise<void>;
+        stop: () => Promise<void>;
+        isRunning: () => boolean;
+        on: (filter: string, cb: (ctx: { update: Record<string, unknown> }) => Promise<void>) => void;
+      };
+    }).bot;
 
-    const result = await adapter.sendText(
-      { channel: 'telegram', channelKey: '123', metadata: { chatId: '123' } },
-      'hi after start',
-    );
+    const events: string[] = [];
+    let running = false;
+    const capturedInputs: Input[] = [];
+    const processInputSpy = spyOn(inputManager.inputManager, 'processInput').mockImplementation(async (input: Input) => {
+      capturedInputs.push(input);
+      return { success: true, taskId: 'task-1', sessionId: 'session-1' };
+    });
 
-    expect(result.externalMessageId).toBe('1');
-    expect(sendCalls).toHaveLength(1);
-  });
+    let handler: ((ctx: { update: Record<string, unknown> }) => Promise<void>) | undefined;
 
-  test('multiple start() calls are idempotent', async () => {
-    const { TelegramAdapter } = await import('../src/lib/adapters/telegram-adapter');
-    const adapter = new TelegramAdapter('test-token');
-    await adapter.start();
-    await adapter.start();
-    expect(adapter.isConnected()).toBe(true);
+    bot.api.deleteWebhook = async () => { events.push('deleteWebhook'); return true; };
+    bot.start = async () => { events.push('start'); running = true; };
+    bot.stop = async () => { events.push('stop'); running = false; };
+    bot.isRunning = () => running;
+    bot.on = ((filter: string, cb: (ctx: { update: Record<string, unknown> }) => Promise<void>) => {
+      events.push(`on:${filter}`);
+      handler = cb;
+    }) as typeof bot.on;
+
+    try {
+      expect(adapter.isConnected()).toBe(false);
+
+      await adapter.start();
+      expect(events).toEqual(['on:message', 'deleteWebhook', 'start']);
+      expect(adapter.isConnected()).toBe(true);
+
+      if (!handler) {
+        throw new Error('Polling handler was not registered');
+      }
+
+      await handler({
+        update: {
+          message: {
+            message_id: 42,
+            chat: { id: '12345' },
+            from: { id: 999, username: 'bermudi' },
+            text: 'hello from polling',
+          },
+        },
+      });
+
+      expect(capturedInputs).toHaveLength(1);
+      expect(capturedInputs[0]).toMatchObject({
+        type: 'message',
+        channel: 'telegram',
+        channelKey: '12345',
+        content: 'hello from polling',
+        sender: 'bermudi',
+        deliveryTarget: {
+          channel: 'telegram',
+          channelKey: '12345',
+          metadata: {
+            chatId: '12345',
+            userId: '999',
+            replyToMessageId: '42',
+          },
+        },
+      });
+
+      await adapter.stop();
+      expect(events).toContain('stop');
+      expect(adapter.isConnected()).toBe(false);
+      expect(bot.isRunning()).toBe(false);
+    } finally {
+      processInputSpy.mockRestore();
+    }
   });
 });
 

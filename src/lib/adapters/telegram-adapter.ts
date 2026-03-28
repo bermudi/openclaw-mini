@@ -1,6 +1,9 @@
 import { Bot, GrammyError, HttpError, InputFile } from 'grammy';
 import * as fs from 'fs';
 import * as path from 'path';
+import { inputManager } from '@/lib/services/input-manager';
+import { processTelegramUpdate } from '@/lib/adapters/telegram-ingest';
+import { resolveTelegramTransport, type TelegramTransport } from '@/lib/adapters/telegram-transport';
 import type { ChannelAdapter, DeliveryTarget, DownloadedFile } from '@/lib/types';
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
@@ -13,17 +16,56 @@ export interface TelegramErrorClassification {
 export class TelegramAdapter implements ChannelAdapter {
   readonly channel = 'telegram' as const;
   private readonly bot: Bot;
+  private readonly transport: TelegramTransport;
   private connected = false;
+  private startPromise: Promise<void> | null = null;
+  private pollingHandlersRegistered = false;
+  private pollingStarted = false;
+  private stopping = false;
 
-  constructor(token: string) {
+  constructor(token: string, transport: TelegramTransport = resolveTelegramTransport()) {
     this.bot = new Bot(token);
+    this.transport = transport;
   }
 
   async start(): Promise<void> {
-    this.connected = true;
+    if (this.connected) {
+      return;
+    }
+
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+
+    this.stopping = false;
+
+    if (this.transport === 'webhook') {
+      this.pollingStarted = false;
+      this.connected = true;
+      return;
+    }
+
+    this.startPromise = this.startPolling();
+
+    try {
+      await this.startPromise;
+    } finally {
+      this.startPromise = null;
+    }
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+
+    if (this.transport === 'polling' && this.pollingStarted) {
+      try {
+        await this.bot.stop();
+      } catch (error) {
+        console.error('[Telegram] Failed to stop polling:', error);
+      }
+    }
+
+    this.pollingStarted = false;
     this.connected = false;
   }
 
@@ -75,6 +117,51 @@ export class TelegramAdapter implements ChannelAdapter {
 
   async downloadFile(fileId: string, destDir: string, filename?: string): Promise<DownloadedFile> {
     return downloadTelegramFile(this.bot, fileId, destDir, filename);
+  }
+
+  private async startPolling(): Promise<void> {
+    this.ensurePollingHandlers();
+
+    try {
+      await this.bot.api.deleteWebhook();
+    } catch (error) {
+      this.connected = false;
+      throw error;
+    }
+
+    if (this.stopping) {
+      return;
+    }
+
+    this.connected = true;
+    this.pollingStarted = true;
+
+    void this.bot.start().catch((error: unknown) => {
+      if (!this.stopping) {
+        this.connected = false;
+        this.pollingStarted = false;
+        console.error('[Telegram] Polling stopped unexpectedly:', error);
+      }
+    });
+  }
+
+  private ensurePollingHandlers(): void {
+    if (this.pollingHandlersRegistered || this.transport !== 'polling') {
+      return;
+    }
+
+    this.pollingHandlersRegistered = true;
+    this.bot.on('message', async (ctx) => {
+      const result = await processTelegramUpdate(ctx.update, {
+        processInput: (input) => inputManager.processInput(input),
+        downloadFile: this.downloadFile.bind(this),
+        sourceLabel: 'Telegram Polling',
+      });
+
+      if (result.status === 'failed') {
+        console.error('[Telegram Polling] Failed to process update:', result.error);
+      }
+    });
   }
 }
 
