@@ -77,6 +77,18 @@ export interface Session {
   updatedAt: Date;
 }
 
+// Async Task Registry Types
+export type AsyncTaskRegistryStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
+
+export interface AsyncTaskRecord {
+  taskId: string;
+  skill: string;
+  status: AsyncTaskRegistryStatus;
+  createdAt: string;
+  lastCheckedAt?: string;
+  lastUpdatedAt?: string;
+}
+
 // Task Types
 export type TaskType = 'message' | 'heartbeat' | 'cron' | 'webhook' | 'hook' | 'a2a' | 'subagent';
 export type TaskStatus = 'pending' | 'processing' | 'completed' | 'failed';

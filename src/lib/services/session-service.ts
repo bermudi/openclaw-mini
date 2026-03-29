@@ -3,7 +3,7 @@
 
 import { generateText } from 'ai';
 import { db } from '@/lib/db';
-import { ChannelType } from '@/lib/types';
+import { AsyncTaskRecord, ChannelType } from '@/lib/types';
 import { countTokens } from '@/lib/utils/token-counter';
 import { memoryService } from './memory-service';
 import { reflectOnContent } from './memory-reflector';
@@ -251,6 +251,37 @@ class SessionService {
     });
 
     return result.count;
+  }
+
+  /**
+   * Read the async task registry for a session.
+   * Returns an empty map if the column is null or unparseable.
+   */
+  async getAsyncTaskRegistry(sessionId: string): Promise<Map<string, AsyncTaskRecord>> {
+    const session = await db.session.findUnique({
+      where: { id: sessionId },
+      select: { asyncTaskRegistry: true },
+    });
+    if (!session?.asyncTaskRegistry) {
+      return new Map();
+    }
+    try {
+      const parsed = JSON.parse(session.asyncTaskRegistry) as Record<string, AsyncTaskRecord>;
+      return new Map(Object.entries(parsed));
+    } catch {
+      return new Map();
+    }
+  }
+
+  /**
+   * Persist the async task registry for a session.
+   */
+  async setAsyncTaskRegistry(sessionId: string, registry: Map<string, AsyncTaskRecord>): Promise<void> {
+    const obj = Object.fromEntries(registry.entries());
+    await db.session.update({
+      where: { id: sessionId },
+      data: { asyncTaskRegistry: JSON.stringify(obj) },
+    });
   }
 
   /**

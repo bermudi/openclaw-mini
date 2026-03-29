@@ -482,6 +482,35 @@ class TaskQueueService {
   }
 
   /**
+   * Cancel a pending or processing task by failing it with a reason.
+   * Returns false if the task is already in a terminal state or not found.
+   */
+  async cancelTask(taskId: string, reason = 'Cancelled by supervisor'): Promise<boolean> {
+    const task = await this.getTask(taskId);
+    if (!task) {
+      return false;
+    }
+    if (task.status === 'completed' || task.status === 'failed') {
+      return false;
+    }
+    const updated = await this.failTask(taskId, reason);
+    return updated !== null;
+  }
+
+  /**
+   * Batch-fetch tasks by ID using a single IN query.
+   */
+  async getTasksByIds(ids: string[]): Promise<Task[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const tasks = await db.task.findMany({
+      where: { id: { in: ids } },
+    });
+    return tasks.map(this.mapTask);
+  }
+
+  /**
    * Get task by ID
    */
   async getTask(taskId: string): Promise<Task | null> {

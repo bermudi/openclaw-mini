@@ -13,7 +13,7 @@ import { getModelConfig, resolveAgentContextWindow, runWithModelFallback } from 
 import { parseCommand, type ParsedCommand } from './command-parser';
 import { sessionProviderState } from './session-provider-state';
 import type { Prisma } from '@prisma/client';
-import { ChannelType, DeliveryTarget, Task, VisionInput, Attachment, DownloadedFile } from '@/lib/types';
+import { AsyncTaskRecord, ChannelType, DeliveryTarget, Task, VisionInput, Attachment, DownloadedFile } from '@/lib/types';
 import {
   getLowRiskTools,
   getToolExecutionContext,
@@ -119,6 +119,14 @@ class AgentExecutorService {
       const recallQuery = this.buildRecallQuery(task, sessionMessages);
 
       const isSubagent = task.type === 'subagent';
+
+      // Load async task registry (skip for subagents or tasks without session — task 4.2/4.3)
+      const asyncTaskRegistry: Map<string, AsyncTaskRecord> = (!isSubagent && task.sessionId)
+        ? await sessionService.getAsyncTaskRegistry(task.sessionId)
+        : new Map();
+      const flushAsyncRegistry = (!isSubagent && task.sessionId)
+        ? () => sessionService.setAsyncTaskRegistry(task.sessionId!, asyncTaskRegistry)
+        : () => Promise.resolve();
 
       // Handle inline slash commands for message tasks before AI execution
       if (!isSubagent && task.type === 'message' && task.sessionId) {
@@ -250,7 +258,7 @@ class AgentExecutorService {
       if (visionResult.warning) {
         const warningText = visionResult.warning;
         const result = await withToolExecutionContext(
-          this.buildToolExecutionContext(task, deliveryTarget, resolvedSubagentConfig),
+          this.buildToolExecutionContext(task, deliveryTarget, resolvedSubagentConfig, asyncTaskRegistry, flushAsyncRegistry),
           () =>
             runWithModelFallback(
               ({ model }) =>
@@ -338,7 +346,7 @@ class AgentExecutorService {
         );
 
       const result = await withToolExecutionContext(
-        this.buildToolExecutionContext(task, deliveryTarget, resolvedSubagentConfig),
+        this.buildToolExecutionContext(task, deliveryTarget, resolvedSubagentConfig, asyncTaskRegistry, flushAsyncRegistry),
         executeGeneration,
       );
       const artifacts = this.parseExecutionArtifacts(result);
@@ -514,6 +522,8 @@ class AgentExecutorService {
       allowedTools?: string[];
       maxToolInvocations?: number;
     },
+    asyncTaskRegistry?: Map<string, AsyncTaskRecord>,
+    flushAsyncRegistry?: () => Promise<void>,
   ) {
     return {
       agentId: task.agentId,
@@ -527,6 +537,8 @@ class AgentExecutorService {
       allowedTools: resolvedSubagentConfig?.allowedTools,
       maxToolInvocations: resolvedSubagentConfig?.maxToolInvocations,
       toolInvocationCount: { count: 0 },
+      asyncTaskRegistry: asyncTaskRegistry ?? new Map<string, AsyncTaskRecord>(),
+      flushAsyncRegistry: flushAsyncRegistry ?? (() => Promise.resolve()),
     };
   }
 

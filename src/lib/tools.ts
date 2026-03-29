@@ -27,7 +27,7 @@ import {
 import { processSupervisor } from '@/lib/services/process-supervisor';
 import { parseCommand, getBinaryBasename, capCombinedOutput } from '@/lib/utils/exec-helpers';
 import { existsSync } from 'fs';
-import type { Attachment, DeliveryTarget, TaskType, VisionInput } from '@/lib/types';
+import type { Attachment, AsyncTaskRecord, DeliveryTarget, TaskType, VisionInput } from '@/lib/types';
 import { SearchService, getSearchProvider } from '@/lib/services/search-service';
 import { browserService } from '@/lib/services/browser-service';
 import { mcpService } from '@/lib/services/mcp-service';
@@ -55,6 +55,8 @@ export interface ToolExecutionContext {
   allowedTools?: string[];
   maxToolInvocations?: number;
   toolInvocationCount?: { count: number };
+  asyncTaskRegistry?: Map<string, AsyncTaskRecord>;
+  flushAsyncRegistry?: () => Promise<void>;
 }
 
 export type SpawnSubagentContext = ToolExecutionContext;
@@ -172,7 +174,7 @@ export function registerTool(name: string, registeredTool: CoreTool, meta: ToolM
             invocationCount.count += 1;
           }
 
-          if (name === 'spawn_subagent' && context?.allowedSkills) {
+          if ((name === 'spawn_subagent' || name === 'spawn_subagent_async') && context?.allowedSkills) {
             const requestedSkill = typeof (input as { skill?: unknown }).skill === 'string'
               ? (input as { skill: string }).skill
               : undefined;
@@ -549,6 +551,388 @@ registerTool(
     },
   }),
   { riskLevel: 'medium' },
+);
+
+// ============================================
+// Async Sub-Agent Registry Helpers
+// ============================================
+
+const ASYNC_REGISTRY_MAX = 50;
+
+function pruneAsyncRegistry(registry: Map<string, AsyncTaskRecord>): void {
+  if (registry.size < ASYNC_REGISTRY_MAX) return;
+
+  const terminalStatuses = new Set(['completed', 'failed', 'cancelled']);
+
+  let oldestTerminalKey: string | null = null;
+  let oldestTerminalTime = Infinity;
+
+  for (const [key, record] of registry) {
+    if (terminalStatuses.has(record.status)) {
+      const t = new Date(record.createdAt).getTime();
+      if (t < oldestTerminalTime) {
+        oldestTerminalTime = t;
+        oldestTerminalKey = key;
+      }
+    }
+  }
+
+  if (oldestTerminalKey) {
+    registry.delete(oldestTerminalKey);
+    return;
+  }
+
+  let oldestKey: string | null = null;
+  let oldestTime = Infinity;
+
+  for (const [key, record] of registry) {
+    const t = new Date(record.createdAt).getTime();
+    if (t < oldestTime) {
+      oldestTime = t;
+      oldestKey = key;
+    }
+  }
+
+  if (oldestKey) {
+    registry.delete(oldestKey);
+  }
+}
+
+registerTool(
+  'spawn_subagent_async',
+  tool({
+    description: 'Dispatch a sub-agent asynchronously and return its task ID immediately without waiting for completion. Use check_subagent to poll status later.',
+    inputSchema: z.object({
+      skill: z.string().describe('Skill name to use for the sub-agent'),
+      task: z.string().describe('Task to assign to the sub-agent'),
+      attachments: z.array(spawnSubagentAttachmentSchema).optional().describe('Optional attachments to pass through to the child task'),
+      visionInputs: z.array(spawnSubagentVisionInputSchema).optional().describe('Optional vision inputs to pass through to the child task'),
+    }),
+    execute: async ({ skill, task, attachments, visionInputs }: {
+      skill: string;
+      task: string;
+      attachments?: Attachment[];
+      visionInputs?: VisionInput[];
+    }): Promise<ToolResult> => {
+      const context = getToolExecutionContext();
+      if (!context) {
+        return { success: false, error: 'spawn_subagent_async called without task context' };
+      }
+
+      const { maxSpawnDepth } = getRuntimeConfig().safety;
+      const spawnDepth = context.spawnDepth ?? 0;
+      const childDepth = spawnDepth + 1;
+      if (childDepth > maxSpawnDepth) {
+        return { success: false, error: `Maximum spawn depth of ${maxSpawnDepth} exceeded` };
+      }
+
+      const skillResult = await getSkillForSubAgent(skill);
+      if (!skillResult.skill) {
+        return { success: false, error: skillResult.error ?? `Skill '${skill}' not found or disabled` };
+      }
+
+      const skillName = skillResult.skill.name;
+      const registry = context.asyncTaskRegistry;
+      if (!registry) {
+        return { success: false, error: 'spawn_subagent_async requires an async task registry (not available in subagent context)' };
+      }
+
+      const newTask = await taskQueue.createTask({
+        agentId: context.agentId,
+        type: 'subagent',
+        priority: 5,
+        payload: {
+          task,
+          skill: skillName,
+          skillTools: skillResult.skill.tools,
+          overrides: skillResult.skill.overrides,
+          attachments,
+          visionInputs,
+          deliveryTarget: context.deliveryTarget,
+        },
+        source: `subagent_async:${context.taskId}`,
+        parentTaskId: context.taskId,
+        skillName,
+        spawnDepth: childDepth,
+      });
+
+      const childTaskId = newTask.id;
+
+      await auditService.log({
+        action: 'subagent_async_dispatched',
+        entityType: 'task',
+        entityId: childTaskId,
+        details: {
+          agentId: context.agentId,
+          parentTaskId: context.taskId,
+          skill: skillName,
+          overrideFieldsApplied: getOverrideFieldsApplied(skillResult.skill.overrides),
+        },
+      });
+
+      const sessionScope = `subagent:${childTaskId}`;
+      const session = await sessionService.getOrCreateSession(
+        context.agentId,
+        sessionScope,
+        'internal',
+        sessionScope,
+      );
+
+      await db.task.update({
+        where: { id: childTaskId },
+        data: { sessionId: session.id },
+      });
+
+      pruneAsyncRegistry(registry);
+      registry.set(childTaskId, {
+        taskId: childTaskId,
+        skill: skillName,
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      });
+
+      await context.flushAsyncRegistry?.();
+
+      return {
+        success: true,
+        data: {
+          taskId: childTaskId,
+          skill: skillName,
+          message: `Sub-agent dispatched. Use check_subagent with taskId "${childTaskId}" to poll for results.`,
+        },
+      };
+    },
+  }),
+  { riskLevel: 'medium' },
+);
+
+registerTool(
+  'check_subagent',
+  tool({
+    description: 'Check the current status and result of a previously dispatched async sub-agent by task ID.',
+    inputSchema: z.object({
+      taskId: z.string().describe('Task ID of the async sub-agent to check'),
+    }),
+    execute: async ({ taskId }: { taskId: string }): Promise<ToolResult> => {
+      const context = getToolExecutionContext();
+      if (!context) {
+        return { success: false, error: 'check_subagent called without task context' };
+      }
+
+      const registry = context.asyncTaskRegistry;
+      if (!registry) {
+        return { success: false, error: 'check_subagent requires an async task registry' };
+      }
+
+      const registryEntry = registry.get(taskId);
+      if (!registryEntry) {
+        return { success: false, error: `Task ID "${taskId}" not found in async registry` };
+      }
+
+      const liveTask = await taskQueue.getTask(taskId);
+      if (!liveTask) {
+        return { success: false, error: `Task "${taskId}" not found in task queue` };
+      }
+
+      const now = new Date().toISOString();
+      const registryStatus: AsyncTaskRecord['status'] = registryEntry.status === 'cancelled'
+        ? 'cancelled'
+        : liveTask.status as AsyncTaskRecord['status'];
+
+      registry.set(taskId, {
+        ...registryEntry,
+        status: registryStatus,
+        lastCheckedAt: now,
+        lastUpdatedAt: registryEntry.status !== registryStatus ? now : registryEntry.lastUpdatedAt,
+      });
+
+      await context.flushAsyncRegistry?.();
+
+      if (liveTask.status === 'completed') {
+        const resultValue = liveTask.result;
+        const response =
+          typeof resultValue === 'object' && resultValue !== null &&
+          typeof (resultValue as { response?: unknown }).response === 'string'
+            ? (resultValue as { response: string }).response
+            : undefined;
+
+        return {
+          success: true,
+          data: {
+            taskId,
+            skill: registryEntry.skill,
+            status: 'completed',
+            response: response ?? 'Sub-agent completed without a text response',
+          },
+        };
+      }
+
+      if (liveTask.status === 'failed') {
+        return {
+          success: true,
+          data: {
+            taskId,
+            skill: registryEntry.skill,
+            status: registryStatus === 'cancelled' ? 'cancelled' : 'failed',
+            error: liveTask.error ?? 'Unknown error',
+          },
+        };
+      }
+
+      return {
+        success: true,
+        data: {
+          taskId,
+          skill: registryEntry.skill,
+          status: liveTask.status,
+          message: `Sub-agent is ${liveTask.status}. Check again later.`,
+        },
+      };
+    },
+  }),
+  { riskLevel: 'low' },
+);
+
+registerTool(
+  'cancel_subagent',
+  tool({
+    description: 'Cancel a pending or processing async sub-agent task.',
+    inputSchema: z.object({
+      taskId: z.string().describe('Task ID of the async sub-agent to cancel'),
+    }),
+    execute: async ({ taskId }: { taskId: string }): Promise<ToolResult> => {
+      const context = getToolExecutionContext();
+      if (!context) {
+        return { success: false, error: 'cancel_subagent called without task context' };
+      }
+
+      const registry = context.asyncTaskRegistry;
+      if (!registry) {
+        return { success: false, error: 'cancel_subagent requires an async task registry' };
+      }
+
+      const registryEntry = registry.get(taskId);
+      if (!registryEntry) {
+        return { success: false, error: `Task ID "${taskId}" not found in async registry` };
+      }
+
+      const liveTask = await taskQueue.getTask(taskId);
+      if (!liveTask) {
+        return { success: false, error: `Task "${taskId}" not found in task queue` };
+      }
+
+      if (liveTask.status === 'completed') {
+        const resultValue = liveTask.result;
+        const response =
+          typeof resultValue === 'object' && resultValue !== null &&
+          typeof (resultValue as { response?: unknown }).response === 'string'
+            ? (resultValue as { response: string }).response
+            : undefined;
+        const now = new Date().toISOString();
+        registry.set(taskId, { ...registryEntry, status: 'completed', lastUpdatedAt: now });
+        await context.flushAsyncRegistry?.();
+        return {
+          success: false,
+          error: `Task "${taskId}" already completed`,
+          data: { taskId, skill: registryEntry.skill, status: 'completed', response },
+        };
+      }
+
+      if (liveTask.status === 'failed' || registryEntry.status === 'cancelled') {
+        return {
+          success: false,
+          error: `Task "${taskId}" is already in a terminal state (${liveTask.status})`,
+          data: { taskId, skill: registryEntry.skill, status: liveTask.status },
+        };
+      }
+
+      const cancelled = await taskQueue.cancelTask(taskId);
+      const now = new Date().toISOString();
+
+      if (cancelled) {
+        registry.set(taskId, { ...registryEntry, status: 'cancelled', lastUpdatedAt: now });
+        await context.flushAsyncRegistry?.();
+        return {
+          success: true,
+          data: { taskId, skill: registryEntry.skill, status: 'cancelled', message: 'Sub-agent cancelled successfully' },
+        };
+      }
+
+      const finalTask = await taskQueue.getTask(taskId);
+      const finalStatus = finalTask?.status ?? 'unknown';
+      registry.set(taskId, { ...registryEntry, status: finalStatus as AsyncTaskRecord['status'], lastUpdatedAt: now });
+      await context.flushAsyncRegistry?.();
+
+      return {
+        success: false,
+        error: `Could not cancel task "${taskId}" (current status: ${finalStatus})`,
+        data: { taskId, skill: registryEntry.skill, status: finalStatus },
+      };
+    },
+  }),
+  { riskLevel: 'medium' },
+);
+
+registerTool(
+  'list_subagents',
+  tool({
+    description: 'List all async sub-agent tasks tracked in this session with live status.',
+    inputSchema: z.object({}),
+    execute: async (): Promise<ToolResult> => {
+      const context = getToolExecutionContext();
+      if (!context) {
+        return { success: false, error: 'list_subagents called without task context' };
+      }
+
+      const registry = context.asyncTaskRegistry;
+      if (!registry || registry.size === 0) {
+        return {
+          success: true,
+          data: { tasks: [], message: 'No async sub-agent tasks tracked in this session.' },
+        };
+      }
+
+      const terminalStatuses = new Set(['completed', 'failed', 'cancelled']);
+      const nonTerminalIds = [...registry.values()]
+        .filter(record => !terminalStatuses.has(record.status))
+        .map(record => record.taskId);
+
+      const liveTasks = nonTerminalIds.length > 0
+        ? await taskQueue.getTasksByIds(nonTerminalIds)
+        : [];
+      const liveMap = new Map(liveTasks.map(t => [t.id, t]));
+
+      const now = new Date().toISOString();
+      let registryDirty = false;
+
+      const taskSummaries = [...registry.values()].map((record) => {
+        const liveTask = liveMap.get(record.taskId);
+        if (liveTask) {
+          const updatedStatus = liveTask.status as AsyncTaskRecord['status'];
+          const statusChanged = updatedStatus !== record.status;
+          registry.set(record.taskId, {
+            ...record,
+            status: updatedStatus,
+            lastCheckedAt: now,
+            ...(statusChanged ? { lastUpdatedAt: now } : {}),
+          });
+          registryDirty = true;
+          return { taskId: record.taskId, skill: record.skill, status: updatedStatus, createdAt: record.createdAt };
+        }
+        return { taskId: record.taskId, skill: record.skill, status: record.status, createdAt: record.createdAt };
+      });
+
+      if (registryDirty) {
+        await context.flushAsyncRegistry?.();
+      }
+
+      return {
+        success: true,
+        data: { tasks: taskSummaries },
+      };
+    },
+  }),
+  { riskLevel: 'low' },
 );
 
 // ============================================

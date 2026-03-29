@@ -41,7 +41,8 @@ model Session {
   channel     String   // slack, whatsapp, telegram, imessage, webhook, internal
   channelKey  String   // unique identifier for the channel (e.g., chat_id, phone number)
   sessionScope String  @default("main")
-  context     String   @default("{}") // JSON context data
+  context             String   @default("{}") // JSON context data
+  asyncTaskRegistry   String?  // JSON map of taskId → AsyncTaskRecord
   lastActive  DateTime @default(now())
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
