@@ -45,7 +45,7 @@ export const BOOTSTRAP_FILES: BootstrapFileDefinition[] = [
   { name: 'MEMORY.md', title: 'Long-Term Memory' },
 ];
 
-const DEFAULT_WORKSPACE_FILES: Record<DefaultWorkspaceFileName, string> = {
+export const DEFAULT_WORKSPACE_FILES: Record<DefaultWorkspaceFileName, string> = {
   'IDENTITY.md': ['# OpenClaw Mini', '', 'You are the primary agent for this OpenClaw Mini workspace.'].join('\n'),
   'SOUL.md': [
     '# Persona & Tone',

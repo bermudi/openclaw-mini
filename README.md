@@ -12,13 +12,20 @@ OpenClaw Mini is a lightweight OpenClaw-inspired agent runtime built with Next.j
    ```bash
    bun run db:push
    ```
-3. Create your runtime config:
-   - Copy `examples/openclaw.json` to `~/.openclaw/openclaw.json`
-   - Or set `OPENCLAW_CONFIG_PATH` to a custom file location
+3. Run the interactive setup wizard:
+   ```bash
+   bun run setup
+   ```
+   This guides you through provider keys, auth, workspace bootstrap, and optional
+   channel integrations. Run `bun run setup --doctor` at any time to check install health.
 4. Start the app:
    ```bash
    bun run dev
    ```
+
+> **Manual setup:** If you prefer to configure by hand, copy `examples/openclaw.json`
+> to `~/.openclaw/openclaw.json`, set `OPENCLAW_CONFIG_PATH` to override the path,
+> and see `SETUP.md` for the full reference.
 
 ## Internal API auth
 

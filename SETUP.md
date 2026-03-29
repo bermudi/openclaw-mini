@@ -12,41 +12,64 @@
    bun run db:push
    ```
 
-3. **Create the runtime config file:**
-    - Copy `examples/openclaw.json` to `~/.openclaw/openclaw.json`, or set `OPENCLAW_CONFIG_PATH` to a custom location.
-    - The runtime accepts JSON5, so comments are allowed in your real `openclaw.json`.
-    - Keep API keys in environment variables and reference them from the config with `${ENV_VAR}`.
-
-4. **Configure internal admin/service auth:**
-   - Set `OPENCLAW_API_KEY` and use it as `Authorization: Bearer <token>` for protected admin APIs.
-   - The scheduler and WebSocket broadcast client reuse the same token automatically.
-   - If your app runs on a non-default origin, set `OPENCLAW_APP_URL` for scheduler callbacks.
-   - For local-only experimentation, you may set `OPENCLAW_ALLOW_INSECURE_LOCAL=true`, but startup will warn loudly because this disables internal bearer auth.
-   - Browser clients (`/chat` and the dashboard send-message flow) do not ship bearer tokens, so they require insecure-local mode or an authenticating reverse proxy.
-
-5. **Choose Telegram inbound transport (optional):**
-   - Leave `TELEGRAM_TRANSPORT` unset for webhook mode.
-   - Set `TELEGRAM_TRANSPORT=polling` for long polling in local or single-instance deployments.
-   - Polling mode is single-consumer only; do not run multiple schedulers against the same bot token.
-   - Keep `TELEGRAM_WEBHOOK_SECRET` configured when you use webhook mode.
-
-6. **Copy example skills (optional, for sub-agent support):**
+3. **Run the interactive setup wizard:**
    ```bash
-   cp -r examples/subagents skills/
+   bun run setup
    ```
-   Sub-agents are defined via `skills/<name>/SKILL.md` files.
+   The wizard guides you through:
+   - Database path (`DATABASE_URL`)
+   - AI provider credentials (`openclaw.json`)
+   - Default agent model selection
+   - Internal auth (`OPENCLAW_API_KEY`)
+   - Workspace bootstrap files
+   - Optional channels (Telegram, WhatsApp)
+   - Advanced settings (search, browser, env overrides)
+   - Post-save verification summary
 
-7. **Start the development server:**
+   Run at any time to reconfigure an existing install — all fields are prefilled from
+   the current configuration.
+
+   ```bash
+   bun run setup --doctor   # read-only health check, no files written
+   ```
+
+4. **Start the development server:**
    ```bash
    bun run dev
    ```
    This starts all three services concurrently:
    - Main app on port 3000
-   - WebSocket service on port 3003  
+   - WebSocket service on port 3003
    - Scheduler service (for cron/heartbeat automation)
 
-7. **Open the dashboard:**
+5. **Open the dashboard:**
    Navigate to http://localhost:3000
+
+---
+
+## Manual Configuration (advanced)
+
+If you prefer to configure by hand instead of using the wizard:
+
+- Copy `examples/openclaw.json` to `~/.openclaw/openclaw.json`, or set `OPENCLAW_CONFIG_PATH` to a custom location.
+- The runtime accepts JSON5, so comments are allowed in your real `openclaw.json`.
+- Keep API keys in environment variables and reference them from the config with `${ENV_VAR}`.
+- Configure internal admin/service auth:
+  - Set `OPENCLAW_API_KEY` and use it as `Authorization: Bearer <token>` for protected admin APIs.
+  - The scheduler and WebSocket broadcast client reuse the same token automatically.
+  - If your app runs on a non-default origin, set `OPENCLAW_APP_URL` for scheduler callbacks.
+  - For local-only experimentation, you may set `OPENCLAW_ALLOW_INSECURE_LOCAL=true`, but startup will warn loudly because this disables internal bearer auth.
+  - Browser clients (`/chat` and the dashboard send-message flow) do not ship bearer tokens, so they require insecure-local mode or an authenticating reverse proxy.
+- Choose Telegram inbound transport (optional):
+  - Leave `TELEGRAM_TRANSPORT` unset for webhook mode.
+  - Set `TELEGRAM_TRANSPORT=polling` for long polling in local or single-instance deployments.
+  - Polling mode is single-consumer only; do not run multiple schedulers against the same bot token.
+  - Keep `TELEGRAM_WEBHOOK_SECRET` configured when you use webhook mode.
+- Copy example skills (optional, for sub-agent support):
+  ```bash
+  cp -r examples/subagents skills/
+  ```
+  Sub-agents are defined via `skills/<name>/SKILL.md` files.
 
 ## Architecture
 
