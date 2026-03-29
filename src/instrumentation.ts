@@ -2,7 +2,6 @@
 // Runs at server startup via Next.js instrumentation API
 
 import { markSkillCacheDirty, resetSkillCacheDirtyForTests } from '@/lib/services/skill-cache-signal';
-import { initialize } from '@/lib/init';
 
 let skillCacheSighupHandler: (() => void) | null = null;
 
@@ -39,16 +38,9 @@ export function resetSkillCacheSignalHandlerForTests(): void {
 }
 
 export async function register() {
-  registerSkillCacheSignalHandler();
-
-  // Only run in Node.js runtime (not Edge)
   const nextRuntime = getNodeProcess()?.env?.NEXT_RUNTIME;
-  if (nextRuntime === 'nodejs' || !nextRuntime) {
-    const result = await initialize();
-
-    if (!result.success) {
-      console.error('\n🚨 OpenClaw failed to start. See errors above.\n');
-      throw new Error('OpenClaw failed to start');
-    }
+  if (nextRuntime !== 'edge') {
+    const { registerNodeInstrumentation } = await import('./instrumentation-node');
+    await registerNodeInstrumentation();
   }
 }

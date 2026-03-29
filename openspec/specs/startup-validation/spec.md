@@ -12,8 +12,8 @@ The system SHALL validate all hard requirements at server startup via the Next.j
 - **AND** the system SHALL complete all validation checks before accepting requests
 
 #### Scenario: Validation only runs in Node.js runtime
-- **WHEN** `process.env.NEXT_RUNTIME` is not `nodejs`
-- **THEN** the system SHALL skip validation (Edge runtime compatibility)
+- **WHEN** `process.env.NEXT_RUNTIME` is not `edge`
+- **THEN** the system SHALL run validation
 
 ### Requirement: Hard requirement failure blocks startup
 The system SHALL exit with code 1 if any hard requirement fails validation.

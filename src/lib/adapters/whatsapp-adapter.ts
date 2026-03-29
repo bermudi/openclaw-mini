@@ -20,10 +20,9 @@ type BaileysModuleLike = {
   extensionForMediaMessage?: (message: unknown) => string | undefined;
 };
 
-const dynamicImportBaileys = new Function('specifier', 'return import(specifier);') as (specifier: string) => Promise<BaileysModuleLike>;
-
 async function getBaileysModule(): Promise<BaileysModuleLike> {
-  return dynamicImportBaileys('@whiskeysockets/baileys');
+  const moduleName = '@whiskeysockets/' + 'baileys';
+  return (await import(moduleName)) as BaileysModuleLike;
 }
 
 function getMakeWASocket(module: BaileysModuleLike): ((options: { auth: unknown; printQRInTerminal: boolean }) => BaileysSocketLike) | null {
@@ -223,7 +222,6 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
       this.mediaHelpers = getMediaHelpers(baileys);
 
-      // eslint-disable-next-line react-hooks/rules-of-hooks
       const { state, saveCreds } = await baileys.useMultiFileAuthState(AUTH_DIR);
 
       const sock = makeWASocket({ auth: state, printQRInTerminal: false });

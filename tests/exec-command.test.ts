@@ -1000,7 +1000,11 @@ describe('exec_command tool advanced runtime behavior', () => {
       expect(surfaces?.[0]?.type).toBe('file');
       expect(surfaces?.[0]?.filePath).toBeTruthy();
       expect(surfaces?.[0]?.filePath).not.toBe(path.join(workspaceDir, 'report.txt'));
-      expect(fs.readFileSync(surfaces?.[0]!.filePath!, 'utf-8')).toBe('report from mount');
+      const surfacePath = surfaces?.[0]?.filePath;
+      if (!surfacePath) {
+        throw new Error('Expected mounted command to produce a file surface path');
+      }
+      expect(fs.readFileSync(surfacePath, 'utf-8')).toBe('report from mount');
     } finally {
       fs.rmSync(workspaceDir, { recursive: true, force: true });
     }

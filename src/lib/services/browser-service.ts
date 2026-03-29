@@ -50,8 +50,6 @@ interface PlaywrightModule {
 type PlaywrightLoader = () => Promise<unknown>;
 type BrowserConfigResolver = () => ResolvedBrowserConfig;
 
-const importOptionalModule = new Function('specifier', 'return import(specifier);') as (specifier: string) => Promise<unknown>;
-
 class BrowserElementNotFoundError extends Error {
   constructor(selector: string) {
     super(`Element not found: ${selector}`);
@@ -116,7 +114,8 @@ function toBuffer(value: Uint8Array | ArrayBuffer | string): Buffer {
 }
 
 async function loadPlaywrightModule(): Promise<PlaywrightModule> {
-  return asPlaywrightModule(await importOptionalModule('playwright'));
+  const moduleName = 'play' + 'wright';
+  return asPlaywrightModule(await import(moduleName));
 }
 
 export class BrowserService {
@@ -295,7 +294,7 @@ export class BrowserService {
   private async evaluate(page: PlaywrightPage, params: BrowserActionPayloadMap['evaluate'], timeoutMs: number): Promise<ToolResult> {
     this.ensureValidUrl(params.url);
     await this.goto(page, params.url, timeoutMs);
-    const result = await page.evaluate<unknown>(({ script }: { script: string }) => (0, eval)(script), { script: params.script });
+    const result = await page.evaluate<unknown>(params.script);
     return {
       success: true,
       data: {

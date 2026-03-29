@@ -8,7 +8,7 @@
     "dev:ws": "cd mini-services/openclaw-ws && bun dev",
     "test": "bun test --timeout 30000",
     "test:ci": "concurrently --kill-others-on-quit \"bun run dev:ws\" \"bun test --run\"",
-    "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
+    "build": "next build --webpack && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
     "db:push": "prisma db push",
