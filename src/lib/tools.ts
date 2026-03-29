@@ -15,7 +15,8 @@ import { buildInternalAuthHeaders } from '@/lib/internal-auth';
 import { getSkillForSubAgent } from '@/lib/services/skill-service';
 import { getBuiltInSkillsDir, getManagedSkillsDir } from '@/lib/services/skill-loaders';
 import { getOverrideFieldsApplied } from '@/lib/subagent-config';
-import { getRuntimeConfig } from '@/lib/config/runtime';
+import { getRuntimeConfig, getOffloadTokenThreshold } from '@/lib/config/runtime';
+import { wrapWithOffloading, type OffloadContext } from '@/lib/utils/offload-wrapper';
 import { getMemoryDir, memoryService } from '@/lib/services/memory-service';
 import { resolveSandboxPath } from '@/lib/services/sandbox-service';
 import {
@@ -134,6 +135,7 @@ export interface ToolResult {
 
 export interface ToolMeta {
   riskLevel: 'low' | 'medium' | 'high';
+  noOffload?: boolean;
 }
 
 export interface RegisteredTool {
@@ -272,9 +274,21 @@ export async function getToolSchemas(): Promise<Array<{
   );
 }
 
-export function getToolsForAgent(_skills: string[]): Record<string, CoreTool> {
+export function getToolsForAgent(_skills: string[], taskId?: string): Record<string, CoreTool> {
   const allTools = getAvailableTools();
-  return Object.fromEntries(allTools.map(({ name, tool: registeredTool }) => [name, registeredTool]));
+  if (!taskId) {
+    return Object.fromEntries(allTools.map(({ name, tool: registeredTool }) => [name, registeredTool]));
+  }
+
+  const context: OffloadContext = { taskId, threshold: getOffloadTokenThreshold() };
+  return Object.fromEntries(
+    allTools.map(({ name, tool: registeredTool, meta }) => {
+      if (meta.noOffload) {
+        return [name, registeredTool];
+      }
+      return [name, wrapWithOffloading(name, registeredTool, context)];
+    }),
+  );
 }
 
 export function getLowRiskTools(): Record<string, CoreTool> {
@@ -550,7 +564,7 @@ registerTool(
       };
     },
   }),
-  { riskLevel: 'medium' },
+  { riskLevel: 'medium', noOffload: true },
 );
 
 // ============================================
@@ -1568,7 +1582,7 @@ registerTool(
       }
     },
   }),
-  { riskLevel: 'low' },
+  { riskLevel: 'low', noOffload: true },
 );
 
 // Log event

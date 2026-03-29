@@ -26,7 +26,7 @@ import {
 } from '@/lib/tools';
 import { getSkillForSubAgent, getSkillSummaries } from './skill-service';
 import { type SubAgentOverrides, resolveSubAgentConfig } from '@/lib/subagent-config';
-import { loadBootstrapContext, loadHeartbeatContext } from './workspace-service';
+import { loadBootstrapContext, loadHeartbeatContext, cleanOffloadFiles } from './workspace-service';
 import { countTokens } from '@/lib/utils/token-counter';
 import { eventBus } from './event-bus';
 import { supportsVision } from './model-catalog';
@@ -176,7 +176,7 @@ class AgentExecutorService {
 
       const tools = isSubagent
         ? getToolsByNames(resolvedSubagentConfig?.allowedTools ?? defaultSubagentToolNames)
-        : getToolsForAgent(agent.skills);
+        : getToolsForAgent(agent.skills, task.id);
 
       const systemPrompt = isSubagent
         ? (resolvedSubagentConfig?.systemPrompt ?? defaultSubagentSystemPrompt)
@@ -250,6 +250,7 @@ class AgentExecutorService {
           taskType: task.type,
           toolCalls: [],
         });
+        cleanOffloadFiles(taskId);
         await agentService.setAgentStatus(task.agentId, 'idle');
         return { success: true, response: visionResult.errorResponse ?? '', actions: [], toolCalls: [] };
       }
@@ -385,6 +386,7 @@ class AgentExecutorService {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
       await taskQueue.failTask(taskId, errorMessage);
+      cleanOffloadFiles(taskId);
 
       if (task.type === 'subagent' && task.parentTaskId) {
         void eventBus.emit('subagent:failed', {
@@ -700,6 +702,8 @@ class AgentExecutorService {
     response: string,
     executionToolCalls: NonNullable<ExecutionResult['toolCalls']>,
   ): Promise<void> {
+    cleanOffloadFiles(taskId);
+
     if (task.type === 'subagent' && task.parentTaskId) {
       void eventBus.emit('subagent:completed', {
         taskId,

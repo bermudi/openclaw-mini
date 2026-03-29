@@ -247,3 +247,32 @@ export function writeWorkspaceFile(
     size: Buffer.byteLength(content, 'utf-8'),
   };
 }
+
+export function getOffloadDir(taskId: string, config: Partial<BootstrapConfig> = {}): string {
+  const resolvedConfig = resolveConfig(config);
+  return path.join(resolvedConfig.workspaceDir, 'offload', taskId);
+}
+
+export function writeOffloadFile(
+  taskId: string,
+  toolName: string,
+  callIndex: number,
+  content: string,
+  config: Partial<BootstrapConfig> = {},
+): string {
+  const offloadDir = getOffloadDir(taskId, config);
+  fs.mkdirSync(offloadDir, { recursive: true });
+  const fileName = `${toolName}-${callIndex}.md`;
+  const filePath = path.join(offloadDir, fileName);
+  fs.writeFileSync(filePath, content, 'utf-8');
+  return filePath;
+}
+
+export function cleanOffloadFiles(taskId: string, config: Partial<BootstrapConfig> = {}): void {
+  const offloadDir = getOffloadDir(taskId, config);
+  try {
+    fs.rmSync(offloadDir, { recursive: true, force: true });
+  } catch (error) {
+    console.warn(`[workspace-service] Failed to clean offload files for task ${taskId}:`, error);
+  }
+}

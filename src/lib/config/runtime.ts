@@ -307,3 +307,8 @@ export function getMcpServers(): Record<string, McpServerConfig> {
 export function getPrismaLogConfig(): PrismaLogLevel[] {
   return getRuntimeConfig().logging.prisma;
 }
+
+export function getOffloadTokenThreshold(): number {
+  const raw = parseInt(process.env.OPENCLAW_OFFLOAD_TOKEN_THRESHOLD ?? '', 10);
+  return Number.isInteger(raw) && raw > 0 ? raw : 2000;
+}
