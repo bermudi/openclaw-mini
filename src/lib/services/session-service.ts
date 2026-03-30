@@ -9,6 +9,7 @@ import { memoryService } from './memory-service';
 import { reflectOnContent } from './memory-reflector';
 import { eventBus } from './event-bus';
 import { resolveAgentContextWindow, resolveCompactionThreshold, runWithModelFallback } from './model-provider';
+import { auditService } from './audit-service';
 
 export interface SessionContext {
   messages: Array<{
@@ -406,17 +407,34 @@ class SessionService {
       .map(message => this.formatMessage(this.mapSessionMessage(message), true))
       .join('\n\n');
 
-    const summary = await runWithModelFallback(({ model }) =>
-      generateText({
-        model,
-        system: 'Summarize the earlier conversation faithfully. Preserve requests, decisions, commitments, unresolved items, and important facts. Respond with concise plain text.',
-        prompt: historyDump,
-      }));
+    let summaryText: string;
+    let usedModel = '';
+    try {
+      const summary = await runWithModelFallback(({ model, config }) => {
+        usedModel = `${config.provider}/${config.model}`;
+        return generateText({
+          model,
+          system: 'You are summarizing a conversation session. The summary will replace the full message history as the agent\'s working memory. Produce a structured summary with these sections:\n\n1. Session Intent: What the user is trying to accomplish\n2. Key Decisions: Choices made or confirmed\n3. Artifacts: Files, configurations, or outputs created\n4. Open Questions: Unresolved items\n5. Next Steps: What the agent should do next\n\nRespond with concise plain text. Include all sections that are relevant; omit any that are not applicable.',
+          prompt: historyDump,
+        });
+      });
+      summaryText = summary.text.trim();
+    } catch (error) {
+      console.warn(
+        `[SessionService] Compaction LLM call failed for session ${sessionId}, agent ${session.agentId}:`,
+        error instanceof Error ? error.message : error,
+      );
+      return { summarized: 0, remaining: snapshot.length };
+    }
 
-    const summaryText = summary.text.trim();
-    const summaryContent = summaryText.length > 0
-      ? `[Session Summary] ${summaryText}`
-      : '[Session Summary] Summary unavailable.';
+    if (!summaryText) {
+      console.warn(
+        `[SessionService] Compaction LLM returned empty response for session ${sessionId}, agent ${session.agentId}. Aborting compaction.`,
+      );
+      return { summarized: 0, remaining: snapshot.length };
+    }
+
+    const summaryContent = `[Session Summary] ${summaryText}`;
 
     await memoryService.appendHistory(session.agentId, historyDump);
 
@@ -440,6 +458,15 @@ class SessionService {
     });
 
     const remaining = await db.sessionMessage.count({ where: { sessionId } });
+
+    void auditService.log({
+      action: 'session_compacted',
+      entityType: 'session',
+      entityId: sessionId,
+      details: { sessionId, agentId: session.agentId, summarized: messagesToSummarize.length, remaining, model: usedModel },
+      severity: 'info',
+    });
+
     const compactionResult = {
       summarized: messagesToSummarize.length,
       remaining,

@@ -62,13 +62,22 @@ const originalEnv = {
 };
 let runtimeConfigFixture: RuntimeConfigFixture | null = null;
 
+const summaryOverride = { behavior: 'normal' as 'normal' | 'throw' | 'empty', callCount: 0 };
+
 mock.module('ai', () => ({
-  generateText: async ({ system }: { system?: string }) => ({
-    text: system?.includes('Summarize the earlier conversation faithfully.')
-      ? 'older conversation summary'
-      : 'assistant reply',
-    steps: [],
-  }),
+  generateText: async ({ system }: { system?: string }) => {
+    if (system?.includes('You are summarizing a conversation session.')) {
+      if (summaryOverride.behavior === 'throw') {
+        throw new Error('LLM network error');
+      }
+      if (summaryOverride.behavior === 'empty') {
+        return { text: '   ', steps: [] };
+      }
+      summaryOverride.callCount += 1;
+      return { text: `conversation summary round ${summaryOverride.callCount}`, steps: [] };
+    }
+    return { text: 'assistant reply', steps: [] };
+  },
   stepCountIs: () => () => true,
 }));
 
@@ -147,6 +156,8 @@ beforeEach(async () => {
 afterEach(() => {
   setCountTokensImplementationForTests(null);
   setCountTokensThrowOnErrorForTests(false);
+  summaryOverride.behavior = 'normal';
+  summaryOverride.callCount = 0;
 });
 
 afterAll(async () => {
@@ -680,4 +691,229 @@ test('session context migration backfills valid JSON blobs, preserves timestamps
   expect(validRows[1]?.createdAt.toISOString()).toBe('2026-03-19T09:01:00.000Z');
   expect(malformedRows).toHaveLength(0);
   expect(warnings.some(message => message.includes(malformedSession.id))).toBe(true);
+});
+
+test('compactSession does not delete messages when LLM call throws', async () => {
+  summaryOverride.behavior = 'throw';
+  process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '4';
+  process.env.OPENCLAW_SESSION_RETAIN_COUNT = '2';
+
+  const agent = await createAgent('LLM Failure Agent');
+  const session = await sessionService.getOrCreateSession(agent.id, 'main', 'telegram', 'llm-fail');
+
+  for (const content of ['m1', 'm2', 'm3', 'm4', 'm5']) {
+    await sessionService.appendToContext(session.id, {
+      role: 'user',
+      content,
+    });
+  }
+
+  const rows = await db.sessionMessage.findMany({
+    where: { sessionId: session.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  expect(rows).toHaveLength(5);
+  expect(rows.some(row => row.role === 'system')).toBe(false);
+});
+
+test('compactSession does not delete messages when LLM returns empty string', async () => {
+  summaryOverride.behavior = 'empty';
+  process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '4';
+  process.env.OPENCLAW_SESSION_RETAIN_COUNT = '2';
+
+  const agent = await createAgent('Empty Summary Agent');
+  const session = await sessionService.getOrCreateSession(agent.id, 'main', 'telegram', 'empty-summary');
+
+  for (const content of ['m1', 'm2', 'm3', 'm4', 'm5']) {
+    await sessionService.appendToContext(session.id, {
+      role: 'user',
+      content,
+    });
+  }
+
+  const rows = await db.sessionMessage.findMany({
+    where: { sessionId: session.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  expect(rows).toHaveLength(5);
+  expect(rows.some(row => row.role === 'system')).toBe(false);
+});
+
+test('full compaction cycle: auto-compact writes audit log, flushes memory history, and buildPrompt includes summary', async () => {
+  process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '4';
+  process.env.OPENCLAW_SESSION_RETAIN_COUNT = '2';
+
+  const agent = await createAgent('Full Cycle Agent');
+  const session = await sessionService.getOrCreateSession(agent.id, 'main', 'telegram', 'full-cycle');
+
+  for (const content of ['alpha', 'beta', 'gamma', 'delta', 'epsilon']) {
+    await sessionService.appendToContext(session.id, {
+      role: 'user',
+      content,
+    });
+  }
+
+  // 1. Verify compaction happened — summary + 2 retained
+  const rows = await db.sessionMessage.findMany({
+    where: { sessionId: session.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  expect(rows).toHaveLength(3);
+  expect(rows[0]?.role).toBe('system');
+  expect(rows[0]?.content.startsWith('[Session Summary]')).toBe(true);
+  expect(rows.slice(1).map(r => r.content)).toEqual(['delta', 'epsilon']);
+
+  // Yield to let fire-and-forget audit write complete
+  await Bun.sleep(50);
+
+  // 2. Verify audit log was written
+  const auditLogs = await db.auditLog.findMany({
+    where: { action: 'session_compacted', entityId: session.id },
+  });
+  expect(auditLogs).toHaveLength(1);
+  const details = JSON.parse(auditLogs[0]!.details as string) as Record<string, unknown>;
+  expect(details.agentId).toBe(agent.id);
+  expect(details.summarized).toBe(3);
+  expect(details.remaining).toBe(3);
+  expect(typeof details.model).toBe('string');
+  expect((details.model as string).length).toBeGreaterThan(0);
+
+  // 3. Verify memory history was flushed
+  const history = await memoryService.getMemory(agent.id, 'system/history');
+  expect(history?.value).toContain('alpha');
+  expect(history?.value).toContain('beta');
+  expect(history?.value).toContain('gamma');
+
+  // 4. Verify buildPrompt includes the summary
+  setCountTokensImplementationForTests((text) => text.length);
+  const executor = agentExecutor as unknown as {
+    buildPrompt: (
+      task: {
+        type: 'message';
+        payload: { channel: string; sender: string; content: string };
+      },
+      input: {
+        recallQuery: string;
+        sessionMessages: Array<{
+          role: 'user' | 'assistant' | 'system';
+          content: string;
+          sender?: string;
+          channel?: 'telegram';
+          channelKey?: string;
+          timestamp: string;
+        }>;
+        systemPrompt: string;
+        agent: { model: string | null; contextWindowOverride: number | null };
+      },
+    ) => Promise<string>;
+  };
+
+  const sessionMessages = (await sessionService.getSessionMessages(session.id)).map((m) => ({
+    ...m,
+    channel: (m.channel ?? 'telegram') as 'telegram',
+  }));
+  const prompt = await executor.buildPrompt(
+    { type: 'message', payload: { channel: 'telegram', sender: 'bermudi', content: 'next turn' } },
+    {
+      systemPrompt: 'You are helpful.',
+      agent: { model: 'gpt-4', contextWindowOverride: null },
+      recallQuery: 'cycle query',
+      sessionMessages,
+    },
+  );
+  expect(prompt).toContain('[Session Summary]');
+});
+
+test('multiple compaction rounds summarize prior summary into new summary', async () => {
+  process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '4';
+  process.env.OPENCLAW_SESSION_RETAIN_COUNT = '2';
+
+  const agent = await createAgent('Multi-Round Agent');
+  const session = await sessionService.getOrCreateSession(agent.id, 'main', 'telegram', 'multi-round');
+
+  // Round 1: 5 messages → compaction fires after r1-e (5 > 4) → summary + 2 retained
+  for (const content of ['r1-a', 'r1-b', 'r1-c', 'r1-d', 'r1-e']) {
+    await sessionService.appendToContext(session.id, { role: 'user', content });
+  }
+
+  let rows = await db.sessionMessage.findMany({
+    where: { sessionId: session.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  expect(rows).toHaveLength(3);
+  expect(rows[0]?.role).toBe('system');
+  const firstSummary = rows[0]!.content;
+  expect(firstSummary.startsWith('[Session Summary]')).toBe(true);
+
+  // Round 2: add 3 more messages
+  // After r2-f: 4 messages, 4 > 4 = false → no compaction
+  // After r2-g: 5 messages, 5 > 4 = true → compaction fires → summary + r2-f, r2-g
+  // After r2-h: 4 messages, 4 > 4 = false → no compaction
+  // Final: [new-summary, r2-f, r2-g, r2-h] = 4 messages
+  for (const content of ['r2-f', 'r2-g', 'r2-h']) {
+    await sessionService.appendToContext(session.id, { role: 'user', content });
+  }
+
+  rows = await db.sessionMessage.findMany({
+    where: { sessionId: session.id },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  expect(rows).toHaveLength(4);
+  expect(rows[0]?.role).toBe('system');
+  expect(rows[0]?.content.startsWith('[Session Summary]')).toBe(true);
+  // The second summary should be different from the first
+  expect(rows[0]?.content).not.toBe(firstSummary);
+  expect(rows.slice(1).map(r => r.content)).toEqual(['r2-f', 'r2-g', 'r2-h']);
+
+  // Yield to let fire-and-forget audit writes complete
+  await Bun.sleep(50);
+
+  // Verify two audit logs (one per round)
+  const auditLogs = await db.auditLog.findMany({
+    where: { action: 'session_compacted', entityId: session.id },
+    orderBy: { createdAt: 'asc' },
+  });
+  expect(auditLogs).toHaveLength(2);
+
+  const firstDetails = JSON.parse(auditLogs[0]!.details as string) as Record<string, unknown>;
+  const secondDetails = JSON.parse(auditLogs[1]!.details as string) as Record<string, unknown>;
+  // Both rounds summarize 3 messages (5 - 2 retained)
+  expect(firstDetails.summarized).toBe(3);
+  expect(secondDetails.summarized).toBe(3);
+});
+
+test('manual compact endpoint writes audit log with correct payload', async () => {
+  process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD = '999';
+  process.env.OPENCLAW_SESSION_RETAIN_COUNT = '3';
+
+  const agent = await createAgent('Audit Agent');
+  const session = await sessionService.getOrCreateSession(agent.id, 'main', 'telegram', 'audit-test');
+
+  for (const content of ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']) {
+    await sessionService.appendToContext(session.id, { role: 'user', content });
+  }
+
+  const response = await compactSessionRoute.POST(
+    new NextRequest(`http://localhost/api/sessions/${session.id}/compact`, { method: 'POST' }),
+    { params: Promise.resolve({ id: session.id }) },
+  );
+  const body = await response.json() as { summarized: number; remaining: number };
+  expect(response.status).toBe(200);
+  expect(body.summarized).toBe(3);
+  expect(body.remaining).toBe(4); // 1 summary + 3 retained
+
+  // Yield to let fire-and-forget audit write complete
+  await Bun.sleep(50);
+
+  const auditLogs = await db.auditLog.findMany({
+    where: { action: 'session_compacted', entityId: session.id },
+  });
+  expect(auditLogs).toHaveLength(1);
+
+  const details = JSON.parse(auditLogs[0]!.details as string) as Record<string, unknown>;
+  expect(details.sessionId).toBe(session.id);
+  expect(details.agentId).toBe(agent.id);
+  expect(details.summarized).toBe(3);
+  expect(details.remaining).toBe(4);
+  expect(typeof details.model).toBe('string');
 });
