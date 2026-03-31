@@ -550,10 +550,13 @@ test('integration: compaction triggers reflector and creates memories', async ()
   ]);
 
   mock.module('ai', () => ({
-    generateText: async ({ system }: { system?: string }) => ({
-      text: system?.includes('Summarize') ? 'Bob mentioned his name is Bob the Tester' : mockGenerateTextResponse,
-      steps: [],
-    }),
+    generateText: async (args: unknown) => {
+      const { system } = args as { system?: string };
+      const text = system?.toLowerCase().startsWith('you are summarizing')
+        ? 'Bob mentioned his name is Bob the Tester'
+        : mockGenerateTextResponse;
+      return { text, steps: [] };
+    },
     stepCountIs: () => () => true,
   }));
 
@@ -592,9 +595,11 @@ test('integration: reflector failure does not break compaction', async () => {
 
   let callCount = 0;
   mock.module('ai', () => ({
-    generateText: async ({ system }: { system?: string }) => {
+    generateText: async (args: unknown) => {
       callCount++;
-      if (system?.includes('Summarize')) {
+      const { system } = args as { system?: string };
+      // Use startsWith to detect compaction summary call vs reflector extraction call
+      if (system?.toLowerCase().startsWith('you are summarizing')) {
         return { text: 'Summary text', steps: [] };
       }
       throw new Error('Reflector LLM failed');
