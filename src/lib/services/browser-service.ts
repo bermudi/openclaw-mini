@@ -114,8 +114,12 @@ function toBuffer(value: Uint8Array | ArrayBuffer | string): Buffer {
 }
 
 async function loadPlaywrightModule(): Promise<PlaywrightModule> {
-  const moduleName = 'play' + 'wright';
-  return asPlaywrightModule(await import(moduleName));
+  // Use runtime dynamic import to prevent Turbopack from analyzing this
+  const runtimeImport = new Function('specifier', 'return import(specifier)') as (
+    specifier: string
+  ) => Promise<unknown>;
+  const module = await runtimeImport('playwright');
+  return asPlaywrightModule(module);
 }
 
 export class BrowserService {

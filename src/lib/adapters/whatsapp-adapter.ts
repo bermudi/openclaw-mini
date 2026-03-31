@@ -21,8 +21,12 @@ type BaileysModuleLike = {
 };
 
 async function getBaileysModule(): Promise<BaileysModuleLike> {
-  const moduleName = '@whiskeysockets/' + 'baileys';
-  return (await import(moduleName)) as BaileysModuleLike;
+  // Use runtime dynamic import to prevent Turbopack from analyzing this
+  const runtimeImport = new Function('specifier', 'return import(specifier)') as (
+    specifier: string
+  ) => Promise<unknown>;
+  const module = await runtimeImport('@whiskeysockets/baileys');
+  return module as BaileysModuleLike;
 }
 
 function getMakeWASocket(module: BaileysModuleLike): ((options: { auth: unknown; printQRInTerminal: boolean }) => BaileysSocketLike) | null {
