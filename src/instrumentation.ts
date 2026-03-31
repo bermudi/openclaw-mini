@@ -1,12 +1,14 @@
 // OpenClaw Agent Runtime - Instrumentation Entry Point
 // Runs at server startup via Next.js instrumentation API
+// NOTE: Heavy initialization moved to lazy init on first request (see lib/init/lazy.ts)
+// This avoids Turbopack crashes from complex import graphs during dev compilation
 
 import { markSkillCacheDirty, resetSkillCacheDirtyForTests } from '@/lib/services/skill-cache-signal';
 
 let skillCacheSighupHandler: (() => void) | null = null;
 
 type NodeProcessLike = {
-  env?: { NEXT_RUNTIME?: string };
+  env?: { NEXT_RUNTIME?: string; NODE_ENV?: string };
   addListener?: (event: 'SIGHUP', listener: () => void) => unknown;
   removeListener?: (event: 'SIGHUP', listener: () => void) => unknown;
 };
@@ -38,9 +40,9 @@ export function resetSkillCacheSignalHandlerForTests(): void {
 }
 
 export async function register() {
-  const nextRuntime = getNodeProcess()?.env?.NEXT_RUNTIME;
-  if (nextRuntime !== 'edge') {
-    const { registerNodeInstrumentation } = await import('./instrumentation-node');
-    await registerNodeInstrumentation();
-  }
+  // Always register signal handler (lightweight, no heavy imports)
+  registerSkillCacheSignalHandler();
+
+  // NOTE: Initialization now happens lazily on first API request via lib/init/lazy.ts
+  // This avoids Turbopack crashes from heavy import graphs during dev compilation
 }
