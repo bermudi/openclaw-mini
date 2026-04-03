@@ -20,7 +20,7 @@ let taskQueue: typeof import('../src/lib/services/task-queue').taskQueue;
 let agentService: typeof import('../src/lib/services/agent-service').agentService;
 let hookSubscriptionManager: typeof import('../src/lib/services/hook-subscription-manager').hookSubscriptionManager;
 let eventBus: typeof import('../src/lib/services/event-bus').eventBus;
-let wsClient: typeof import('../src/lib/services/ws-client').wsClient;
+let registerEventBusBroadcaster: typeof import('../src/lib/services/event-bus').registerEventBusBroadcaster;
 
 async function resetDb() {
   await db.sessionMessage.deleteMany();
@@ -67,8 +67,7 @@ beforeAll(async () => {
   taskQueue = (await import('../src/lib/services/task-queue')).taskQueue;
   agentService = (await import('../src/lib/services/agent-service')).agentService;
   hookSubscriptionManager = (await import('../src/lib/services/hook-subscription-manager')).hookSubscriptionManager;
-  eventBus = (await import('../src/lib/services/event-bus')).eventBus;
-  wsClient = (await import('../src/lib/services/ws-client')).wsClient;
+  ({ eventBus, registerEventBusBroadcaster } = await import('../src/lib/services/event-bus'));
 });
 
 afterAll(async () => {
@@ -106,7 +105,8 @@ test('scheduler-style remote event reaches local listener once', async () => {
 });
 
 test('event bus records broadcast failures without throwing', async () => {
-  const broadcastSpy = spyOn(wsClient, 'broadcast').mockResolvedValue(false);
+  const broadcastSpy = mock(async () => false);
+  registerEventBusBroadcaster({ broadcast: broadcastSpy });
   const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
   await expect(eventBus.emit('task:created', {

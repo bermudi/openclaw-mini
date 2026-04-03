@@ -38,9 +38,10 @@ let triggerRoute: typeof import('../src/app/api/triggers/[id]/route');
 let channelBindingsRoute: typeof import('../src/app/api/channels/bindings/route');
 let channelBindingRoute: typeof import('../src/app/api/channels/bindings/[id]/route');
 let triggerManualFireRoute: typeof import('../src/app/api/triggers/[id]/fire/route');
-let schedulerModule: typeof import('../mini-services/scheduler/index');
-let wsModule: typeof import('../mini-services/openclaw-ws/index');
+let schedulerModule: typeof import('../src/lib/runtime/service-api');
+let wsModule: typeof import('../src/lib/runtime/realtime-compat');
 let agentService: typeof import('../src/lib/services/agent-service').agentService;
+let agentExecutor: typeof import('../src/lib/services/agent-executor').agentExecutor;
 let taskQueue: typeof import('../src/lib/services/task-queue').taskQueue;
 let sessionService: typeof import('../src/lib/services/session-service').sessionService;
 let initialize: typeof import('../src/lib/init').initialize;
@@ -134,8 +135,9 @@ beforeAll(async () => {
   channelBindingsRoute = await import('../src/app/api/channels/bindings/route');
   channelBindingRoute = await import('../src/app/api/channels/bindings/[id]/route');
   triggerManualFireRoute = await import('../src/app/api/triggers/[id]/fire/route');
-  schedulerModule = await import('../mini-services/scheduler/index');
-  wsModule = await import('../mini-services/openclaw-ws/index');
+  schedulerModule = await import('../src/lib/runtime/service-api');
+  wsModule = await import('../src/lib/runtime/realtime-compat');
+  ({ agentExecutor } = await import('../src/lib/services/agent-executor'));
 
   await resetDb();
 });
@@ -375,49 +377,38 @@ describe('newly hardened control-plane routes', () => {
 });
 
 describe('service-to-service and websocket auth', () => {
-  test('scheduler adds bearer auth to task execution requests', async () => {
-    const fetchSpy = spyOn(global, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ success: true }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    );
+  test('scheduler executes tasks in-process without an HTTP callback hop', async () => {
+    const executeSpy = spyOn(agentExecutor, 'executeTask').mockResolvedValue({ success: true });
+    const fetchSpy = spyOn(global, 'fetch');
 
-    await schedulerModule.executeTaskViaApi('task-123');
+    const result = await schedulerModule.executeTaskViaApi('task-123');
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit | undefined];
-    const headers = new Headers(init?.headers);
-    expect(url).toContain('/api/tasks/');
-    expect(url).toContain('/execute');
-    expect(headers.get('authorization')).toBe(`Bearer ${AUTH_TOKEN}`);
-    expect(headers.get('content-type')).toBe('application/json');
+    expect(result.success).toBe(true);
+    expect(executeSpy).toHaveBeenCalledWith('task-123');
+    expect(fetchSpy).not.toHaveBeenCalled();
 
+    executeSpy.mockRestore();
     fetchSpy.mockRestore();
   });
 
-  test('scheduler creates trigger tasks via authenticated task API', async () => {
-    const fetchSpy = spyOn(global, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ success: true, data: { id: 'task-456' } }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    );
+  test('scheduler creates trigger tasks in-process without an HTTP callback hop', async () => {
+    const agent = await agentService.createAgent({ name: 'Scheduler Task Agent' });
+    const fetchSpy = spyOn(global, 'fetch');
 
-    await schedulerModule.createTaskViaApi({
-      agentId: 'agent-123',
+    const result = await schedulerModule.createTaskViaApi({
+      agentId: agent.id,
       type: 'heartbeat',
       priority: 7,
       payload: { triggerId: 'trigger-1', timestamp: '2026-03-25T00:00:00.000Z' },
       source: 'heartbeat:test',
     });
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit | undefined];
-    const headers = new Headers(init?.headers);
-    expect(url).toContain('/api/tasks');
-    expect(headers.get('authorization')).toBe(`Bearer ${AUTH_TOKEN}`);
-    expect(headers.get('content-type')).toBe('application/json');
+    expect(result.success).toBe(true);
+    expect(result.data?.id).toBeDefined();
+    const createdTask = await db.task.findUnique({ where: { id: result.data?.id } });
+    expect(createdTask?.agentId).toBe(agent.id);
+    expect(createdTask?.source).toBe('heartbeat:test');
+    expect(fetchSpy).not.toHaveBeenCalled();
 
     fetchSpy.mockRestore();
   });

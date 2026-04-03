@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 
-import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, expect, mock, spyOn, test } from 'bun:test'
 import fs from 'fs'
 import path from 'path'
 import { NextRequest } from 'next/server'
@@ -17,12 +17,12 @@ let runtimeConfigFixture: RuntimeConfigFixture | null = null
 
 let taskQueue: typeof import('../src/lib/services/task-queue').taskQueue
 let triggerService: typeof import('../src/lib/services/trigger-service').triggerService
-let schedulerModule: typeof import('../mini-services/scheduler/index')
+let schedulerModule: typeof import('../src/lib/runtime/service-api')
 let schedulerHealthRoute: typeof import('../src/app/api/scheduler/health/route')
 let taskRoute: typeof import('../src/app/api/tasks/route')
 let triggerFireRoute: typeof import('../src/app/api/internal/triggers/[id]/fire/route')
 let triggerManualFireRoute: typeof import('../src/app/api/triggers/[id]/fire/route')
-let wsClient: typeof import('../src/lib/services/ws-client').wsClient
+let registerEventBusBroadcaster: typeof import('../src/lib/services/event-bus').registerEventBusBroadcaster
 let sqliteConcurrency: typeof import('../src/lib/sqlite-concurrency')
 
 function bearerRequest(url: string, init: RequestInit = {}): NextRequest {
@@ -126,12 +126,12 @@ beforeAll(async () => {
 
   ;({ taskQueue } = await import('../src/lib/services/task-queue'))
   ;({ triggerService } = await import('../src/lib/services/trigger-service'))
-  schedulerModule = await import('../mini-services/scheduler/index')
+  schedulerModule = await import('../src/lib/runtime/service-api')
   schedulerHealthRoute = await import('../src/app/api/scheduler/health/route')
   taskRoute = await import('../src/app/api/tasks/route')
   triggerFireRoute = await import('../src/app/api/internal/triggers/[id]/fire/route')
   triggerManualFireRoute = await import('../src/app/api/triggers/[id]/fire/route')
-  ;({ wsClient } = await import('../src/lib/services/ws-client'))
+  ;({ registerEventBusBroadcaster } = await import('../src/lib/services/event-bus'))
   sqliteConcurrency = await import('../src/lib/sqlite-concurrency')
 })
 
@@ -172,7 +172,11 @@ test('single-writer flow routes scheduler lifecycle writes through APIs', async 
   })
 
   const fetchSpy = spyOn(global, 'fetch').mockImplementation((async (input, init) => {
-    const url = typeof input === 'string' ? input : input.url
+    const url = typeof input === 'string'
+      ? input
+      : input instanceof Request
+        ? input.url
+        : input.toString()
     return routeInternalFetch(url, init)
   }) as typeof fetch)
   const broadcastsBefore = sqliteConcurrency.getSqliteBusyMetrics()
@@ -210,9 +214,7 @@ test('single-writer flow routes scheduler lifecycle writes through APIs', async 
   expect(maintenanceResult.success).toBe(true)
 
   const calledUrls = fetchSpy.mock.calls.map(call => String(call[0]))
-  expect(calledUrls.some(url => url.includes('/api/tasks'))).toBe(true)
-  expect(calledUrls.some(url => url.includes(`/api/internal/triggers/${trigger.id}/fire`))).toBe(true)
-  expect(calledUrls.some(url => url.includes('/api/scheduler/health'))).toBe(true)
+  expect(calledUrls).toHaveLength(0)
   expect(sqliteConcurrency.getSqliteBusyMetrics().busyEvents).toBe(broadcastsBefore.busyEvents)
 
   fetchSpy.mockRestore()
@@ -569,7 +571,11 @@ test('concurrent scheduler and API task writes keep both updates through the sin
     data: { name: 'concurrent-agent' },
   })
   const fetchSpy = spyOn(global, 'fetch').mockImplementation((async (input, init) => {
-    const url = typeof input === 'string' ? input : input.url
+    const url = typeof input === 'string'
+      ? input
+      : input instanceof Request
+        ? input.url
+        : input.toString()
     return routeInternalFetch(url, init)
   }) as typeof fetch)
 
@@ -609,7 +615,7 @@ test('concurrent scheduler and API task writes keep both updates through the sin
     where: { action: 'task_created' },
   })
   expect(auditLogs).toHaveLength(2)
-  expect(fetchSpy.mock.calls.some(call => String(call[0]).includes('/api/tasks'))).toBe(true)
+  expect(fetchSpy.mock.calls).toHaveLength(0)
 
   fetchSpy.mockRestore()
 })
@@ -694,7 +700,8 @@ test('task creation still emits websocket-backed side effects through authoritat
   const agent = await db.agent.create({
     data: { name: 'event-agent' },
   })
-  const broadcastSpy = spyOn(wsClient, 'broadcast').mockResolvedValue(true)
+  const broadcastSpy = mock(async () => true)
+  registerEventBusBroadcaster({ broadcast: broadcastSpy })
 
   const response = await taskRoute.POST(bearerRequest('http://localhost/api/tasks', {
     method: 'POST',

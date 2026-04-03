@@ -172,14 +172,13 @@ function clampPositiveInt(value: number | undefined): number | undefined {
   return Math.max(1, Math.floor(value));
 }
 
-function toStringEnv(env?: Record<string, string | undefined>): Record<string, string> {
-  if (!env) {
-    return {};
-  }
-
-  return Object.fromEntries(
-    Object.entries(env).filter(([, value]) => value !== undefined),
-  ) as Record<string, string>;
+function toStringEnv(env?: Record<string, string | undefined>): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    ...Object.fromEntries(
+      Object.entries(env ?? {}).filter(([, value]) => value !== undefined),
+    ),
+  } as NodeJS.ProcessEnv;
 }
 
 function appendMergedOutput(session: InternalSession, chunk: string): void {
@@ -558,7 +557,7 @@ async function createNativePtyProcess(input: SpawnPtyInput): Promise<SpawnedSess
     throw new Error(error instanceof Error ? error.message : String(error));
   }
 
-  ptyProcess.onData((data) => {
+  ptyProcess.onData((data: string) => {
     if (stdoutListeners.size === 0) {
       bufferedStdoutChunks.push(data);
       return;
@@ -569,7 +568,7 @@ async function createNativePtyProcess(input: SpawnPtyInput): Promise<SpawnedSess
     }
   });
 
-  ptyProcess.onExit(({ exitCode, signal }) => {
+  ptyProcess.onExit(({ exitCode, signal }: { exitCode: number; signal?: number }) => {
     closed = true;
     closeOutcome = {
       exitCode,

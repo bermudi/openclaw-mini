@@ -5,12 +5,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireInternalAuth } from '@/lib/api-auth';
 import { storageErrorResponse } from '@/lib/api/storage-errors';
-import { db } from '@/lib/db';
-import { taskQueue } from '@/lib/services/task-queue';
-import { processPendingDeliveries } from '@/lib/services/delivery-service';
-import { memoryService } from '@/lib/services/memory-service';
 import { getSqliteBusyMetrics } from '@/lib/sqlite-concurrency';
 import { initializeAdapters } from '@/lib/adapters';
+import { runRuntimeMaintenance, type RuntimeMaintenanceOptions } from '@/lib/runtime/maintenance';
 
 // POST /api/scheduler/health - Run periodic health-check tasks
 export async function POST(request: NextRequest) {
@@ -21,44 +18,12 @@ export async function POST(request: NextRequest) {
     // Ensure adapters are registered for delivery processing
     initializeAdapters();
 
-    const body = await request.json().catch(() => ({})) as {
-      processDeliveries?: boolean;
-      sweepOrphanedSubagents?: boolean;
-      sweepStaleBusyAgents?: boolean;
-      cleanupOldTasks?: boolean;
-      cleanupHistoryArchives?: boolean;
-      decayMemoryConfidence?: boolean;
-    };
-
-    const operations = {
-      processDeliveries: body.processDeliveries ?? true,
-      sweepOrphanedSubagents: body.sweepOrphanedSubagents ?? true,
-      sweepStaleBusyAgents: body.sweepStaleBusyAgents ?? true,
-      cleanupOldTasks: body.cleanupOldTasks ?? false,
-      cleanupHistoryArchives: body.cleanupHistoryArchives ?? false,
-      decayMemoryConfidence: body.decayMemoryConfidence ?? false,
-    };
-
-    const [deliveryStats, sweptCount, staleBusyAgents, cleanedTasks, historyArchivesDeleted, memoryDecay] = await Promise.all([
-      operations.processDeliveries ? processPendingDeliveries() : Promise.resolve(null),
-      operations.sweepOrphanedSubagents ? taskQueue.sweepOrphanedSubagents() : Promise.resolve(0),
-      operations.sweepStaleBusyAgents ? taskQueue.sweepStaleBusyAgents() : Promise.resolve(null),
-      operations.cleanupOldTasks ? taskQueue.cleanupOldTasks() : Promise.resolve(0),
-      operations.cleanupHistoryArchives ? cleanupHistoryArchivesForAllAgents() : Promise.resolve(0),
-      operations.decayMemoryConfidence ? memoryService.decayMemoryConfidence() : Promise.resolve(null),
-    ]);
+    const body = await request.json().catch(() => ({})) as RuntimeMaintenanceOptions;
+    const result = await runRuntimeMaintenance(body);
 
     return NextResponse.json({
       success: true,
-      data: {
-        deliveries: deliveryStats,
-        orphanedSubagentsSwept: sweptCount,
-        staleBusyAgents,
-        tasksCleaned: cleanedTasks,
-        historyArchivesDeleted,
-        memoryDecay,
-        sqliteBusy: getSqliteBusyMetrics(),
-      },
+      data: result,
     });
   } catch (error) {
     const storageResponse = storageErrorResponse(error);
@@ -76,17 +41,4 @@ export async function GET() {
     timestamp: new Date().toISOString(),
     sqliteBusy: getSqliteBusyMetrics(),
   });
-}
-
-async function cleanupHistoryArchivesForAllAgents(): Promise<number> {
-  const agents = await db.agent.findMany({
-    select: { id: true },
-  });
-
-  let deleted = 0;
-  for (const agent of agents) {
-    deleted += await memoryService.cleanupHistoryArchives(agent.id);
-  }
-
-  return deleted;
 }

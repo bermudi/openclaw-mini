@@ -1,13 +1,18 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
-import { wsClient } from './ws-client';
+import type { WSBroadcastEvent } from '@/lib/ws-events';
 import type { WSEventType } from '@/lib/ws-events';
+
+export interface EventBusBroadcaster {
+  broadcast(event: WSBroadcastEvent, agentId?: string): Promise<boolean>;
+}
 
 export type EventMap = {
   'task:started': { taskId: string; agentId: string; taskType: string };
   'task:completed': { taskId: string; agentId: string; taskType: string; result?: Record<string, unknown> };
   'task:failed': { taskId: string; agentId: string; taskType: string; error: string };
   'task:created': { taskId: string; agentId: string; taskType: string; priority: number };
+  'trigger:fired': { triggerId: string; agentId: string; triggerType: string; taskId: string };
   'session:created': { sessionId: string; agentId: string; channel: string; channelKey: string };
   'memory:updated': { agentId: string; key: string };
   'memory:index-requested': { agentId: string; memoryId: string; key: string; reason: 'write' | 'delete' | 'reindex' };
@@ -16,6 +21,12 @@ export type EventMap = {
 };
 
 type Listener<K extends keyof EventMap> = (data: EventMap[K]) => void;
+
+let eventBusBroadcaster: EventBusBroadcaster | null = null;
+
+export function registerEventBusBroadcaster(broadcaster: EventBusBroadcaster | null): void {
+  eventBusBroadcaster = broadcaster;
+}
 
 export class EventBus {
   private readonly emitter = new EventEmitter();
@@ -29,7 +40,11 @@ export class EventBus {
   async emit<K extends keyof EventMap>(event: K, data: EventMap[K]): Promise<void> {
     this.emitter.emit(event, data);
 
-    const ok = await wsClient.broadcast(
+    if (!eventBusBroadcaster) {
+      return;
+    }
+
+    const ok = await eventBusBroadcaster.broadcast(
       {
         type: event as WSEventType,
         data: data as Record<string, unknown>,
@@ -77,6 +92,7 @@ export class EventBus {
 
   resetMetricsForTests(): void {
     this.broadcastFailureCount = 0;
+    eventBusBroadcaster = null;
     this.emitter.removeAllListeners();
     this.emitter.setMaxListeners(0);
   }

@@ -186,7 +186,7 @@ describe('web_fetch tool', () => {
 
   test('follows redirects up to final URL', async () => {
     let callCount = 0;
-    global.fetch = (async (input) => {
+    global.fetch = (async (input: string | URL | Request) => {
       callCount += 1;
       const url = String(input);
       if (url === 'https://short.url/abc') {

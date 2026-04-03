@@ -1,17 +1,12 @@
 /// <reference types="bun-types" />
 
 import { afterEach, expect, mock, spyOn, test } from 'bun:test';
-import { EventBus } from '../src/lib/services/event-bus';
+import { EventBus, registerEventBusBroadcaster } from '../src/lib/services/event-bus';
 
 const broadcastMock = mock(async () => true);
 
-mock.module('../src/lib/services/ws-client', () => ({
-  wsClient: {
-    broadcast: broadcastMock,
-  },
-}));
-
 afterEach(() => {
+  registerEventBusBroadcaster(null);
   broadcastMock.mockReset();
   broadcastMock.mockImplementation(async () => true);
 });
@@ -19,6 +14,7 @@ afterEach(() => {
 test('emit/receive typed events', async () => {
   const bus = new EventBus();
   let received: unknown = null;
+  registerEventBusBroadcaster({ broadcast: broadcastMock });
 
   bus.on('task:completed', (data) => {
     received = data;
@@ -33,6 +29,7 @@ test('emit/receive typed events', async () => {
 test('unsubscribe stops delivery', async () => {
   const bus = new EventBus();
   let count = 0;
+  registerEventBusBroadcaster({ broadcast: broadcastMock });
 
   const unsub = bus.on('task:created', () => {
     count += 1;
@@ -50,6 +47,7 @@ test('unsubscribe stops delivery', async () => {
 test('multiple listeners all called', async () => {
   const bus = new EventBus();
   const calls: string[] = [];
+  registerEventBusBroadcaster({ broadcast: broadcastMock });
 
   bus.on('task:completed', () => calls.push('first'));
   bus.on('task:completed', () => calls.push('second'));
@@ -63,6 +61,7 @@ test('throwing listener does not block subsequent listeners', async () => {
   const bus = new EventBus();
   const calls: string[] = [];
   const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+  registerEventBusBroadcaster({ broadcast: broadcastMock });
 
   bus.on('task:failed', () => {
     calls.push('first');
@@ -81,6 +80,7 @@ test('throwing listener does not block subsequent listeners', async () => {
 test('emit does not throw when listener throws', async () => {
   const bus = new EventBus();
   const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+  registerEventBusBroadcaster({ broadcast: broadcastMock });
 
   bus.on('memory:updated', () => {
     throw new Error('listener blew up');
@@ -93,6 +93,7 @@ test('emit does not throw when listener throws', async () => {
 test('unsubscribe only removes the specific listener', async () => {
   const bus = new EventBus();
   const calls: string[] = [];
+  registerEventBusBroadcaster({ broadcast: broadcastMock });
 
   const unsub = bus.on('session:created', () => calls.push('first'));
   bus.on('session:created', () => calls.push('second'));
@@ -107,6 +108,7 @@ test('unsubscribe only removes the specific listener', async () => {
 test('payload is passed correctly to listener', async () => {
   const bus = new EventBus();
   let received: unknown = null;
+  registerEventBusBroadcaster({ broadcast: broadcastMock });
 
   bus.on('subagent:completed', (data) => {
     received = data;
@@ -134,6 +136,7 @@ test('dispatchLocal forwards without rebroadcast', () => {
 
 test('failed broadcast increments failure counter and resolves', async () => {
   const bus = new EventBus();
+  registerEventBusBroadcaster({ broadcast: broadcastMock });
   broadcastMock.mockImplementation(async () => false);
   const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
