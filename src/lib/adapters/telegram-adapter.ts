@@ -26,22 +26,33 @@ export class TelegramAdapter implements ChannelAdapter {
   constructor(token: string, transport: TelegramTransport = resolveTelegramTransport()) {
     this.bot = new Bot(token);
     this.transport = transport;
+    
+    // Add debug logging for all updates
+    this.bot.use((ctx, next) => {
+      console.log(`[Telegram Debug] Received update id: ${ctx.update.update_id}, has message: ${!!ctx.update.message}`);
+      return next();
+    });
   }
 
   async start(): Promise<void> {
     if (this.connected) {
+      console.log('[Telegram] Already connected, skipping start');
       return;
     }
 
     if (this.startPromise) {
+      console.log('[Telegram] Start already in progress, waiting...');
       return this.startPromise;
     }
 
     this.stopping = false;
 
+    console.log(`[Telegram] Starting with transport: ${this.transport}`);
+
     if (this.transport === 'webhook') {
       this.pollingStarted = false;
       this.connected = true;
+      console.log('[Telegram] Webhook mode - adapter ready');
       return;
     }
 
@@ -120,22 +131,28 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   private async startPolling(): Promise<void> {
+    console.log('[Telegram] Registering polling handlers...');
     this.ensurePollingHandlers();
 
     try {
+      console.log('[Telegram] Deleting existing webhook...');
       await this.bot.api.deleteWebhook();
+      console.log('[Telegram] Webhook deleted successfully');
     } catch (error) {
+      console.error('[Telegram] Failed to delete webhook:', error);
       this.connected = false;
       throw error;
     }
 
     if (this.stopping) {
+      console.log('[Telegram] Stopping flag set, aborting start');
       return;
     }
 
     this.connected = true;
     this.pollingStarted = true;
 
+    console.log('[Telegram] Starting bot polling...');
     void this.bot.start().catch((error: unknown) => {
       if (!this.stopping) {
         this.connected = false;
@@ -143,6 +160,7 @@ export class TelegramAdapter implements ChannelAdapter {
         console.error('[Telegram] Polling stopped unexpectedly:', error);
       }
     });
+    console.log('[Telegram] Polling started successfully');
   }
 
   private ensurePollingHandlers(): void {
@@ -152,6 +170,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
     this.pollingHandlersRegistered = true;
     this.bot.on('message', async (ctx) => {
+      console.log(`[Telegram Polling] Received message from ${ctx.update.message?.chat.id}: "${ctx.update.message?.text?.substring(0, 50)}"`);
       const result = await processTelegramUpdate(ctx.update, {
         processInput: (input) => inputManager.processInput(input),
         downloadFile: this.downloadFile.bind(this),
@@ -160,6 +179,10 @@ export class TelegramAdapter implements ChannelAdapter {
 
       if (result.status === 'failed') {
         console.error('[Telegram Polling] Failed to process update:', result.error);
+      } else if (result.status === 'processed') {
+        console.log(`[Telegram Polling] Processed message, taskId: ${result.taskId}`);
+      } else if (result.status === 'ignored') {
+        console.log('[Telegram Polling] Message ignored (no content)');
       }
     });
   }

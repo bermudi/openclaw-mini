@@ -1646,33 +1646,14 @@ const execCommandInputSchema = z.object({
   surfaceFiles: z.array(z.string()).optional().describe('Optional file paths to surface after foreground completion. Files outside the sandbox but inside approved mounts are copied into sandbox output first'),
 });
 
-const processToolInputSchema = z.discriminatedUnion('action', [
-  z.object({
-    action: z.literal('list'),
-    agentId: z.string().optional().describe('Optional agent ID filter. Defaults to the current tool context agent when available'),
-  }),
-  z.object({
-    action: z.literal('poll'),
-    sessionId: z.string().min(1).describe('Process session identifier'),
-    offset: z.number().int().nonnegative().optional().describe('Read output starting from this absolute offset'),
-    limit: z.number().int().positive().optional().describe('Maximum number of characters to return'),
-  }),
-  z.object({
-    action: z.literal('log'),
-    sessionId: z.string().min(1).describe('Process session identifier'),
-    offset: z.number().int().nonnegative().optional().describe('Read output starting from this absolute offset'),
-    limit: z.number().int().positive().optional().describe('Maximum number of characters to return'),
-  }),
-  z.object({
-    action: z.literal('write'),
-    sessionId: z.string().min(1).describe('Process session identifier'),
-    input: z.string().describe('Raw PTY input to forward to the running session'),
-  }),
-  z.object({
-    action: z.literal('kill'),
-    sessionId: z.string().min(1).describe('Process session identifier'),
-  }),
-]);
+const processToolInputSchema = z.object({
+  action: z.enum(['list', 'poll', 'log', 'write', 'kill']).describe('list: enumerate sessions; poll: stream new output; log: read full output; write: send input to PTY; kill: terminate session'),
+  agentId: z.string().optional().describe('list only — optional agent ID filter; defaults to current context agent'),
+  sessionId: z.string().optional().describe('poll/log/write/kill — process session identifier'),
+  offset: z.number().int().nonnegative().optional().describe('poll/log only — read output starting from this absolute offset'),
+  limit: z.number().int().positive().optional().describe('poll/log only — maximum number of characters to return'),
+  input: z.string().optional().describe('write only — raw PTY input to forward to the running session'),
+});
 
 function toErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
@@ -1967,35 +1948,43 @@ registerTool(
             };
           }
           case 'poll': {
-            assertProcessSessionAccess(input.sessionId, context);
+            if (!input.sessionId) return { success: false, error: 'sessionId is required for poll' };
+            const pollId = input.sessionId;
+            assertProcessSessionAccess(pollId, context);
             return {
               success: true,
-              data: processSupervisor.pollSession(input.sessionId, input.offset, input.limit),
+              data: processSupervisor.pollSession(pollId, input.offset, input.limit),
             };
           }
           case 'log': {
-            assertProcessSessionAccess(input.sessionId, context);
+            if (!input.sessionId) return { success: false, error: 'sessionId is required for log' };
+            const logId = input.sessionId;
+            assertProcessSessionAccess(logId, context);
             return {
               success: true,
-              data: processSupervisor.readSessionLog(input.sessionId, input.offset, input.limit),
+              data: processSupervisor.readSessionLog(logId, input.offset, input.limit),
             };
           }
           case 'write': {
-            assertProcessSessionAccess(input.sessionId, context);
+            if (!input.sessionId) return { success: false, error: 'sessionId is required for write' };
+            if (input.input === undefined) return { success: false, error: 'input is required for write' };
+            const writeId = input.sessionId;
+            const writeInput = input.input;
+            assertProcessSessionAccess(writeId, context);
             return {
               success: true,
-              data: processSupervisor.writeSession(input.sessionId, input.input),
+              data: processSupervisor.writeSession(writeId, writeInput),
             };
           }
           case 'kill': {
-            assertProcessSessionAccess(input.sessionId, context);
+            if (!input.sessionId) return { success: false, error: 'sessionId is required for kill' };
+            const killId = input.sessionId;
+            assertProcessSessionAccess(killId, context);
             return {
               success: true,
-              data: processSupervisor.killSession(input.sessionId),
+              data: processSupervisor.killSession(killId),
             };
           }
-          default:
-            assertNever(input);
         }
       } catch (error) {
         return {

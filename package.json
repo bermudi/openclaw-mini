@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"next dev -p 3000 2>&1 | tee dev.log\" \"cd mini-services/openclaw-ws && bun dev\" \"cd mini-services/scheduler && bun dev\"",
+    "dev": "concurrently --kill-others --kill-others-on-fail --handle-input \"next dev -p 3000 2>&1 | tee dev.log\" \"cd mini-services/openclaw-ws && bun dev\" \"cd mini-services/scheduler && bun dev\"",
     "dev:app": "next dev -p 3000 2>&1 | tee dev.log",
     "dev:ws": "cd mini-services/openclaw-ws && bun dev",
     "test": "bun test --timeout 30000",

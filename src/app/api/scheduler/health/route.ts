@@ -10,12 +10,16 @@ import { taskQueue } from '@/lib/services/task-queue';
 import { processPendingDeliveries } from '@/lib/services/delivery-service';
 import { memoryService } from '@/lib/services/memory-service';
 import { getSqliteBusyMetrics } from '@/lib/sqlite-concurrency';
+import { initializeAdapters } from '@/lib/adapters';
 
 // POST /api/scheduler/health - Run periodic health-check tasks
 export async function POST(request: NextRequest) {
   try {
     const authResponse = await requireInternalAuth(request);
     if (authResponse) return authResponse;
+
+    // Ensure adapters are registered for delivery processing
+    initializeAdapters();
 
     const body = await request.json().catch(() => ({})) as {
       processDeliveries?: boolean;

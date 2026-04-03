@@ -1,12 +1,41 @@
 // OpenClaw Scheduler Service
 // Background worker for task processing and trigger management
 
+// Load environment variables from project root .env files
+const projectRoot = import.meta.dir + '/../..';
+const envFiles = ['.env.local', '.env'];
+console.log(`[Scheduler] Loading env from ${projectRoot}`);
+for (const file of envFiles) {
+  const path = `${projectRoot}/${file}`;
+  try {
+    const fileContent = await Bun.file(path).text();
+    console.log(`[Scheduler] Loaded ${file}, ${fileContent.split('\n').length} lines`);
+    for (const line of fileContent.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eqIndex = trimmed.indexOf('=');
+      if (eqIndex === -1) continue;
+      const key = trimmed.slice(0, eqIndex).trim();
+      const value = trimmed.slice(eqIndex + 1).trim();
+      if (key && !process.env[key]) {
+        process.env[key] = value.replace(/^["']|["']$/g, '');
+      }
+    }
+  } catch (err) {
+    console.log(`[Scheduler] Could not load ${file}: ${err}`);
+  }
+}
+console.log(`[Scheduler] TELEGRAM_TRANSPORT=${process.env.TELEGRAM_TRANSPORT}`);
+
 import cron from 'node-cron';
 import type { PrismaClient } from '@prisma/client';
 import { initializeAdapters, getRegisteredAdapters } from '../../src/lib/adapters';
 import { getRuntimeConfig, getPrismaLogConfig } from '../../src/lib/config/runtime';
 import { buildInternalAuthHeaders, ensureInternalAuthConfigured } from '../../src/lib/internal-auth';
 import { createConfiguredPrismaClient } from '../../src/lib/prisma-client';
+import { initializeProviderRegistry } from '../../src/lib/services/provider-registry';
+import { checkDefaultAgent } from '../../src/lib/init/checks/agent';
+import { processPendingDeliveries } from '../../src/lib/services/delivery-service';
 
 let prisma: PrismaClient | null = null;
 let prismaReady: Promise<void> | null = null;
@@ -183,7 +212,7 @@ async function runSchedulerMaintenanceViaApi(input?: {
   cleanupOldTasks?: boolean;
   cleanupHistoryArchives?: boolean;
   decayMemoryConfidence?: boolean;
-}): Promise<{
+}, retries = 3, baseDelayMs = 500): Promise<{
   success: boolean;
   data?: {
     deliveries?: {
@@ -204,39 +233,70 @@ async function runSchedulerMaintenanceViaApi(input?: {
   };
   error?: string;
 }> {
-  const response = await fetch(`${APP_BASE_URL}/api/scheduler/health`, {
-    method: 'POST',
-    headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(input ?? {}),
-  });
+  const attempt = async (): Promise<ReturnType<typeof runSchedulerMaintenanceViaApi>> => {
+    const response = await fetch(`${APP_BASE_URL}/api/scheduler/health`, {
+      method: 'POST',
+      headers: buildInternalAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(input ?? {}),
+    });
 
-  const body = await response.json() as {
-    success?: boolean;
-    data?: {
-      deliveries?: {
-        sent: number;
-        failed: number;
-      } | null;
-      staleBusyAgents?: {
-        inspected: number;
-        recovered: number;
-        errored: number;
-      } | null;
-      tasksCleaned?: number;
-      historyArchivesDeleted?: number;
-      memoryDecay?: {
-        decayed: number;
-        archived: number;
-      } | null;
+    const body = await response.json() as {
+      success?: boolean;
+      data?: {
+        deliveries?: {
+          sent: number;
+          failed: number;
+        } | null;
+        staleBusyAgents?: {
+          inspected: number;
+          recovered: number;
+          errored: number;
+        } | null;
+        tasksCleaned?: number;
+        historyArchivesDeleted?: number;
+        memoryDecay?: {
+          decayed: number;
+          archived: number;
+        } | null;
+      };
+      error?: string;
     };
-    error?: string;
+
+    if (!response.ok || !body.success) {
+      return { success: false, error: body.error ?? `Scheduler maintenance failed with status ${response.status}` };
+    }
+
+    return { success: true, data: body.data };
   };
 
-  if (!response.ok || !body.success) {
-    return { success: false, error: body.error ?? `Scheduler maintenance failed with status ${response.status}` };
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const result = await attempt();
+      if (result.success) {
+        return result;
+      }
+      // Non-retryable error (server responded but reported failure)
+      return result;
+    } catch (error) {
+      const isLastAttempt = i === retries;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      if (isLastAttempt) {
+        return { success: false, error: `Connection failed after ${retries + 1} attempts: ${errorMessage}` };
+      }
+      
+      // Exponential backoff: 500ms, 1000ms, 2000ms...
+      const delay = baseDelayMs * Math.pow(2, i);
+      if (i === 0) {
+        // Only log on first retry to avoid spam
+        console.warn(`[Scheduler] API unavailable, retrying with backoff...`);
+      }
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
   }
 
-  return { success: true, data: body.data };
+  // Should never reach here, but satisfies TypeScript
+  return { success: false, error: 'Unexpected retry exhaustion' };
 }
 
 // ============================================
@@ -337,19 +397,11 @@ async function runTriggerLoop() {
 
 async function runDeliveryLoop() {
   try {
-    const result = await runSchedulerMaintenanceViaApi({
-      processDeliveries: true,
-      sweepOrphanedSubagents: false,
-      sweepStaleBusyAgents: true,
-      cleanupOldTasks: false,
-    });
-
-    if (!result.success) {
-      throw new Error(result.error ?? 'Delivery maintenance failed');
-    }
-
-    deliveriesSent += result.data?.deliveries?.sent ?? 0;
-    deliveriesFailed += result.data?.deliveries?.failed ?? 0;
+    // Process deliveries directly using the scheduler's connected adapters
+    const stats = await processPendingDeliveries();
+    
+    deliveriesSent += stats.sent;
+    deliveriesFailed += stats.failed;
   } catch (error) {
     console.error('[Scheduler] Error processing deliveries:', error);
   } finally {
@@ -425,6 +477,13 @@ async function start() {
   ensureInternalAuthConfigured('Scheduler');
   await getSchedulerPrisma();
   isRunning = true;
+
+  initializeProviderRegistry();
+  const agentCheck = await checkDefaultAgent();
+  if (!agentCheck.success) {
+    console.warn(`[Scheduler] Default agent check failed: ${agentCheck.error}`);
+  }
+
   initializeAdapters();
   await startAdapters();
   console.log('[Scheduler] Service started');

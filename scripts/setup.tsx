@@ -31,10 +31,11 @@ interface SelectMenuProps {
   items: SelectItem[];
   onSelect: (value: string) => void;
   isActive?: boolean;
+  initialIndex?: number;
 }
 
-function SelectMenu({ items, onSelect, isActive = true }: SelectMenuProps) {
-  const [index, setIndex] = useState(0);
+function SelectMenu({ items, onSelect, isActive = true, initialIndex = 0 }: SelectMenuProps) {
+  const [index, setIndex] = useState(initialIndex);
 
   useInput(
     (input, key) => {
@@ -226,6 +227,10 @@ function ProviderListScreen({
   onNext,
   onBack,
 }: ProviderListScreenProps) {
+  // Start selection on "Continue" (last item) when providers exist, to avoid
+  // accidental removal of newly added provider on Enter key.
+  const initialIndex = providers.length > 0 ? providers.length + 1 : 0;
+
   const items: SelectItem[] = [
     ...providers.map(p => ({
       label: `${p.id}  (${p.apiType})  key: ${p.apiKey.startsWith('${') ? p.apiKey : '***'}`,
@@ -250,7 +255,7 @@ function ProviderListScreen({
       {providers.length === 0 && (
         <Text color="yellow">No providers configured. Add at least one to continue.</Text>
       )}
-      <SelectMenu items={items} onSelect={handleSelect} />
+      <SelectMenu items={items} onSelect={handleSelect} initialIndex={initialIndex} />
       <HelpText text="Select a provider to remove it, or add a new one" />
     </Box>
   );
@@ -625,6 +630,9 @@ function ChannelsScreen({
   onNext,
   onBack,
 }: ChannelsScreenProps) {
+  // Start on Continue to avoid accidental channel config entry
+  const initialIndex = 2;
+
   const items: SelectItem[] = [
     {
       label: `Telegram  ${telegramEnabled ? '✓ configured' : '(not set)'}`,
@@ -646,6 +654,7 @@ function ChannelsScreen({
       <Header title="Channels" subtitle="Optional messaging integrations" />
       <SelectMenu
         items={items}
+        initialIndex={initialIndex}
         onSelect={value => {
           if (value === 'telegram') onTelegram();
           else if (value === 'whatsapp') onWhatsApp();
@@ -752,6 +761,9 @@ interface WhatsAppScreenProps {
 }
 
 function WhatsAppScreen({ enabled, onToggle, onNext, onBack }: WhatsAppScreenProps) {
+  // Start on Continue to avoid accidental toggle
+  const initialIndex = 1;
+
   const items: SelectItem[] = [
     { label: `Enable WhatsApp  ${enabled ? '(currently: YES)' : '(currently: NO)'}`, value: 'toggle' },
     { label: '→ Continue', value: 'next' },
@@ -771,6 +783,7 @@ function WhatsAppScreen({ enabled, onToggle, onNext, onBack }: WhatsAppScreenPro
       <Newline />
       <SelectMenu
         items={items}
+        initialIndex={initialIndex}
         onSelect={value => {
           if (value === 'toggle') onToggle(!enabled);
           else onNext();
@@ -800,6 +813,9 @@ function AdvancedMenuScreen({
   onNext,
   onBack,
 }: AdvancedMenuScreenProps) {
+  // Start on Continue to avoid accidental config entry
+  const initialIndex = 3;
+
   const items: SelectItem[] = [
     { label: 'Search  (Brave / Tavily API keys)', value: 'search' },
     { label: 'Browser  (headless, viewport, timeout)', value: 'browser' },
@@ -818,6 +834,7 @@ function AdvancedMenuScreen({
       <Newline />
       <SelectMenu
         items={items}
+        initialIndex={initialIndex}
         onSelect={value => {
           if (value === 'search') onSearch();
           else if (value === 'browser') onBrowser();
@@ -918,6 +935,9 @@ function AdvancedBrowserScreen({
   const [heightStr, setHeightStr] = useState(String(height));
   const [timeoutStr, setTimeoutStr] = useState(String(timeout));
 
+  // Start on Back to avoid accidental toggle
+  const initialIndex = 4;
+
   const menuItems: SelectItem[] = [
     { label: `Headless mode: ${headless ? 'yes' : 'no'} (toggle)`, value: 'headless' },
     { label: `Viewport width: ${width}px`, value: 'width' },
@@ -937,6 +957,7 @@ function AdvancedBrowserScreen({
       {step === 'menu' && (
         <SelectMenu
           items={menuItems}
+          initialIndex={initialIndex}
           onSelect={value => {
             if (value === 'headless') onToggleHeadless();
             else if (value === 'width') setStep('width');
@@ -1022,6 +1043,9 @@ function AdvancedEnvScreen({ values, onChange, onBack }: AdvancedEnvScreenProps)
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [editValue, setEditValue] = useState('');
 
+  // Start on Done to avoid accidental edit
+  const initialIndex = ENV_KNOBS.length;
+
   const menuItems: SelectItem[] = [
     ...ENV_KNOBS.map((k, i) => ({
       label: `${k.label}: ${values[k.key] || '(default)'}`,
@@ -1064,7 +1088,7 @@ function AdvancedEnvScreen({ values, onChange, onBack }: AdvancedEnvScreenProps)
       <Header title="Env Overrides" subtitle="Session, history, and service URL tuning" />
 
       {activeIndex === null ? (
-        <SelectMenu items={menuItems} onSelect={handleSelect} />
+        <SelectMenu items={menuItems} initialIndex={initialIndex} onSelect={handleSelect} />
       ) : (
         <Box flexDirection="column">
           <Text>
