@@ -27,6 +27,13 @@ export interface ConfigWriteInput {
     navigationTimeout?: number;
   };
   mcp?: Record<string, unknown>;
+  exec?: {
+    enabled?: boolean;
+    defaultTier?: string;
+    maxTier?: string;
+    defaultLaunchMode?: string;
+    defaultBackground?: boolean;
+  };
 }
 
 function buildProvidersObject(
@@ -111,8 +118,18 @@ export function writeOpenclawConfig(input: ConfigWriteInput): void {
   }
 
   const browserObj = buildBrowserObject(input.browser);
-  if (browserObj) {
-    config['browser'] = browserObj;
+  if (input.browser) {
+    config['browser'] = input.browser;
+  }
+
+  if (input.exec && input.exec.enabled) {
+    const existingRuntime = typeof config['runtime'] === 'object' && config['runtime'] !== null
+      ? config['runtime'] as Record<string, unknown>
+      : {};
+    config['runtime'] = {
+      ...existingRuntime,
+      exec: input.exec,
+    };
   }
 
   if (input.runtime && Object.keys(input.runtime).length > 0) {
@@ -297,6 +314,16 @@ export async function persistSetupPlan(plan: SetupPlan): Promise<SetupPersistRes
           }
         : undefined;
 
+    const execInput = plan.execEnabled
+      ? {
+          enabled: plan.execEnabled,
+          defaultTier: plan.execDefaultTier,
+          maxTier: plan.execMaxTier,
+          defaultLaunchMode: plan.execDefaultLaunchMode,
+          defaultBackground: plan.execDefaultBackground,
+        }
+      : undefined;
+
     const agentInput: ConfigWriteInput['agent'] = {
       provider: plan.agentProvider,
       model: plan.agentModel,
@@ -312,6 +339,7 @@ export async function persistSetupPlan(plan: SetupPlan): Promise<SetupPersistRes
       agent: agentInput,
       search: searchInput,
       browser: browserInput,
+      exec: execInput,
     });
   } catch (err) {
     errors.push(`Config write failed: ${err instanceof Error ? err.message : String(err)}`);

@@ -383,6 +383,11 @@ describe('persistSetupPlan', () => {
       browserViewportHeight: 720,
       browserNavigationTimeout: 30000,
       advancedEnv: {},
+      execEnabled: false,
+      execDefaultTier: 'host',
+      execMaxTier: 'host',
+      execDefaultLaunchMode: 'child',
+      execDefaultBackground: false,
     };
 
     const result = await persistSetupPlan(plan);
@@ -431,6 +436,11 @@ describe('persistSetupPlan', () => {
       browserViewportHeight: 720,
       browserNavigationTimeout: 30000,
       advancedEnv: {},
+      execEnabled: false,
+      execDefaultTier: 'host',
+      execMaxTier: 'host',
+      execDefaultLaunchMode: 'child',
+      execDefaultBackground: false,
     };
 
     const result = await persistSetupPlan(plan);
@@ -471,6 +481,11 @@ describe('persistSetupPlan', () => {
         OPENCLAW_APP_URL: 'http://my-host:3000',
         OPENCLAW_WS_PORT: '', // blank — should not appear in .env.local
       },
+      execEnabled: false,
+      execDefaultTier: 'host',
+      execMaxTier: 'host',
+      execDefaultLaunchMode: 'child',
+      execDefaultBackground: false,
     };
 
     await persistSetupPlan(plan);
@@ -508,6 +523,11 @@ describe('persistSetupPlan', () => {
       browserViewportHeight: 720,
       browserNavigationTimeout: 30000,
       advancedEnv: {},
+      execEnabled: false,
+      execDefaultTier: 'host',
+      execMaxTier: 'host',
+      execDefaultLaunchMode: 'child',
+      execDefaultBackground: false,
     };
 
     await persistSetupPlan(plan);

@@ -39,5 +39,10 @@ export function buildInitialPlan(discovery: SetupDiscovery): SetupPlan {
       OPENCLAW_WS_PORT: discovery.envVars.openclawWsPort ?? '',
       OPENCLAW_WS_URL: discovery.envVars.openclawWsUrl ?? '',
     },
+    execEnabled: discovery.existingExec?.enabled ?? false,
+    execDefaultTier: (discovery.existingExec?.defaultTier as 'host' | 'sandbox' | 'locked-down') ?? 'host',
+    execMaxTier: (discovery.existingExec?.maxTier as 'host' | 'sandbox' | 'locked-down') ?? 'host',
+    execDefaultLaunchMode: (discovery.existingExec?.defaultLaunchMode as 'child' | 'pty') ?? 'child',
+    execDefaultBackground: discovery.existingExec?.defaultBackground ?? false,
   };
 }

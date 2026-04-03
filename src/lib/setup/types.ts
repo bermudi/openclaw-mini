@@ -42,6 +42,13 @@ export interface SetupDiscovery {
   existingSearch: { braveApiKey?: string; tavilyApiKey?: string } | null;
   existingBrowser: Record<string, unknown> | null;
   existingMcp: Record<string, unknown> | null;
+  existingExec: {
+    enabled?: boolean;
+    defaultTier?: string;
+    maxTier?: string;
+    defaultLaunchMode?: string;
+    defaultBackground?: boolean;
+  } | null;
   envVars: {
     databaseUrl?: string;
     openclawApiKey?: string;
@@ -85,6 +92,11 @@ export interface SetupPlan {
   browserViewportHeight: number;
   browserNavigationTimeout: number;
   advancedEnv: Record<string, string>; // env var name -> value
+  execEnabled: boolean;
+  execDefaultTier: 'host' | 'sandbox' | 'locked-down';
+  execMaxTier: 'host' | 'sandbox' | 'locked-down';
+  execDefaultLaunchMode: 'child' | 'pty';
+  execDefaultBackground: boolean;
 }
 
 export interface SetupPersistResult {
@@ -109,6 +121,7 @@ export type Screen =
   | 'advanced-search'
   | 'advanced-browser'
   | 'advanced-env'
+  | 'advanced-exec'
   | 'summary'
   | 'saving'
   | 'verification'

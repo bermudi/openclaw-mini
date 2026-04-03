@@ -69,6 +69,28 @@ function extractSearch(
   };
 }
 
+function extractExec(
+  raw: Record<string, unknown>,
+): SetupDiscovery['existingExec'] {
+  const runtime = raw['runtime'];
+  if (!runtime || typeof runtime !== 'object') {
+    return null;
+  }
+  const r = runtime as Record<string, unknown>;
+  const exec = r['exec'];
+  if (!exec || typeof exec !== 'object') {
+    return null;
+  }
+  const e = exec as Record<string, unknown>;
+  return {
+    enabled: typeof e['enabled'] === 'boolean' ? e['enabled'] : undefined,
+    defaultTier: typeof e['defaultTier'] === 'string' ? e['defaultTier'] : undefined,
+    maxTier: typeof e['maxTier'] === 'string' ? e['maxTier'] : undefined,
+    defaultLaunchMode: typeof e['defaultLaunchMode'] === 'string' ? e['defaultLaunchMode'] : undefined,
+    defaultBackground: typeof e['defaultBackground'] === 'boolean' ? e['defaultBackground'] : undefined,
+  };
+}
+
 function parseBool(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === 'true';
 }
@@ -102,6 +124,7 @@ export function discoverSetup(): SetupDiscovery {
   let existingSearch: SetupDiscovery['existingSearch'] = null;
   let existingBrowser: Record<string, unknown> | null = null;
   let existingMcp: Record<string, unknown> | null = null;
+  let existingExec: SetupDiscovery['existingExec'] = null;
 
   if (configExists) {
     const raw = readRawConfig(configPath);
@@ -109,6 +132,7 @@ export function discoverSetup(): SetupDiscovery {
       existingProviders = extractProviders(raw);
       existingAgent = extractAgent(raw);
       existingSearch = extractSearch(raw);
+      existingExec = extractExec(raw);
       existingRuntime = (raw['runtime'] as Record<string, unknown>) ?? null;
       existingBrowser = (raw['browser'] as Record<string, unknown>) ?? null;
       existingMcp = (raw['mcp'] as Record<string, unknown>) ?? null;
@@ -128,6 +152,7 @@ export function discoverSetup(): SetupDiscovery {
     existingSearch,
     existingBrowser,
     existingMcp,
+    existingExec,
     envVars: {
       databaseUrl: process.env.DATABASE_URL,
       openclawApiKey: process.env.OPENCLAW_API_KEY,

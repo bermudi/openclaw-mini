@@ -802,6 +802,7 @@ interface AdvancedMenuScreenProps {
   onSearch: () => void;
   onBrowser: () => void;
   onEnv: () => void;
+  onExec: () => void;
   onNext: () => void;
   onBack: () => void;
 }
@@ -810,16 +811,18 @@ function AdvancedMenuScreen({
   onSearch,
   onBrowser,
   onEnv,
+  onExec,
   onNext,
   onBack,
 }: AdvancedMenuScreenProps) {
   // Start on Continue to avoid accidental config entry
-  const initialIndex = 3;
+  const initialIndex = 4;
 
   const items: SelectItem[] = [
     { label: 'Search  (Brave / Tavily API keys)', value: 'search' },
     { label: 'Browser  (headless, viewport, timeout)', value: 'browser' },
     { label: 'Env overrides  (session, history, service URLs)', value: 'env' },
+    { label: 'Exec  (command execution settings)', value: 'exec' },
     { label: '→ Continue (skip advanced)', value: 'next' },
   ];
 
@@ -830,7 +833,7 @@ function AdvancedMenuScreen({
   return (
     <Box flexDirection="column" padding={1}>
       <Header title="Advanced Settings" subtitle="Optional runtime tuning (all can be skipped)" />
-      <Text dimColor>For exec, memory, MCP, and runtime section overrides, edit openclaw.json directly after setup.</Text>
+      <Text dimColor>For memory, MCP, and runtime section overrides, edit openclaw.json directly after setup.</Text>
       <Newline />
       <SelectMenu
         items={items}
@@ -839,6 +842,7 @@ function AdvancedMenuScreen({
           if (value === 'search') onSearch();
           else if (value === 'browser') onBrowser();
           else if (value === 'env') onEnv();
+          else if (value === 'exec') onExec();
           else onNext();
         }}
       />
@@ -1104,6 +1108,132 @@ function AdvancedEnvScreen({ values, onChange, onBack }: AdvancedEnvScreenProps)
       )}
     </Box>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Advanced exec screen
+// ---------------------------------------------------------------------------
+
+interface AdvancedExecScreenProps {
+  enabled: boolean;
+  defaultTier: 'host' | 'sandbox' | 'locked-down';
+  maxTier: 'host' | 'sandbox' | 'locked-down';
+  defaultLaunchMode: 'child' | 'pty';
+  defaultBackground: boolean;
+  onChange: (field: string, value: string | boolean) => void;
+  onBack: () => void;
+}
+
+function AdvancedExecScreen({
+  enabled,
+  defaultTier,
+  maxTier,
+  defaultLaunchMode,
+  defaultBackground,
+  onChange,
+  onBack,
+}: AdvancedExecScreenProps) {
+  const [step, setStep] = useState<'menu' | 'enabled' | 'tier' | 'maxTier' | 'launchMode' | 'background'>('menu');
+
+  const tierItems: SelectItem[] = [
+    { label: 'host (execute on host system)', value: 'host' },
+    { label: 'sandbox (container isolation)', value: 'sandbox' },
+    { label: 'locked-down (strict container)', value: 'locked-down' },
+  ];
+
+  const launchModeItems: SelectItem[] = [
+    { label: 'child (non-interactive)', value: 'child' },
+    { label: 'pty (interactive terminal)', value: 'pty' },
+  ];
+
+  useInput((input, key) => {
+    if (key.escape) {
+      if (step === 'menu') onBack();
+      else setStep('menu');
+    }
+  });
+
+  if (step === 'menu') {
+    const menuItems: SelectItem[] = [
+      { label: `Enabled: ${enabled ? 'yes' : 'no'} (toggle)`, value: 'enabled' },
+      { label: `Default tier: ${defaultTier}`, value: 'tier' },
+      { label: `Max tier: ${maxTier}`, value: 'maxTier' },
+      { label: `Launch mode: ${defaultLaunchMode}`, value: 'launchMode' },
+      { label: `Background: ${defaultBackground ? 'yes' : 'no'} (toggle)`, value: 'background' },
+      { label: '← Back', value: 'back' },
+    ];
+
+    return (
+      <Box flexDirection="column" padding={1}>
+        <Header title="Command Execution" subtitle="Exec tool configuration (optional)" />
+        <Text dimColor>
+          Controls whether agents can run shell commands and how they are executed.
+        </Text>
+        <Newline />
+        <SelectMenu
+          items={menuItems}
+          initialIndex={5}
+          onSelect={value => {
+            if (value === 'back') onBack();
+            else if (value === 'enabled') onChange('execEnabled', !enabled);
+            else if (value === 'background') onChange('execDefaultBackground', !defaultBackground);
+            else setStep(value as typeof step);
+          }}
+        />
+        <HelpText text="Esc to go back" />
+      </Box>
+    );
+  }
+
+  if (step === 'tier') {
+    return (
+      <Box flexDirection="column" padding={1}>
+        <Header title="Default Tier" subtitle="Default execution tier for commands" />
+        <SelectMenu
+          items={tierItems}
+          onSelect={value => {
+            onChange('execDefaultTier', value);
+            setStep('menu');
+          }}
+        />
+        <HelpText text="Esc to go back" />
+      </Box>
+    );
+  }
+
+  if (step === 'maxTier') {
+    return (
+      <Box flexDirection="column" padding={1}>
+        <Header title="Max Tier" subtitle="Maximum allowed execution tier" />
+        <SelectMenu
+          items={tierItems}
+          onSelect={value => {
+            onChange('execMaxTier', value);
+            setStep('menu');
+          }}
+        />
+        <HelpText text="Esc to go back" />
+      </Box>
+    );
+  }
+
+  if (step === 'launchMode') {
+    return (
+      <Box flexDirection="column" padding={1}>
+        <Header title="Launch Mode" subtitle="Default launch mode for commands" />
+        <SelectMenu
+          items={launchModeItems}
+          onSelect={value => {
+            onChange('execDefaultLaunchMode', value);
+            setStep('menu');
+          }}
+        />
+        <HelpText text="Esc to go back" />
+      </Box>
+    );
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1608,6 +1738,7 @@ function App({ discovery, doctorMode }: AppProps) {
         onSearch={() => setScreen('advanced-search')}
         onBrowser={() => setScreen('advanced-browser')}
         onEnv={() => setScreen('advanced-env')}
+        onExec={() => setScreen('advanced-exec')}
         onNext={() => setScreen('summary')}
         onBack={() => setScreen('channels')}
       />
@@ -1647,6 +1778,20 @@ function App({ discovery, doctorMode }: AppProps) {
       <AdvancedEnvScreen
         values={plan.advancedEnv}
         onChange={updateAdvancedEnv}
+        onBack={() => setScreen('advanced-menu')}
+      />
+    );
+  }
+
+  if (screen === 'advanced-exec') {
+    return (
+      <AdvancedExecScreen
+        enabled={plan.execEnabled}
+        defaultTier={plan.execDefaultTier}
+        maxTier={plan.execMaxTier}
+        defaultLaunchMode={plan.execDefaultLaunchMode}
+        defaultBackground={plan.execDefaultBackground}
+        onChange={updateField}
         onBack={() => setScreen('advanced-menu')}
       />
     );
