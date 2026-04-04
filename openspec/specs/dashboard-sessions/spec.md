@@ -29,24 +29,18 @@ The dashboard SHALL display a list of sessions for the currently selected agent.
 
 ### Requirement: Session detail API endpoint
 
-The system SHALL expose a `GET /api/sessions` endpoint that supports:
-- `?agentId={id}` — returns all sessions for the given agent (wraps `sessionService.getAgentSessions`).
-- `?sessionId={id}` — returns the full session context including messages (wraps `sessionService.getSession`).
+The system SHALL expose runtime session endpoints for the dashboard, and the dashboard SHALL access them through the configured runtime client instead of assuming same-origin API routes.
 
 #### Scenario: Fetch sessions by agent ID
 
-- **WHEN** a GET request is made to `/api/sessions?agentId={id}`
-- **THEN** the response SHALL include an array of session summaries with `id`, `channel`, `channelKey`, `lastActive`, and `messageCount`
+- **WHEN** the dashboard requests sessions for an agent through the runtime client
+- **THEN** the request SHALL target the configured runtime base URL for the sessions endpoint
+- **AND** the response SHALL include an array of session summaries with `id`, `channel`, `channelKey`, `lastActive`, and `messageCount`
 
 #### Scenario: Fetch session detail
 
-- **WHEN** a GET request is made to `/api/sessions?sessionId={id}`
+- **WHEN** the dashboard requests a specific session through the runtime client
 - **THEN** the response SHALL include the full session context with all messages, each containing `role`, `content`, `sender`, `channel`, `channelKey`, and `timestamp`
-
-#### Scenario: No matching sessions
-
-- **WHEN** a GET request is made to `/api/sessions?agentId={nonexistent}`
-- **THEN** the response SHALL return an empty array with `success: true`
 
 ### Requirement: Conversation thread view
 

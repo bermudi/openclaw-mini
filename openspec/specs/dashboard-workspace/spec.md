@@ -5,12 +5,12 @@ TBD - created by archiving change build-dashboard. Update Purpose after archive.
 ## Requirements
 ### Requirement: File list browser
 
-The dashboard SHALL display a list of workspace files in a dedicated panel or tab. Each file entry SHALL show the filename and file size. The file list SHALL be fetched from `GET /api/workspace`.
+The dashboard SHALL display a list of workspace files using the configured runtime client instead of same-origin route assumptions.
 
 #### Scenario: Load workspace shows file list
 
-- **WHEN** the operator navigates to the workspace tab/panel
-- **THEN** the dashboard SHALL fetch the file list from `GET /api/workspace`
+- **WHEN** the operator navigates to the workspace tab or panel
+- **THEN** the dashboard SHALL fetch the file list through the runtime client
 - **AND** each file SHALL be displayed with its name and size
 - **AND** files SHALL be sorted alphabetically by name
 
@@ -18,11 +18,6 @@ The dashboard SHALL display a list of workspace files in a dedicated panel or ta
 
 - **WHEN** the workspace directory contains no `.md` files
 - **THEN** the dashboard SHALL show an empty state with an option to create a new file
-
-#### Scenario: Workspace is initialized with defaults
-
-- **WHEN** the workspace has the default files (`IDENTITY.md`, `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`)
-- **THEN** all five files SHALL appear in the file list
 
 ### Requirement: File content editor
 
@@ -44,22 +39,21 @@ When the operator selects a file from the list, the dashboard SHALL display its 
 
 ### Requirement: Save with feedback
 
-The operator SHALL be able to save edited file content. The save action SHALL send a `PUT /api/workspace` request with the filename and content. The dashboard SHALL provide visual feedback on save success or failure.
+The operator SHALL be able to save edited file content through the configured runtime client. The dashboard SHALL provide visual feedback on save success or failure.
 
 #### Scenario: Edit file and save successfully
 
-- **GIVEN** `SOUL.md` is loaded in the editor with modified content
+- **GIVEN** a workspace file is loaded in the editor with modified content
 - **WHEN** the operator clicks save
-- **THEN** a `PUT /api/workspace` request SHALL be sent with `{ file: "SOUL.md", content: "..." }`
-- **AND** a success toast/notification SHALL be displayed
-- **AND** the file size in the file list SHALL update to reflect the new content
+- **THEN** the dashboard SHALL send the save request through the runtime client
+- **AND** a success toast or notification SHALL be displayed
 
-#### Scenario: Save fails due to server error
+#### Scenario: Save fails due to runtime error
 
-- **GIVEN** `SOUL.md` is loaded in the editor
-- **WHEN** the operator clicks save and the server returns an error
-- **THEN** an error toast/notification SHALL be displayed
-- **AND** the editor content SHALL NOT be cleared (so the operator can retry)
+- **GIVEN** a workspace file is loaded in the editor
+- **WHEN** the operator clicks save and the runtime returns an error
+- **THEN** an error toast or notification SHALL be displayed
+- **AND** the editor content SHALL NOT be cleared
 
 ### Requirement: Create new workspace file
 

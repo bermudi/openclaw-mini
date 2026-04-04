@@ -5,13 +5,13 @@ TBD - created by archiving change build-dashboard. Update Purpose after archive.
 ## Requirements
 ### Requirement: WS event subscription via socket.io-client
 
-The dashboard SHALL connect to the WS service at `localhost:3003` using `socket.io-client`. Upon connection, the dashboard SHALL join the `admin` room by emitting `subscribe:all`. The hook SHALL be implemented as `useOpenClawEvents` in `src/hooks/use-openclaw-events.ts`.
+The dashboard SHALL connect to the runtime's realtime endpoint using `socket.io-client`. Upon connection, the dashboard SHALL subscribe as an operator client through the dashboard runtime client layer instead of assuming a hard-coded sibling WS service.
 
 #### Scenario: Dashboard connects and subscribes on mount
 
 - **WHEN** the dashboard page mounts
-- **THEN** a socket.io connection SHALL be established to `localhost:3003`
-- **AND** the client SHALL emit `subscribe:all` to join the admin room
+- **THEN** a socket.io connection SHALL be established to the configured runtime realtime endpoint
+- **AND** the client SHALL subscribe as an operator client
 - **AND** the hook SHALL expose a `connected: boolean` state
 
 #### Scenario: Dashboard disconnects on unmount
@@ -70,21 +70,13 @@ The dashboard SHALL display a visible connection status indicator showing whethe
 
 ### Requirement: Automatic reconnection
 
-The dashboard SHALL automatically reconnect to the WS service when the connection is lost. Upon reconnection, the dashboard SHALL re-subscribe to the `admin` room and perform a full data refetch to ensure state consistency.
+The dashboard SHALL automatically reconnect to the runtime realtime endpoint when the connection is lost. Upon reconnection, the dashboard SHALL re-subscribe and perform a full data refetch to ensure state consistency.
 
 #### Scenario: WS disconnects and reconnects
 
 - **GIVEN** the dashboard is connected
-- **WHEN** the WS service becomes unavailable and then recovers
+- **WHEN** the runtime realtime endpoint becomes unavailable and then recovers
 - **THEN** the socket.io client SHALL automatically reconnect
-- **AND** the client SHALL re-emit `subscribe:all`
+- **AND** the client SHALL re-subscribe as an operator client
 - **AND** a full data refetch SHALL be triggered to reconcile any missed events
-
-#### Scenario: Page load with WS service unavailable
-
-- **GIVEN** the WS service is not running
-- **WHEN** the dashboard page loads
-- **THEN** data SHALL still be fetched via HTTP polling
-- **AND** the connection indicator SHALL show "disconnected"
-- **AND** the client SHALL continue attempting to reconnect
 
