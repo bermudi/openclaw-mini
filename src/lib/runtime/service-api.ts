@@ -3,7 +3,7 @@ import { taskQueue } from '@/lib/services/task-queue';
 import { triggerService } from '@/lib/services/trigger-service';
 import { runRuntimeMaintenance, type RuntimeMaintenanceOptions } from '@/lib/runtime/maintenance';
 
-export async function executeTaskViaApi(taskId: string): Promise<{ success: boolean; error?: string }> {
+export async function executeTask(taskId: string): Promise<{ success: boolean; error?: string }> {
   try {
     const result = await agentExecutor.executeTask(taskId);
     return result.success ? { success: true } : { success: false, error: result.error };
@@ -12,7 +12,7 @@ export async function executeTaskViaApi(taskId: string): Promise<{ success: bool
   }
 }
 
-export async function createTaskViaApi(input: {
+export async function createTask(input: {
   agentId: string;
   type: 'heartbeat' | 'cron';
   priority: number;
@@ -27,7 +27,7 @@ export async function createTaskViaApi(input: {
   }
 }
 
-export async function fireTriggerViaApi(input: {
+export async function fireTrigger(input: {
   triggerId: string;
   referenceTime?: string;
 }): Promise<{ success: boolean; data?: { trigger: unknown; task: unknown }; error?: string }> {
@@ -42,12 +42,12 @@ export async function fireTriggerViaApi(input: {
   }
 }
 
-export async function recordTriggerFireViaApi(input: {
+export async function recordTriggerFire(input: {
   triggerId: string;
   lastTriggered: string;
   nextTrigger: string;
 }): Promise<{ success: boolean; error?: string }> {
-  const result = await fireTriggerViaApi({
+  const result = await fireTrigger({
     triggerId: input.triggerId,
     referenceTime: input.lastTriggered,
   });
@@ -55,7 +55,7 @@ export async function recordTriggerFireViaApi(input: {
   return result.success ? { success: true } : { success: false, error: result.error };
 }
 
-export async function runSchedulerMaintenanceViaApi(input?: RuntimeMaintenanceOptions): Promise<{
+export async function runMaintenance(input?: RuntimeMaintenanceOptions): Promise<{
   success: boolean;
   data?: {
     deliveries?: {

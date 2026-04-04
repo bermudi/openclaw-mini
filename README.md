@@ -45,31 +45,48 @@ OpenClaw Mini now protects admin APIs and trusted service boundaries with `Autho
 - Polling mode is single-consumer only, so run one scheduler instance per bot token.
 - Keep `TELEGRAM_WEBHOOK_SECRET` configured when using webhook mode.
 
-## Cross-process event flow
+## Architecture
 
-OpenClaw Mini now uses the existing WebSocket service as an internal event backplane, so hooks and other listeners keep working across the Next.js app, scheduler, and browser clients.
+OpenClaw Mini uses a unified runtime architecture with three main components:
 
 ```text
-Scheduler / Next.js service
-        |
-        | eventBus.emit() -> POST /broadcast
-        v
-  openclaw-ws service
-     |        |        \
-     |        |         \
-     |        |          -> browser dashboard clients (`admin` / agent rooms)
-     |        -> Next.js backplane client (`internal` room)
-     |
-     -> agent-specific rooms
-
-Next.js backplane client
-        |
-        -> eventBus.dispatchLocal() -> in-process listeners (hooks, subscriptions)
+┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+│   Next.js App   │  │  Runtime (Bun)  │  │   Dashboard     │
+│   (API routes)  │  │  (Task/Trigger  │  │  (Next.js dev   │
+│                 │  │   loops, WS)    │  │   server)       │
+└────────┬────────┘  └────────┬────────┘  └────────┬────────┘
+         │                    │                     │
+         └────────────────────┴─────────────────────┘
+                              │
+                    ┌─────────┴─────────┐
+                    │   SQLite + Files  │
+                    │   (Memory, Tasks) │
+                    └───────────────────┘
 ```
 
-- `eventBus.emit()` is now async and returns `Promise<void>` because delivery goes through the WebSocket service.
-- Await `eventBus.emit()` when you need delivery confirmation; use `void eventBus.emit(...)` for fire-and-forget paths.
-- The backplane client tags each emitted event with a process-unique `source` value so self-originated events are not delivered twice.
+- **Next.js App**: HTTP API routes, webhook handlers, chat UI
+- **Runtime**: In-process task dispatch, trigger scheduling, WebSocket server, channel adapters
+- **Dashboard**: Optional separate dev server for agent management UI
+
+All components share the same database and memory files. The runtime maintains persistent connections for Telegram, WhatsApp, and WebSocket clients.
+
+## Event flow
+
+Events flow through an in-memory event bus with optional WebSocket broadcasting:
+
+```text
+Runtime / Next.js
+       │
+       │ eventBus.emit()
+       v
+  eventBus routes ──> local listeners (hooks, subscriptions)
+       │
+       └─> WebSocket broadcast (dashboard clients)
+```
+
+- `eventBus.emit()` returns `Promise<void>` for async delivery confirmation
+- Use `void eventBus.emit(...)` for fire-and-forget paths
+- The WebSocket server runs in-process within the runtime
 
 ## Runtime provider configuration
 
