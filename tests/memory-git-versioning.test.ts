@@ -325,6 +325,7 @@ test('MemoryService: setMemory with path-based key creates nested file and git c
     value: '# Preferences\n\ntest content',
     category: 'preferences',
   });
+  await memoryService.flushPendingMirrors();
 
   const filePath = path.join(MEMORY_ROOT, agent.id, 'system', 'preferences.md');
   expect(fs.existsSync(filePath)).toBe(true);
@@ -340,6 +341,7 @@ test('MemoryService: second setMemory produces Update commit', async () => {
 
   await memoryService.setMemory({ agentId: agent.id, key: 'agent/context', value: 'v1', category: 'context' });
   await memoryService.setMemory({ agentId: agent.id, key: 'agent/context', value: 'v2', category: 'context' });
+  await memoryService.flushPendingMirrors();
 
   const history = await memoryService.getMemoryHistory(agent.id, 'agent/context');
   expect(history.length).toBeGreaterThanOrEqual(2);
@@ -352,6 +354,7 @@ test('MemoryService: deleteMemory creates delete commit', async () => {
 
   await memoryService.setMemory({ agentId: agent.id, key: 'agent/context', value: 'to delete', category: 'context' });
   await memoryService.deleteMemory(agent.id, 'agent/context');
+  await memoryService.flushPendingMirrors();
 
   const filePath = path.join(MEMORY_ROOT, agent.id, 'agent', 'context.md');
   expect(fs.existsSync(filePath)).toBe(false);
@@ -371,6 +374,7 @@ test('MemoryService: appendHistory uses system/history key', async () => {
   });
 
   await memoryService.appendHistory(agent.id, 'Something happened');
+  await memoryService.flushPendingMirrors();
 
   const mem = await memoryService.getMemory(agent.id, 'system/history');
   expect(mem?.value).toContain('Something happened');
@@ -395,10 +399,12 @@ test('MemoryService: deleteMemory cleans up empty parent directories', async () 
   const agent = await createAgent('Cleanup Dir Agent');
 
   await memoryService.setMemory({ agentId: agent.id, key: 'agent/context', value: 'data', category: 'context' });
+  await memoryService.flushPendingMirrors();
   const agentSubDir = path.join(MEMORY_ROOT, agent.id, 'agent');
   expect(fs.existsSync(agentSubDir)).toBe(true);
 
   await memoryService.deleteMemory(agent.id, 'agent/context');
+  await memoryService.flushPendingMirrors();
   expect(fs.existsSync(agentSubDir)).toBe(false);
 });
 
@@ -406,10 +412,12 @@ test('MemoryService: getMemoryAtCommit returns content at a past commit', async 
   const agent = await createAgent('Time Travel Agent');
 
   await memoryService.setMemory({ agentId: agent.id, key: 'system/preferences', value: 'old content', category: 'preferences' });
+  await memoryService.flushPendingMirrors();
   const firstHistory = await memoryService.getMemoryHistory(agent.id, 'system/preferences');
   const oldSha = firstHistory[0]?.sha ?? '';
 
   await memoryService.setMemory({ agentId: agent.id, key: 'system/preferences', value: 'new content', category: 'preferences' });
+  await memoryService.flushPendingMirrors();
 
   const past = await memoryService.getMemoryAtCommit(agent.id, 'system/preferences', oldSha);
   expect(past).toBe('old content');
@@ -421,6 +429,7 @@ test('MemoryService: getMemoryAtCommit returns content at a past commit', async 
 test('MemoryService: initializeAgentMemory uses path-based default keys', async () => {
   const agent = await createAgent('Init Keys Agent');
   await memoryService.initializeAgentMemory(agent.id, agent.name);
+  await memoryService.flushPendingMirrors();
 
   const prefs = await memoryService.getMemory(agent.id, 'system/preferences');
   const history = await memoryService.getMemory(agent.id, 'system/history');
@@ -442,6 +451,7 @@ test('history API: returns commit history for an agent', async () => {
 
   await memoryService.setMemory({ agentId: agent.id, key: 'system/preferences', value: 'v1', category: 'preferences' });
   await memoryService.setMemory({ agentId: agent.id, key: 'system/preferences', value: 'v2', category: 'preferences' });
+  await memoryService.flushPendingMirrors();
 
   const response = await historyRoute.GET(
     new NextRequest(`http://localhost/api/agents/${agent.id}/memory/history`),
@@ -462,6 +472,7 @@ test('history API: filters by key query param', async () => {
 
   await memoryService.setMemory({ agentId: agent.id, key: 'system/preferences', value: 'pref v1', category: 'preferences' });
   await memoryService.setMemory({ agentId: agent.id, key: 'agent/context', value: 'ctx v1', category: 'context' });
+  await memoryService.flushPendingMirrors();
 
   const response = await historyRoute.GET(
     new NextRequest(`http://localhost/api/agents/${agent.id}/memory/history?key=system/preferences`),
@@ -479,6 +490,7 @@ test('history API: respects limit query param', async () => {
   for (let i = 0; i < 5; i++) {
     await memoryService.setMemory({ agentId: agent.id, key: 'system/preferences', value: `v${i}`, category: 'preferences' });
   }
+  await memoryService.flushPendingMirrors();
 
   const response = await historyRoute.GET(
     new NextRequest(`http://localhost/api/agents/${agent.id}/memory/history?limit=3`),
@@ -506,10 +518,12 @@ test('at-commit API: returns memory content at a specific commit', async () => {
   const agent = await createAgent('At Commit API Agent');
 
   await memoryService.setMemory({ agentId: agent.id, key: 'system/preferences', value: 'at commit content', category: 'preferences' });
+  await memoryService.flushPendingMirrors();
   const history = await memoryService.getMemoryHistory(agent.id, 'system/preferences');
   const sha = history[0]?.sha ?? '';
 
   await memoryService.setMemory({ agentId: agent.id, key: 'system/preferences', value: 'newer content', category: 'preferences' });
+  await memoryService.flushPendingMirrors();
 
   const response = await atCommitRoute.GET(
     new NextRequest(`http://localhost/api/agents/${agent.id}/memory/system%2Fpreferences/at/${sha}`),
@@ -528,6 +542,7 @@ test('at-commit API: returns 404 for non-existent key at commit', async () => {
   const agent = await createAgent('At Commit 404 Agent');
 
   await memoryService.setMemory({ agentId: agent.id, key: 'system/preferences', value: 'something', category: 'preferences' });
+  await memoryService.flushPendingMirrors();
   const history = await memoryService.getMemoryHistory(agent.id);
   const sha = history[0]?.sha ?? '';
 
@@ -556,6 +571,7 @@ test('graceful degradation: all memory operations succeed when GIT_MEMORY_ENABLE
 
   await expect(memoryService.appendHistory(agent.id, 'event')).resolves.toBeUndefined();
   await expect(memoryService.deleteMemory(agent.id, 'system/preferences')).resolves.toBe(true);
+  await memoryService.flushPendingMirrors();
 
   const filePath = path.join(MEMORY_ROOT, agent.id, 'system', 'preferences.md');
   expect(fs.existsSync(filePath)).toBe(false);
@@ -570,6 +586,7 @@ test('graceful degradation: getMemoryHistory returns empty array when git disabl
 
   const agent = await createAgent('Degraded History Agent');
   await memoryService.setMemory({ agentId: agent.id, key: 'system/preferences', value: 'v1', category: 'preferences' });
+  await memoryService.flushPendingMirrors();
 
   const history = await memoryService.getMemoryHistory(agent.id, 'system/preferences');
   expect(history).toEqual([]);
@@ -592,6 +609,7 @@ test('graceful degradation: no .git directory created when GIT_MEMORY_ENABLED=fa
 
   await memoryService.setMemory({ agentId: agent.id, key: 'system/preferences', value: 'content', category: 'preferences' });
   await memoryService.setMemory({ agentId: agent.id, key: 'agent/context', value: 'context', category: 'context' });
+  await memoryService.flushPendingMirrors();
 
   expect(fs.existsSync(path.join(MEMORY_ROOT, agent.id, '.git'))).toBe(false);
 });

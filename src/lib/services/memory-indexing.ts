@@ -194,36 +194,12 @@ function parseEmbedding(value: string | null): number[] | null {
   return parsed;
 }
 
-class HashEmbeddingProvider implements EmbeddingProvider {
-  async embed(text: string, descriptor: EmbeddingDescriptor): Promise<number[]> {
-    const normalized = normalizeContent(text);
-    const vector = Array.from({ length: descriptor.dimensions }, () => 0);
-    const tokens = normalized.split(/[^a-z0-9]+/).filter(Boolean);
-    const input = tokens.length > 0 ? tokens : [normalized || 'empty'];
-
-    for (const token of input) {
-      const tokenHash = createHash('sha256').update(`${descriptor.provider}:${descriptor.model}:${token}`).digest();
-      for (let index = 0; index < descriptor.dimensions; index += 1) {
-        const byte = tokenHash[index % tokenHash.length] ?? 0;
-        vector[index] += (byte / 255) - 0.5;
-      }
-    }
-
-    const norm = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
-    if (norm === 0) {
-      return vector;
-    }
-
-    return vector.map(value => value / norm);
-  }
-}
-
 function getEmbeddingProvider(): EmbeddingProvider | null {
   const descriptor = buildEmbeddingDescriptor();
-  if (descriptor.provider === 'disabled') {
+  if (descriptor.provider === 'disabled' || descriptor.provider === 'mock') {
     return null;
   }
-  return new HashEmbeddingProvider();
+  return null;
 }
 
 function mapMemory(memory: PrismaMemoryRecord): Memory {

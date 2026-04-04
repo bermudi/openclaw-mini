@@ -110,6 +110,28 @@ describe('memory recall indexing', () => {
     expect(longUnits[0]?.content.length).toBeGreaterThan(0);
   });
 
+  test('indexing with disabled or mock provider populates FTS but skips embedding cache', async () => {
+    const agent = await agentService.createAgent({ name: 'FTS-Only Agent' });
+    await memoryService.setMemory({
+      agentId: agent.id,
+      key: 'fts/only',
+      value: 'Keyword retrieval works without embeddings.',
+      category: 'general',
+    });
+    await memoryService.processPendingIndexing();
+
+    const cacheEntries = await db.embeddingCache.findMany();
+    const chunks = await db.memoryChunk.findMany({ where: { agentId: agent.id } });
+
+    expect(cacheEntries).toHaveLength(0);
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks.every(c => c.embeddingJson === null)).toBe(true);
+
+    const result = await memoryService.searchMemories(agent.id, 'keyword retrieval', 5);
+    expect(result.results.some(r => r.key === 'fts/only')).toBe(true);
+    expect(result.results.every(r => r.retrievalMethod !== 'vector')).toBe(true);
+  });
+
   test('reuses cached embeddings and invalidates cache when descriptor changes', async () => {
     const provider = {
       calls: 0,
@@ -144,7 +166,7 @@ describe('memory recall indexing', () => {
     expect(provider.calls).toBe(2);
   });
 
-  test('exact, keyword, vector, and fused retrieval operate on shared substrate', async () => {
+  test('FTS retrieval and fused retrieval operate on shared substrate', async () => {
     const agent = await agentService.createAgent({ name: 'Recall Agent' });
     await memoryService.setMemory({
       agentId: agent.id,
@@ -165,7 +187,7 @@ describe('memory recall indexing', () => {
 
     const exact = await memoryService.getExactMemory(agent.id, 'user/name');
     const keyword = await memoryService.searchMemories(agent.id, 'Berlin', 5);
-    const vector = await memoryIndexingService.searchMemories(agent.id, { query: 'concise answers', limit: 5 });
+    const ftsSearch = await memoryIndexingService.searchMemories(agent.id, { query: 'concise answers', limit: 5 });
     const fused = memoryIndexingService.fuseCandidates(
       [
         {
@@ -197,7 +219,7 @@ describe('memory recall indexing', () => {
 
     expect(exact.memory?.value).toContain('Berlin cafes');
     expect(keyword.results[0]?.key).toBe('user/name');
-    expect(vector.results.some(result => result.key === 'user/name')).toBe(true);
+    expect(ftsSearch.results.some(result => result.key === 'user/name')).toBe(true);
     expect(fused[0]?.retrievalMethod).toBe('hybrid');
   });
 

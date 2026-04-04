@@ -296,14 +296,13 @@ test('7.3 getAsyncTaskRegistry round-trips registry through DB', async () => {
   expect(restored.get('t-b')?.status).toBe('pending');
 });
 
-test('7.3 getAsyncTaskRegistry returns empty map on corrupt JSON', async () => {
+test('7.3 getAsyncTaskRegistry throws StorageValidationError on corrupt JSON', async () => {
   const agent = await agentService.createAgent({ name: 'Agent' });
   const session = await sessionService.getOrCreateSession(agent.id, 'corrupt-scope', 'internal', 'test');
 
   await db.session.update({ where: { id: session.id }, data: { asyncTaskRegistry: 'not-valid-json' } });
 
-  const registry = await sessionService.getAsyncTaskRegistry(session.id);
-  expect(registry.size).toBe(0);
+  await expect(sessionService.getAsyncTaskRegistry(session.id)).rejects.toThrow('Session.asyncTaskRegistry');
 });
 
 // ============================================================

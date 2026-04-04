@@ -4,6 +4,7 @@
 import { Prisma, type Agent as DbAgent } from '@prisma/client';
 import { db } from '@/lib/db';
 import { Agent, AgentStatus } from '@/lib/types';
+import { parseAgentSkills, serializeAgentSkills } from '@/lib/storage-boundary';
 
 export interface CreateAgentInput {
   name: string;
@@ -36,7 +37,7 @@ class AgentService {
         data: {
           name: input.name,
           description: input.description,
-          skills: JSON.stringify(input.skills ?? []),
+          skills: serializeAgentSkills(input.skills ?? []),
           status: 'idle',
           isDefault: !defaultAgent,
         },
@@ -127,7 +128,7 @@ class AgentService {
         ...(input.contextWindowOverride !== undefined && { contextWindowOverride: input.contextWindowOverride }),
         ...(input.compactionThreshold !== undefined && { compactionThreshold: input.compactionThreshold }),
         ...(input.status && { status: input.status }),
-        ...(input.skills && { skills: JSON.stringify(input.skills) }),
+        ...(input.skills && { skills: serializeAgentSkills(input.skills) }),
       },
     });
 
@@ -235,7 +236,7 @@ class AgentService {
       contextWindowOverride: configuredAgent.contextWindowOverride ?? undefined,
       compactionThreshold: configuredAgent.compactionThreshold ?? undefined,
       status: agent.status as AgentStatus,
-      skills: JSON.parse(agent.skills),
+      skills: parseAgentSkills(agent.skills),
       isDefault: Boolean(agent.isDefault),
       createdAt: agent.createdAt,
       updatedAt: agent.updatedAt,

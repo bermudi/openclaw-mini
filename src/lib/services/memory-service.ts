@@ -69,6 +69,15 @@ export interface MemoryPromptContext {
 class MemoryService {
   private gitInstances = new Map<string, MemoryGit>();
   private memoryDirCreated = false;
+  private mirrorQueue: Promise<void> = Promise.resolve();
+
+  /**
+   * Await all pending filesystem/git mirror work. Used in tests to verify
+   * mirror state without blocking the canonical write path.
+   */
+  async flushPendingMirrors(): Promise<void> {
+    await this.mirrorQueue;
+  }
 
   private ensureMemoryDir(): void {
     if (this.memoryDirCreated) return;
@@ -134,9 +143,12 @@ class MemoryService {
       });
     }
 
-    // Also save to file for persistence
+    // Mirror to filesystem/git asynchronously — canonical SQLite write is already complete
     const action = input._commitAction ?? (existing ? 'Update' : 'Create');
-    await this.saveToFile(input.agentId, input.key, input.value, action);
+    const agentId = input.agentId;
+    const key = input.key;
+    const value = input.value;
+    this.queueMirrorWork(() => this.saveToFile(agentId, key, value, action));
 
     if (!input._skipIndexing) {
       await memoryIndexingService.markMemoryForIndexing(memory.id, input.agentId, 'write');
@@ -234,8 +246,10 @@ class MemoryService {
 
     await memoryIndexingService.purgeMemoryIndex(memory.id);
 
-    // Also delete file
-    await this.deleteFile(agentId, key);
+    // Mirror delete to filesystem/git asynchronously
+    const deleteAgentId = agentId;
+    const deleteKey = key;
+    this.queueMirrorWork(() => this.deleteFile(deleteAgentId, deleteKey));
 
     return true;
   }
@@ -412,6 +426,12 @@ class MemoryService {
   /**
    * Save memory to file
    */
+  private queueMirrorWork(work: () => Promise<void>): void {
+    this.mirrorQueue = this.mirrorQueue.then(work).catch(err => {
+      console.warn('[memory-service] mirror work failed:', err);
+    });
+  }
+
   private async saveToFile(agentId: string, key: string, value: string, action: 'Create' | 'Update' | 'Append' = 'Update'): Promise<void> {
     this.ensureMemoryDir();
     const agentDir = path.join(getMemoryDir(), agentId);
@@ -576,25 +596,29 @@ class MemoryService {
   }
 
    private async appendHistoryArchive(agentId: string, value: string): Promise<void> {
-    this.ensureMemoryDir();
-    const archiveDir = this.getHistoryArchiveDir(agentId);
-    if (!fs.existsSync(archiveDir)) {
-      fs.mkdirSync(archiveDir, { recursive: true });
-    }
+    const archiveAgentId = agentId;
+    const archiveValue = value;
+    this.queueMirrorWork(async () => {
+      this.ensureMemoryDir();
+      const archiveDir = this.getHistoryArchiveDir(archiveAgentId);
+      if (!fs.existsSync(archiveDir)) {
+        fs.mkdirSync(archiveDir, { recursive: true });
+      }
 
-    const dateStr = getCurrentArchiveDate();
-    const archivePath = path.join(archiveDir, `${dateStr}.md`);
-    const archiveContent = fs.existsSync(archivePath)
-      ? `\n\n${value}`
-      : value;
-    fs.appendFileSync(archivePath, archiveContent, 'utf-8');
+      const dateStr = getCurrentArchiveDate();
+      const archivePath = path.join(archiveDir, `${dateStr}.md`);
+      const archiveContent = fs.existsSync(archivePath)
+        ? `\n\n${archiveValue}`
+        : archiveValue;
+      fs.appendFileSync(archivePath, archiveContent, 'utf-8');
 
-    const git = await this.getGit(agentId);
-    if (git) {
-      await git.init();
-      await git.add(`history/${dateStr}.md`);
-      await git.commit(`Archive system/history to history/${dateStr}`);
-    }
+      const git = await this.getGit(archiveAgentId);
+      if (git) {
+        await git.init();
+        await git.add(`history/${dateStr}.md`);
+        await git.commit(`Archive system/history to history/${dateStr}`);
+      }
+    });
   }
 
    private getHistoryArchiveDir(agentId: string): string {

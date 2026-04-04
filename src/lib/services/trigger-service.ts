@@ -3,6 +3,7 @@
 
 import { db } from '@/lib/db';
 import { Task, Trigger, TriggerType, TriggerConfig } from '@/lib/types';
+import { parseTriggerConfig, serializeTriggerConfig } from '@/lib/storage-boundary';
 import { hookSubscriptionManager } from './hook-subscription-manager';
 import { taskQueue } from './task-queue';
 import {
@@ -49,7 +50,7 @@ class TriggerService {
         agentId: input.agentId,
         name: input.name,
         type: input.type,
-        config: JSON.stringify(input.config),
+        config: serializeTriggerConfig(input.config as Record<string, unknown>),
         enabled: input.enabled ?? true,
         nextTrigger: nextTrigger ?? null,
       },
@@ -139,7 +140,7 @@ class TriggerService {
       data: {
         ...(input.name && { name: input.name }),
         ...(input.config && { 
-          config: JSON.stringify(input.config),
+          config: serializeTriggerConfig(input.config as Record<string, unknown>),
           nextTrigger: nextTrigger ?? null,
         }),
         ...(input.enabled !== undefined && { enabled: input.enabled }),
@@ -340,7 +341,7 @@ class TriggerService {
       agentId: trigger.agentId,
       name: trigger.name,
       type: trigger.type as TriggerType,
-      config: JSON.parse(trigger.config),
+      config: parseTriggerConfig(trigger.config) as TriggerConfig,
       enabled: trigger.enabled,
       lastTriggered: trigger.lastTriggered ?? undefined,
       nextTrigger: trigger.nextTrigger ?? undefined,

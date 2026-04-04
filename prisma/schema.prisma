@@ -178,6 +178,7 @@ model Memory {
    indexState  MemoryIndexState?
    
   @@unique([agentId, key])
+  @@index([agentId, category])
   @@map("memories")
 }
 
@@ -231,6 +232,7 @@ model MemoryIndexState {
   memory Memory @relation(fields: [memoryId], references: [id], onDelete: Cascade)
 
   @@index([agentId, status])
+  @@index([status])
   @@map("memory_index_states")
 }
 

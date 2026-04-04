@@ -4,6 +4,7 @@
 import { Prisma, type PrismaClient, type Task as DbTask } from '@prisma/client';
 import { db } from '@/lib/db';
 import { Task, TaskStatus, TaskType } from '@/lib/types';
+import { parseTaskPayload, parseTaskResult, serializeTaskPayload, serializeTaskResult } from '@/lib/storage-boundary';
 import { auditService } from './audit-service';
 import { eventBus } from './event-bus';
 import { getRuntimeConfig } from '@/lib/config/runtime';
@@ -48,7 +49,7 @@ class TaskQueueService {
         type: input.type,
         priority: input.priority ?? 5,
         status: 'pending',
-        payload: JSON.stringify(input.payload),
+        payload: serializeTaskPayload(input.payload),
         source: input.source,
         parentTaskId: input.parentTaskId ?? null,
         skillName: input.skillName ?? null,
@@ -227,7 +228,7 @@ class TaskQueueService {
       where: { id: taskId },
       data: {
         status: 'completed',
-        result: result ? JSON.stringify(result) : null,
+        result: result ? serializeTaskResult(result) : null,
         completedAt: new Date(),
       },
     });
@@ -616,8 +617,8 @@ class TaskQueueService {
       type: task.type as TaskType,
       priority: task.priority,
       status: task.status as TaskStatus,
-      payload: JSON.parse(task.payload),
-      result: task.result ? JSON.parse(task.result) : undefined,
+      payload: parseTaskPayload(task.payload),
+      result: task.result ? parseTaskResult(task.result) : undefined,
       error: task.error ?? undefined,
       source: task.source ?? undefined,
       parentTaskId: task.parentTaskId ?? undefined,
