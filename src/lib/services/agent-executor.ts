@@ -430,19 +430,24 @@ class AgentExecutorService {
     const commandResponse = this.buildCommandResponse(command, sessionId);
 
     if (task.sessionId) {
-      await sessionService.appendToContext(task.sessionId, {
-        role: 'user',
-        content: payload.content ?? '',
-        sender: payload.sender,
-        channel: payload.channel,
-        channelKey: payload.channelKey,
-      });
-      await sessionService.appendToContext(task.sessionId, {
-        role: 'assistant',
-        content: commandResponse,
-        channel: payload.channel,
-        channelKey: payload.channelKey,
-      });
+      try {
+        await sessionService.appendToContext(task.sessionId, {
+          role: 'user',
+          content: payload.content ?? '',
+          sender: payload.sender,
+          channel: payload.channel,
+          channelKey: payload.channelKey,
+        });
+        await sessionService.appendToContext(task.sessionId, {
+          role: 'assistant',
+          content: commandResponse,
+          channel: payload.channel,
+          channelKey: payload.channelKey,
+        });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.warn(`[AgentExecutor] Failed to append to session context for task ${taskId}:`, errorMessage);
+      }
     }
 
     const taskResult = {

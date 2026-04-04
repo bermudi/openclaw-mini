@@ -81,6 +81,16 @@ class SessionService {
     channel: ChannelType,
     channelKey: string
   ): Promise<{ id: string; context: SessionContext }> {
+    // Input validation
+    if (!agentId || agentId.trim().length === 0) {
+      throw new Error('agentId must be non-empty');
+    }
+    if (!sessionScope || sessionScope.trim().length === 0) {
+      throw new Error('sessionScope must be non-empty');
+    }
+    if (!channelKey || channelKey.trim().length === 0) {
+      throw new Error('channelKey must be non-empty');
+    }
     let session = await db.session.findUnique({
       where: {
         agentId_sessionScope: {
@@ -164,6 +174,14 @@ class SessionService {
       channelKey?: string;
     }
   ): Promise<void> {
+    // Input validation
+    if (!message.content || message.content.length === 0) {
+      throw new Error('Message content must be non-empty');
+    }
+    if (message.content.length > 100000) {
+      throw new Error(`Message content exceeds maximum length of 100000 characters (got ${message.content.length})`);
+    }
+
     const session = await db.session.findUnique({
       where: { id: sessionId },
       select: {
@@ -171,12 +189,16 @@ class SessionService {
         agentId: true,
       },
     });
-    if (!session) return;
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
 
     const rawAgent = await db.agent.findUnique({
       where: { id: session.agentId },
     });
-    if (!rawAgent) return;
+    if (!rawAgent) {
+      throw new Error(`Agent not found for session ${sessionId}`);
+    }
 
     const agentConfig = normalizeSessionAgentConfig(rawAgent as { id: string } & Record<string, unknown>);
 
@@ -252,6 +274,16 @@ class SessionService {
       },
     });
 
+    if (result.count > 0) {
+      void auditService.log({
+        action: 'sessions_cleaned',
+        entityType: 'session',
+        entityId: 'batch',
+        details: { count: result.count, cutoffDate: cutoff.toISOString() },
+        severity: 'info',
+      });
+    }
+
     return result.count;
   }
 
@@ -267,7 +299,12 @@ class SessionService {
     if (!session?.asyncTaskRegistry) {
       return new Map();
     }
-    return parseAsyncTaskRegistry(session.asyncTaskRegistry) as Map<string, AsyncTaskRecord>;
+    try {
+      return parseAsyncTaskRegistry(session.asyncTaskRegistry) as Map<string, AsyncTaskRecord>;
+    } catch (error) {
+      console.warn(`[SessionService] Failed to parse async task registry for session ${sessionId}:`, error instanceof Error ? error.message : error);
+      return new Map();
+    }
   }
 
   /**
@@ -295,6 +332,14 @@ class SessionService {
 
     await db.session.delete({
       where: { id: sessionId },
+    });
+
+    void auditService.log({
+      action: 'session_deleted',
+      entityType: 'session',
+      entityId: sessionId,
+      details: { sessionId },
+      severity: 'info',
     });
 
     return true;
@@ -376,6 +421,14 @@ class SessionService {
 
     const retainCount = options?.retainCount ?? getPositiveIntegerEnv('OPENCLAW_SESSION_RETAIN_COUNT', 10);
     const threshold = options?.threshold ?? getPositiveIntegerEnv('OPENCLAW_SESSION_COMPACTION_THRESHOLD', 40);
+
+    // Input validation
+    if (retainCount <= 0) {
+      throw new Error('retainCount must be a positive integer');
+    }
+    if (threshold <= 0) {
+      throw new Error('threshold must be a positive integer');
+    }
     const snapshot = await db.sessionMessage.findMany({
       where: { sessionId },
       orderBy: [
@@ -419,6 +472,13 @@ class SessionService {
         `[SessionService] Compaction LLM call failed for session ${sessionId}, agent ${session.agentId}:`,
         error instanceof Error ? error.message : error,
       );
+      void auditService.log({
+        action: 'session_compaction_failed',
+        entityType: 'session',
+        entityId: sessionId,
+        details: { sessionId, agentId: session.agentId, error: error instanceof Error ? error.message : String(error), reason: 'llm_call_failed' },
+        severity: 'warning',
+      });
       return { summarized: 0, remaining: snapshot.length };
     }
 
@@ -426,6 +486,13 @@ class SessionService {
       console.warn(
         `[SessionService] Compaction LLM returned empty response for session ${sessionId}, agent ${session.agentId}. Aborting compaction.`,
       );
+      void auditService.log({
+        action: 'session_compaction_failed',
+        entityType: 'session',
+        entityId: sessionId,
+        details: { sessionId, agentId: session.agentId, reason: 'empty_llm_response' },
+        severity: 'warning',
+      });
       return { summarized: 0, remaining: snapshot.length };
     }
 
