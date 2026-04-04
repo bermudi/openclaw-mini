@@ -7,6 +7,7 @@ import { Brain, ChevronRight, Clock, Tag, Database } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { formatDistanceToNow } from 'date-fns';
 import { useState, useEffect, useCallback } from 'react';
+import { runtimeJson } from '@/lib/dashboard-runtime-client';
 
 interface Agent {
   id: string;
@@ -79,9 +80,10 @@ export function MemoryBrowser({ selectedAgent }: MemoryBrowserProps) {
     if (!selectedAgent) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/agents/${selectedAgent.id}/memory`);
-      const data = await res.json();
-      if (data.success) setMemories(data.data || []);
+      const data = await runtimeJson<{ success: boolean; data?: Memory[] }>(
+        `/api/agents/${selectedAgent.id}/memory`,
+      );
+      if (data.success) setMemories(data.data ?? []);
     } catch (err) {
       console.error('Failed to fetch memories:', err);
     } finally {

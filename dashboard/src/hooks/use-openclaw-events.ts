@@ -2,8 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-
-const WS_URL = process.env.NEXT_PUBLIC_OPENCLAW_WS_URL || 'http://localhost:3003';
+import { getDashboardWebSocketUrl } from '@/lib/dashboard-runtime-client';
 
 export interface OpenClawEventHandlers {
   onTaskCreated?: (data: Record<string, unknown>) => void;
@@ -47,13 +46,26 @@ export function useOpenClawEvents(handlers: OpenClawEventHandlers) {
   }, []);
 
   useEffect(() => {
-    const socket = io(WS_URL, {
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-    });
+    let socket: Socket | null = null;
+
+    try {
+      socket = io(getDashboardWebSocketUrl(), {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+      });
+    } catch (error) {
+      console.error('[useOpenClawEvents] Invalid realtime endpoint:', error);
+      setConnectionStatus('disconnected');
+      return;
+    }
+
+    if (!socket) {
+      setConnectionStatus('disconnected');
+      return;
+    }
 
     socketRef.current = socket;
 

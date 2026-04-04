@@ -7,6 +7,7 @@ import { MessageSquare, User, Bot, Settings, Hash } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { formatDistanceToNow, format, differenceInDays } from 'date-fns';
 import { useState, useEffect, useCallback } from 'react';
+import { runtimeJson } from '@/lib/dashboard-runtime-client';
 
 interface Agent {
   id: string;
@@ -112,9 +113,10 @@ export function SessionInspector({ selectedAgent }: SessionInspectorProps) {
     if (!selectedAgent) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/sessions?agentId=${selectedAgent.id}`);
-      const data = await res.json();
-      if (data.success) setSessions(data.data || []);
+      const data = await runtimeJson<{ success: boolean; data?: SessionSummary[] }>(
+        `/api/sessions?agentId=${selectedAgent.id}`,
+      );
+      if (data.success) setSessions(data.data ?? []);
     } catch (err) {
       console.error('Failed to fetch sessions:', err);
     } finally {
@@ -124,8 +126,9 @@ export function SessionInspector({ selectedAgent }: SessionInspectorProps) {
 
   const fetchSessionDetail = useCallback(async (sessionId: string) => {
     try {
-      const res = await fetch(`/api/sessions?sessionId=${sessionId}`);
-      const data = await res.json();
+      const data = await runtimeJson<{ success: boolean; data?: SessionDetail | null }>(
+        `/api/sessions?sessionId=${sessionId}`,
+      );
       if (data.success && data.data) setSelectedSession(data.data);
     } catch (err) {
       console.error('Failed to fetch session detail:', err);

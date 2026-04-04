@@ -2,10 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { ScrollArea } from '@/components/ui/scroll-area';
 
 type User = {
   id: string;
@@ -104,20 +100,20 @@ export default function SocketDemo() {
   };
 
   return (
-    <div className="container mx-auto p-4 max-w-2xl">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center justify-between">
+    <div className="mx-auto max-w-2xl p-4">
+      <section className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-6 text-zinc-100 shadow-xl">
+        <header className="mb-4">
+          <h1 className="flex items-center justify-between text-xl font-semibold">
             WebSocket Demo
-            <span className={`text-sm px-2 py-1 rounded ${isConnected ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+            <span className={`rounded px-2 py-1 text-sm ${isConnected ? 'bg-green-900 text-green-200' : 'bg-red-900 text-red-200'}`}>
               {isConnected ? 'Connected' : 'Disconnected'}
             </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
+          </h1>
+        </header>
+        <div className="space-y-4">
           {!isUsernameSet ? (
             <div className="space-y-2">
-              <Input
+              <input
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 onKeyPress={(e) => {
@@ -127,41 +123,42 @@ export default function SocketDemo() {
                 }}
                 placeholder="Enter your username..."
                 disabled={!isConnected}
-                className="flex-1"
+                className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm"
               />
-              <Button
+              <button
+                type="button"
                 onClick={handleJoin}
                 disabled={!isConnected || !username.trim()}
-                className="w-full"
+                className="w-full rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Join Chat
-              </Button>
+              </button>
             </div>
           ) : (
             <>
-              <ScrollArea className="h-80 w-full border rounded-md p-4">
+              <div className="h-80 w-full overflow-y-auto rounded-md border border-zinc-800 bg-zinc-900 p-4">
                 <div className="space-y-2">
                   {messages.length === 0 ? (
-                    <p className="text-gray-500 text-center">No messages yet</p>
+                    <p className="text-center text-zinc-500">No messages yet</p>
                   ) : (
                     messages.map((msg) => (
-                      <div key={msg.id} className="border-b pb-2 last:border-b-0">
+                      <div key={msg.id} className="border-b border-zinc-800 pb-2 last:border-b-0">
                         <div className="flex justify-between items-start">
                           <div className="flex-1">
                             <p className={`text-sm font-medium ${msg.type === 'system'
-                                ? 'text-blue-600 italic'
-                                : 'text-gray-700'
+                                ? 'italic text-sky-300'
+                                : 'text-zinc-200'
                               }`}>
                               {msg.username}
                             </p>
                             <p className={`${msg.type === 'system'
-                                ? 'text-blue-500 italic'
-                                : 'text-gray-900'
+                                ? 'italic text-sky-400'
+                                : 'text-zinc-100'
                               }`}>
                               {msg.content}
                             </p>
                           </div>
-                          <span className="text-xs text-gray-500">
+                          <span className="text-xs text-zinc-500">
                             {new Date(msg.timestamp).toLocaleTimeString()}
                           </span>
                         </div>
@@ -169,28 +166,30 @@ export default function SocketDemo() {
                     ))
                   )}
                 </div>
-              </ScrollArea>
+              </div>
 
               <div className="flex space-x-2">
-                <Input
+                <input
                   value={inputMessage}
                   onChange={(e) => setInputMessage(e.target.value)}
                   onKeyPress={handleKeyPress}
                   placeholder="Type a message..."
                   disabled={!isConnected}
-                  className="flex-1"
+                  className="flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm"
                 />
-                <Button
+                <button
+                  type="button"
                   onClick={sendMessage}
                   disabled={!isConnected || !inputMessage.trim()}
+                  className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Send
-                </Button>
+                </button>
               </div>
             </>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </section>
     </div>
   );
 }

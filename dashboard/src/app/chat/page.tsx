@@ -4,8 +4,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { Send, Bot, Loader2, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { runtimeFetch, getDashboardRuntimeConfigError, getDashboardRuntimeConfigOrNull } from '@/lib/dashboard-runtime-client';
 
-const WS_URL = process.env.NEXT_PUBLIC_OPENCLAW_WS_URL ?? 'http://localhost:3003';
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 16_000;
 
@@ -57,6 +57,8 @@ export default function ChatPage() {
   const socketRef = useRef<Socket | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const reconnectDelayRef = useRef(RECONNECT_BASE_MS);
+  const configError = getDashboardRuntimeConfigError();
+  const runtimeConfig = getDashboardRuntimeConfigOrNull();
 
   const scrollToBottom = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -78,9 +80,13 @@ export default function ChatPage() {
     const sid = getOrCreateSessionId();
     setSessionId(sid);
 
-    fetch(`/api/sessions/messages?channel=webchat&channelKey=${encodeURIComponent(sid)}`)
-      .then(r => r.json())
-      .then((body: { success: boolean; data?: Array<{ id: string; role: string; content: string; createdAt: string }> }) => {
+    if (configError) {
+      return;
+    }
+
+    void runtimeFetch(`/api/sessions/messages?channel=webchat&channelKey=${encodeURIComponent(sid)}`)
+      .then(async (response) => {
+        const body = await response.json() as { success: boolean; data?: Array<{ id: string; role: string; content: string; createdAt: string }> };
         if (body.success && body.data) {
           const loaded: ChatMessage[] = body.data.map(m => ({
             id: m.id,
@@ -92,13 +98,13 @@ export default function ChatPage() {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [configError]);
 
   // WebSocket connection with reconnect
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || configError || !runtimeConfig) return;
 
-    const socket = io(WS_URL, {
+    const socket = io(runtimeConfig.wsUrl, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: Infinity,
@@ -153,7 +159,7 @@ export default function ChatPage() {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [sessionId, appendMessage]);
+  }, [sessionId, appendMessage, configError, runtimeConfig]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -171,21 +177,28 @@ export default function ChatPage() {
     setSending(true);
 
     try {
-      await fetch('/api/input', {
+      const response = await runtimeFetch('/api/input', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: 'message',
-          channel: 'webchat',
-          channelKey: sessionId,
-          content: text,
-          deliveryTarget: {
+          input: {
+            type: 'message',
             channel: 'webchat',
             channelKey: sessionId,
-            metadata: {},
+            sender: 'dashboard-chat',
+            content: text,
+            deliveryTarget: {
+              channel: 'webchat',
+              channelKey: sessionId,
+              metadata: {},
+            },
           },
         }),
       });
+
+      if (!response.ok) {
+        throw new Error(`Request failed with status ${response.status}`);
+      }
     } catch (err) {
       console.error('Failed to send message:', err);
     } finally {
@@ -202,6 +215,11 @@ export default function ChatPage() {
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
+      {configError && (
+        <div className="border-b border-red-500/30 bg-red-500/10 px-4 py-2 text-xs text-red-300 font-mono">
+          {configError}
+        </div>
+      )}
       {/* Header */}
       <header className="border-b border-border/50 bg-card/80 backdrop-blur-xl sticky top-0 z-50">
         <div className="container mx-auto px-4 py-3 flex items-center justify-between">

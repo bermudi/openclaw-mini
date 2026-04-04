@@ -10,6 +10,7 @@ import { FileText, Save, Plus, X, Check, AlertCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useState, useEffect, useCallback } from 'react';
+import { runtimeJson } from '@/lib/dashboard-runtime-client';
 
 interface WorkspaceFile {
   name: string;
@@ -32,10 +33,9 @@ export function WorkspaceEditor() {
 
   const fetchFiles = useCallback(async () => {
     try {
-      const res = await fetch('/api/workspace');
-      const data = await res.json();
+      const data = await runtimeJson<{ success: boolean; data?: WorkspaceFile[] }>('/api/workspace');
       if (data.success) {
-        setFiles((data.data as WorkspaceFile[]).sort((a, b) => a.name.localeCompare(b.name)));
+        setFiles([...(data.data ?? [])].sort((a, b) => a.name.localeCompare(b.name)));
       }
     } catch (err) {
       console.error('Failed to fetch workspace files:', err);
@@ -45,11 +45,16 @@ export function WorkspaceEditor() {
   const fetchFileContent = useCallback(async (fileName: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/workspace?file=${encodeURIComponent(fileName)}`);
-      const data = await res.json();
+      const data = await runtimeJson<{
+        success: boolean;
+        data?: { content: string };
+        error?: string;
+      }>(`/api/workspace?file=${encodeURIComponent(fileName)}`);
+
       if (data.success) {
-        setContent(data.data.content);
-        setOriginalContent(data.data.content);
+        const nextContent = data.data?.content ?? '';
+        setContent(nextContent);
+        setOriginalContent(nextContent);
         setSelectedFile(fileName);
       } else {
         toast({ title: 'Error', description: data.error || 'Failed to load file', variant: 'destructive' });
@@ -67,12 +72,12 @@ export function WorkspaceEditor() {
     if (!selectedFile) return;
     setSaving(true);
     try {
-      const res = await fetch('/api/workspace', {
+      const data = await runtimeJson<{ success: boolean; error?: string }>('/api/workspace', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file: selectedFile, content }),
       });
-      const data = await res.json();
+
       if (data.success) {
         setOriginalContent(content);
         toast({ title: 'Saved', description: `${selectedFile} updated successfully` });
@@ -101,12 +106,12 @@ export function WorkspaceEditor() {
 
     setSaving(true);
     try {
-      const res = await fetch('/api/workspace', {
+      const data = await runtimeJson<{ success: boolean; error?: string }>('/api/workspace', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file: name, content: `# ${name.replace('.md', '')}\n` }),
       });
-      const data = await res.json();
+
       if (data.success) {
         setCreating(false);
         setNewFileName('');
