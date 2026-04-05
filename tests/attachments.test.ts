@@ -40,6 +40,7 @@ mock.module('grammy', () => ({
       sendDocument: async () => ({ message_id: 2 }),
     };
     token = 'test-telegram-token';
+    use() {}
   },
   GrammyError: class extends Error {
     constructor(message: string) { super(message); }

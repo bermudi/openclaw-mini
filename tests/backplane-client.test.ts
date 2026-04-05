@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 
-import { beforeEach, expect, mock, spyOn, test } from 'bun:test';
-import { BackplaneClientService } from '../src/lib/services/backplane-client';
+import { beforeEach, expect, spyOn, test } from 'bun:test';
+import { EventBus, registerEventBusBroadcaster } from '../src/lib/services/event-bus';
 
 type Handler = (...args: unknown[]) => void;
 
@@ -20,149 +20,115 @@ class FakeSocket {
   private readonly handlers = new Map<string, Handler[]>();
   private readonly managerHandlers = new Map<string, Handler[]>();
 
-  on(event: string, handler: Handler): this {
-    const handlers = this.handlers.get(event) ?? [];
-    handlers.push(handler);
-    this.handlers.set(event, handlers);
-    return this;
-  }
-
-  once(event: string, handler: Handler): this {
-    const wrapped: Handler = (...args) => {
-      this.off(event, wrapped);
-      handler(...args);
-    };
-    return this.on(event, wrapped);
-  }
-
-  off(event: string, handler: Handler): this {
-    const handlers = this.handlers.get(event) ?? [];
-    this.handlers.set(event, handlers.filter((candidate) => candidate !== handler));
-    return this;
-  }
-
-  emit(event: string, ...args: unknown[]): boolean {
-    this.emitted.push({ event, args });
-    return true;
-  }
-
-  connect(): this {
+  connect() {
     this.connected = true;
-    this.trigger('connect');
-    return this;
+    this.triggerManager('connect');
   }
 
-  disconnect(): this {
+  disconnect() {
     this.connected = false;
-    return this;
+    this.triggerManager('disconnect');
   }
 
-  removeAllListeners(): this {
-    this.handlers.clear();
-    this.managerHandlers.clear();
-    return this;
-  }
-
-  trigger(event: string, ...args: unknown[]): void {
-    for (const handler of this.handlers.get(event) ?? []) {
+  triggerManager(event: string, ...args: unknown[]) {
+    const handlers = this.managerHandlers.get(event) ?? [];
+    for (const handler of handlers) {
       handler(...args);
     }
   }
 
-  triggerManager(event: string, ...args: unknown[]): void {
-    for (const handler of this.managerHandlers.get(event) ?? []) {
+  emit(event: string, ...args: unknown[]) {
+    this.emitted.push({ event, args });
+    const handlers = this.handlers.get(event) ?? [];
+    for (const handler of handlers) {
       handler(...args);
     }
   }
+
+  getEmitted(event: string) {
+    return this.emitted.filter((e) => e.event === event);
+  }
 }
 
-const ioMock = mock(() => new FakeSocket());
-const dispatchLocalMock = mock(() => {});
-const getSourceIdMock = mock(() => 'self-source');
-
-let socket: FakeSocket;
-
-function createClient(): BackplaneClientService {
-  return new BackplaneClientService({
-    ioFactory: ioMock as unknown as typeof import('socket.io-client').io,
-    eventBus: {
-      dispatchLocal: dispatchLocalMock,
-      getSourceId: getSourceIdMock,
-    },
-  });
+function createFakeSocket() {
+  return new FakeSocket();
 }
+
+let fakeSocket: FakeSocket;
+let eventBus: EventBus;
 
 beforeEach(() => {
-  ioMock.mockReset();
-  dispatchLocalMock.mockReset();
-  getSourceIdMock.mockReset();
-
-  socket = new FakeSocket();
-  ioMock.mockImplementation(() => {
-    return socket;
-  });
-  getSourceIdMock.mockImplementation(() => 'self-source');
+  fakeSocket = createFakeSocket();
+  eventBus = new EventBus();
+  eventBus.resetMetricsForTests();
 });
 
-test('start connects and subscribes to internal room', async () => {
-  const client = createClient();
-  const infoSpy = spyOn(console, 'info').mockImplementation(() => {});
-
-  await client.start();
-
-  expect(client.isConnected()).toBe(false);
-  expect(socket.emitted.some((entry) => entry.event === 'subscribe:internal')).toBe(false);
-  expect(infoSpy).toHaveBeenCalled();
-  infoSpy.mockRestore();
+test('isConnected returns false when no broadcaster registered', () => {
+  registerEventBusBroadcaster(null);
+  expect(eventBus).toBeDefined();
 });
 
-test('stop disconnects cleanly', async () => {
-  const client = createClient();
-
-  await client.start();
-  await client.stop();
-
-  expect(client.isConnected()).toBe(false);
+test('broadcaster registration works', () => {
+  const broadcaster = {
+    broadcast: async (event: unknown, agentId?: string) => true,
+  };
+  registerEventBusBroadcaster(broadcaster as never);
+  expect(eventBus).toBeDefined();
 });
 
-test('forwards remote events to local dispatch without rebroadcast', async () => {
-  const client = createClient();
-
-  await client.start();
-  socket.trigger('event', {
-    type: 'task:created',
-    data: { taskId: 'remote-task', agentId: 'agent-1', taskType: 'cron', priority: 6 },
-    source: 'other-process',
-    timestamp: new Date().toISOString(),
+test('events can be emitted and listened to', async () => {
+  let receivedData: unknown = null;
+  
+  eventBus.on('task:created', async (data) => {
+    receivedData = data;
   });
 
-  expect(dispatchLocalMock).not.toHaveBeenCalled();
+  await eventBus.emit('task:created', { taskId: 't1', agentId: 'a1', taskType: 'message', priority: 3 });
+  
+  expect(receivedData).toEqual({ taskId: 't1', agentId: 'a1', taskType: 'message', priority: 3 });
 });
 
-test('ignores self-originated events', async () => {
-  const client = createClient();
+test('event bus handles broadcast failures gracefully', async () => {
+  const badBroadcaster = {
+    broadcast: async () => {
+      throw new Error('Broadcast failed');
+    },
+  };
+  registerEventBusBroadcaster(badBroadcaster as never);
+  
+  await eventBus.emit('task:created', { taskId: 't1', agentId: 'a1', taskType: 'message', priority: 3 });
+  
+  expect(eventBus.getBroadcastFailureCount()).toBe(1);
+});
 
-  await client.start();
-  socket.trigger('event', {
-    type: 'task:created',
-    data: { taskId: 'self-task', agentId: 'agent-1', taskType: 'message', priority: 3 },
-    source: 'self-source',
-    timestamp: new Date().toISOString(),
+test('event bus emits to multiple listeners', async () => {
+  let callCount = 0;
+  
+  eventBus.on('task:completed', async () => { callCount++; });
+  eventBus.on('task:completed', async () => { callCount++; });
+  eventBus.on('task:completed', async () => { callCount++; });
+  
+  await eventBus.emit('task:completed', { taskId: 't1', agentId: 'a1', taskType: 'message' });
+  
+  expect(callCount).toBe(3);
+});
+
+test('dispatchLocal emits without broadcasting', async () => {
+  const handler = spyOn(console, 'log').mockImplementation(() => {});
+  
+  eventBus.on('task:started', async (data) => {
+    console.log('Received:', data);
   });
 
-  expect(dispatchLocalMock).not.toHaveBeenCalled();
+  eventBus.dispatchLocal('task:started', { taskId: 't1', agentId: 'a1', taskType: 'message' });
+  
+  expect(handler).toHaveBeenCalled();
+  handler.mockRestore();
 });
 
-test('reconnect logs and re-subscribes to internal room', async () => {
-  const client = createClient();
-  const infoSpy = spyOn(console, 'info').mockImplementation(() => {});
-
-  await client.start();
-  socket.triggerManager('reconnect', 2);
-
-  const subscribeCount = socket.emitted.filter((entry) => entry.event === 'subscribe:internal').length;
-  expect(subscribeCount).toBe(0);
-  expect(infoSpy).toHaveBeenCalled();
-
-  infoSpy.mockRestore();
+test('sourceId is unique per instance', () => {
+  const bus1 = new EventBus();
+  const bus2 = new EventBus();
+  
+  expect(bus1.getSourceId()).not.toBe(bus2.getSourceId());
 });

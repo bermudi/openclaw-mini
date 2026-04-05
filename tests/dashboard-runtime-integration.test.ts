@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -13,7 +13,32 @@ import { GET as getSessions } from '../src/app/api/sessions/route';
 import { GET as getWorkspace, PUT as putWorkspace } from '../src/app/api/workspace/route';
 import { RuntimeRealtimeServer } from '../src/lib/runtime/realtime-server';
 
+const TEST_DB_PATH = path.join(process.cwd(), 'db', 'dashboard-runtime-integration.test.db');
+const TEST_DB_URL = `file:${TEST_DB_PATH}`;
+
 let workspaceDir = '';
+
+beforeAll(async () => {
+  process.env.DATABASE_URL = TEST_DB_URL;
+  process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? 'test-key';
+  process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
+
+  fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
+
+  const dbPush = Bun.spawnSync({
+    cmd: ['bunx', 'prisma', 'db', 'push', '--accept-data-loss'],
+    env: { ...process.env, DATABASE_URL: TEST_DB_URL, NO_ENV_FILE: '1' },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  if (dbPush.exitCode !== 0) {
+    throw new Error(`Failed to prepare dashboard test DB: ${dbPush.stderr.toString()}`);
+  }
+
+  const { recreateDbClientForTests } = await import('../src/lib/db');
+  await recreateDbClientForTests();
+});
 
 beforeEach(() => {
   workspaceDir = fs.mkdtempSync(path.join(tmpdir(), 'openclaw-mini-dashboard-runtime-'));
@@ -30,6 +55,12 @@ afterEach(() => {
   if (workspaceDir) {
     fs.rmSync(workspaceDir, { recursive: true, force: true });
   }
+});
+
+afterAll(async () => {
+  const { db } = await import('../src/lib/db');
+  await db.$disconnect();
+  fs.rmSync(TEST_DB_PATH, { force: true });
 });
 
 describe('dashboard runtime verification', () => {

@@ -62,8 +62,8 @@ beforeAll(async () => {
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
 
   const dbPush = Bun.spawnSync({
-    cmd: ['bunx', 'prisma', 'db', 'push'],
-    env: { ...process.env, DATABASE_URL: TEST_DB_URL, NO_ENV_FILE: '1' },
+    cmd: ['bunx', 'prisma', 'db', 'push', '--accept-data-loss'],
+    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -72,8 +72,8 @@ beforeAll(async () => {
     throw new Error(`Failed to prepare test database: ${dbPush.stderr.toString()}`);
   }
 
-  const { resetDbClientForTests } = await import('../src/lib/db');
-  await resetDbClientForTests();
+  const { recreateDbClientForTests } = await import('../src/lib/db');
+  await recreateDbClientForTests();
 
   db = (await import('../src/lib/db')).db;
   memoryService = (await import('../src/lib/services/memory-service')).memoryService;

@@ -27,6 +27,11 @@ export async function createTask(input: {
   }
 }
 
+export const executeTaskViaApi = executeTask;
+export const createTaskViaApi = createTask;
+export const fireTriggerViaApi = fireTrigger;
+export const runSchedulerMaintenanceViaApi = runMaintenance;
+
 export async function fireTrigger(input: {
   triggerId: string;
   referenceTime?: string;

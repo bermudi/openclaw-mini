@@ -70,6 +70,8 @@ beforeAll(async () => {
   process.env.DATABASE_URL = TEST_DB_URL;
   process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? 'test-key';
   process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? 'test-key';
+  process.env.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? 'test-key';
+  process.env.POE_API_KEY = process.env.POE_API_KEY ?? 'test-key';
   process.env.OPENCLAW_ALLOW_INSECURE_LOCAL = 'true';
   process.env.GIT_MEMORY_ENABLED = undefined as unknown as string;
   delete process.env.GIT_MEMORY_ENABLED;
@@ -81,8 +83,8 @@ beforeAll(async () => {
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
 
   const dbPush = Bun.spawnSync({
-    cmd: ['bunx', 'prisma', 'db', 'push'],
-    env: { ...process.env, DATABASE_URL: TEST_DB_URL, NO_ENV_FILE: '1' },
+    cmd: ['bunx', 'prisma', 'db', 'push', '--accept-data-loss'],
+    env: { ...process.env, DATABASE_URL: TEST_DB_URL },
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -122,7 +124,8 @@ afterAll(async () => {
   cleanupAgentMemoryDirs();
   cleanupTempDirs();
   await resetDb();
-  await db.$disconnect();
+  const { resetDbClientForTests } = await import('../src/lib/db');
+  await resetDbClientForTests();
   if (runtimeConfigFixture) {
     cleanupRuntimeConfigFixture(runtimeConfigFixture.dir);
     runtimeConfigFixture = null;

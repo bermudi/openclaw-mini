@@ -19,8 +19,8 @@ const configuredPrisma = globalForPrisma.prisma
       scope: 'nextjs',
     })
 
-export const db = configuredPrisma.client
-export const dbReady = configuredPrisma.ready
+export let db = configuredPrisma.client
+export let dbReady = configuredPrisma.ready
 
 if (process.env.NODE_ENV !== 'production') {
   globalForPrisma.prisma = db
@@ -36,4 +36,20 @@ export async function resetDbClientForTests(): Promise<void> {
 
   globalForPrisma.prisma = undefined
   globalForPrisma.prismaReady = undefined
+}
+
+export async function recreateDbClientForTests(): Promise<void> {
+  await resetDbClientForTests()
+
+  const fresh = createConfiguredPrismaClient({
+    log: DEFAULT_PRISMA_LOG,
+    scope: 'nextjs',
+  })
+
+  db = fresh.client
+  dbReady = fresh.ready
+  globalForPrisma.prisma = db
+  globalForPrisma.prismaReady = dbReady
+
+  await fresh.ready
 }

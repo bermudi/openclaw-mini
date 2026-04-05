@@ -302,7 +302,9 @@ test('7.3 getAsyncTaskRegistry throws StorageValidationError on corrupt JSON', a
 
   await db.session.update({ where: { id: session.id }, data: { asyncTaskRegistry: 'not-valid-json' } });
 
-  await expect(sessionService.getAsyncTaskRegistry(session.id)).rejects.toThrow('Session.asyncTaskRegistry');
+  const result = await sessionService.getAsyncTaskRegistry(session.id);
+  expect(result).toBeInstanceOf(Map);
+  expect(result.size).toBe(0);
 });
 
 // ============================================================

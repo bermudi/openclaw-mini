@@ -5,8 +5,26 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireInternalAuth } from '@/lib/api-auth';
 import { triggerService } from '@/lib/services/trigger-service';
 import { storageErrorResponse } from '@/lib/api/storage-errors';
+import { z } from 'zod';
 
-// GET /api/triggers/[id] - Get trigger by ID
+const updateTriggerSchema = z.object({
+  name: z.string().min(1, 'Trigger name must not be empty').optional(),
+  enabled: z.boolean().optional(),
+  config: z.object({
+    // Heartbeat config
+    interval: z.number().int().min(1).optional(),
+    // Cron config
+    cronExpression: z.string().optional(),
+    timezone: z.string().optional(),
+    // Webhook config
+    endpoint: z.string().optional(),
+    secret: z.string().optional(),
+    method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).optional(),
+    // Hook config
+    event: z.string().optional(),
+    condition: z.record(z.string(), z.unknown()).optional(),
+  }).optional(),
+});
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -56,7 +74,19 @@ export async function PUT(
     const { id } = await params;
     const body = await request.json();
     
-    const trigger = await triggerService.updateTrigger(id, body);
+    // Validate request body
+    const parsed = updateTriggerSchema.safeParse(body);
+    if (!parsed.success) {
+      const { formErrors, fieldErrors } = parsed.error.flatten();
+      const fieldMessages = Object.values(fieldErrors).flat().filter(Boolean);
+      const message = [...formErrors, ...fieldMessages].join(', ') || 'Invalid request payload';
+      return NextResponse.json(
+        { success: false, error: message },
+        { status: 400 }
+      );
+    }
+    
+    const trigger = await triggerService.updateTrigger(id, parsed.data);
     
     if (!trigger) {
       return NextResponse.json(

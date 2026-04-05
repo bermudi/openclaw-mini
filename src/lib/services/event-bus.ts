@@ -44,22 +44,33 @@ export class EventBus {
       return;
     }
 
-    const ok = await eventBusBroadcaster.broadcast(
-      {
-        type: event as WSEventType,
-        data: data as Record<string, unknown>,
-        source: this.sourceId,
-      },
-      this.getAgentId(data),
-    );
+    try {
+      const ok = await eventBusBroadcaster.broadcast(
+        {
+          type: event as WSEventType,
+          data: data as Record<string, unknown>,
+          source: this.sourceId,
+        },
+        this.getAgentId(data),
+      );
 
-    if (!ok) {
+      if (!ok) {
+        this.broadcastFailureCount += 1;
+        console.error('[EventBus] Broadcast failed', {
+          eventType: event,
+          source: this.sourceId,
+          errorClass: 'BroadcastFailed',
+          failureCount: this.broadcastFailureCount,
+        });
+      }
+    } catch (error) {
       this.broadcastFailureCount += 1;
       console.error('[EventBus] Broadcast failed', {
         eventType: event,
         source: this.sourceId,
-        errorClass: 'BroadcastFailed',
+        errorClass: error instanceof Error ? error.name : 'BroadcastError',
         failureCount: this.broadcastFailureCount,
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }

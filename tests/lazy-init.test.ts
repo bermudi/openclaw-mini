@@ -57,7 +57,12 @@ beforeAll(async () => {
   await resetDbClientForTests();
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  const { resetInitForTests } = await import('../src/lib/init');
+  const { resetInitForTests: resetLazyInitForTests } = await import('../src/lib/init/lazy');
+  resetInitForTests();
+  resetLazyInitForTests();
+
   restoreEnv();
   process.env.DATABASE_URL = TEST_DB_URL;
   process.env.OPENAI_API_KEY = 'test-key';

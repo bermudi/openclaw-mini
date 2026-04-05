@@ -1,5 +1,6 @@
 import { Prisma, PrismaClient } from '@prisma/client'
 import { applySqlitePragmas, extendSqliteConcurrencyClient } from '@/lib/sqlite-concurrency'
+import { snapshotEnv, restoreEnvSnapshot } from '@/lib/env-snapshot'
 
 export function createConfiguredPrismaClient(options?: {
   log?: Prisma.LogLevel[]
@@ -8,9 +9,11 @@ export function createConfiguredPrismaClient(options?: {
   client: PrismaClient
   ready: Promise<void>
 } {
+  const envSnap = snapshotEnv()
   const baseClient = new PrismaClient({
     log: options?.log,
   })
+  restoreEnvSnapshot(envSnap)
   const scope = options?.scope ?? 'prisma'
   let resolveReady: (() => void) | undefined
   let rejectReady: ((error: unknown) => void) | undefined

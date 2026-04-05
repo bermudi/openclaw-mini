@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { agentService } from '@/lib/services/agent-service';
 import { requireInternalAuth } from '@/lib/api-auth';
 import { z } from 'zod';
+import { withInit } from '@/lib/api/init-guard';
 
 const updateAgentSchema = z.object({
   name: z.string().min(1, 'Agent name must not be empty').optional(),
@@ -21,31 +22,33 @@ export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const authResponse = await requireInternalAuth(_request);
-    if (authResponse) return authResponse;
+  return withInit(async () => {
+    try {
+      const authResponse = await requireInternalAuth(_request);
+      if (authResponse) return authResponse;
 
-    const { id } = await params;
-    const result = await agentService.getAgentWithStats(id);
-    
-    if (!result) {
+      const { id } = await params;
+      const result = await agentService.getAgentWithStats(id);
+      
+      if (!result) {
+        return NextResponse.json(
+          { success: false, error: 'Agent not found' },
+          { status: 404 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
       return NextResponse.json(
-        { success: false, error: 'Agent not found' },
-        { status: 404 }
+        { success: false, error: message },
+        { status: 500 }
       );
     }
-
-    return NextResponse.json({
-      success: true,
-      data: result,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return NextResponse.json(
-      { success: false, error: message },
-      { status: 500 }
-    );
-  }
+  });
 }
 
 // PUT /api/agents/[id] - Update agent
@@ -53,45 +56,47 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const authResponse = await requireInternalAuth(request);
-    if (authResponse) return authResponse;
+  return withInit(async () => {
+    try {
+      const authResponse = await requireInternalAuth(request);
+      if (authResponse) return authResponse;
 
-    const { id } = await params;
-    const body = await request.json();
-    const parsed = updateAgentSchema.safeParse(body);
+      const { id } = await params;
+      const body = await request.json();
+      const parsed = updateAgentSchema.safeParse(body);
 
-    if (!parsed.success) {
-      const { formErrors, fieldErrors } = parsed.error.flatten();
-      const fieldMessages = Object.values(fieldErrors).flat().filter(Boolean);
-      const message = [...formErrors, ...fieldMessages].join(', ') || 'Invalid request payload';
+      if (!parsed.success) {
+        const { formErrors, fieldErrors } = parsed.error.flatten();
+        const fieldMessages = Object.values(fieldErrors).flat().filter(Boolean);
+        const message = [...formErrors, ...fieldMessages].join(', ') || 'Invalid request payload';
+        return NextResponse.json(
+          { success: false, error: message },
+          { status: 400 }
+        );
+      }
+      
+      const agent = await agentService.updateAgent(id, parsed.data);
+      
+      if (!agent) {
+        return NextResponse.json(
+          { success: false, error: 'Agent not found' },
+          { status: 404 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: agent,
+        message: 'Agent updated successfully',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
       return NextResponse.json(
         { success: false, error: message },
-        { status: 400 }
+        { status: 500 }
       );
     }
-    
-    const agent = await agentService.updateAgent(id, parsed.data);
-    
-    if (!agent) {
-      return NextResponse.json(
-        { success: false, error: 'Agent not found' },
-        { status: 404 }
-      );
-    }
-
-    return NextResponse.json({
-      success: true,
-      data: agent,
-      message: 'Agent updated successfully',
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return NextResponse.json(
-      { success: false, error: message },
-      { status: 500 }
-    );
-  }
+  });
 }
 
 // DELETE /api/agents/[id] - Delete agent
@@ -99,29 +104,31 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const authResponse = await requireInternalAuth(_request);
-    if (authResponse) return authResponse;
+  return withInit(async () => {
+    try {
+      const authResponse = await requireInternalAuth(_request);
+      if (authResponse) return authResponse;
 
-    const { id } = await params;
-    const deleted = await agentService.deleteAgent(id);
-    
-    if (!deleted) {
+      const { id } = await params;
+      const deleted = await agentService.deleteAgent(id);
+      
+      if (!deleted) {
+        return NextResponse.json(
+          { success: false, error: 'Agent not found' },
+          { status: 404 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: 'Agent deleted successfully',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
       return NextResponse.json(
-        { success: false, error: 'Agent not found' },
-        { status: 404 }
+        { success: false, error: message },
+        { status: 500 }
       );
     }
-
-    return NextResponse.json({
-      success: true,
-      message: 'Agent deleted successfully',
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return NextResponse.json(
-      { success: false, error: message },
-      { status: 500 }
-    );
-  }
+  });
 }
