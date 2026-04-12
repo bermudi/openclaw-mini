@@ -400,6 +400,11 @@ export default function OpenClawDashboard() {
             <Bot className="w-7 h-7 text-white" />
           </div>
           <Loader2 className="w-5 h-5 animate-spin text-emerald-400" />
+          {configError && (
+            <div className="text-xs text-red-400 font-mono max-w-md text-center">
+              Config Error: {configError}
+            </div>
+          )}
         </div>
       </div>
     );

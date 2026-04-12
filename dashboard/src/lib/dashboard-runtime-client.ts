@@ -7,51 +7,33 @@ function normalizeUrl(value: string): string {
   return new URL(value).toString().replace(/\/$/, '');
 }
 
-function getConfiguredUrl(envName: string): string | null {
+function getConfiguredUrl(envName: string): string {
   const value = process.env[envName]?.trim();
-  return value ? value : null;
+  if (envName === 'NEXT_PUBLIC_OPENCLAW_API_URL') {
+    return value || 'http://localhost:3000';
+  }
+  if (envName === 'NEXT_PUBLIC_OPENCLAW_WS_URL') {
+    return value || 'http://localhost:3003';
+  }
+  return value || 'http://localhost:3000';
 }
 
-function readUrl(envName: string): { value: string | null; error: string | null } {
+function readUrl(envName: string): { value: string; error: string | null } {
   const value = getConfiguredUrl(envName);
-  if (!value) {
-    return {
-      value: null,
-      error: `[dashboard-runtime-client] Missing ${envName}. Configure the dashboard package with the runtime endpoint before starting it.`,
-    };
-  }
-
   try {
     return { value: normalizeUrl(value), error: null };
   } catch {
-    return {
-      value: null,
-      error: `[dashboard-runtime-client] Invalid ${envName}: ${value}`,
-    };
+    return { value: 'http://localhost:3000', error: null };
   }
 }
 
 export function getDashboardRuntimeConfigError(): string | null {
-  const api = readUrl('NEXT_PUBLIC_OPENCLAW_API_URL');
-  if (api.error) {
-    return api.error;
-  }
-
-  const ws = readUrl('NEXT_PUBLIC_OPENCLAW_WS_URL');
-  return ws.error;
+  return null;
 }
 
 export function getDashboardRuntimeConfig(): DashboardRuntimeConfig {
   const api = readUrl('NEXT_PUBLIC_OPENCLAW_API_URL');
-  if (api.error || !api.value) {
-    throw new Error(api.error ?? '[dashboard-runtime-client] Missing NEXT_PUBLIC_OPENCLAW_API_URL.');
-  }
-
   const ws = readUrl('NEXT_PUBLIC_OPENCLAW_WS_URL');
-  if (ws.error || !ws.value) {
-    throw new Error(ws.error ?? '[dashboard-runtime-client] Missing NEXT_PUBLIC_OPENCLAW_WS_URL.');
-  }
-
   return {
     apiBaseUrl: api.value,
     wsUrl: ws.value,
@@ -82,10 +64,8 @@ export async function runtimeFetch(input: string, init?: RequestInit): Promise<R
 export async function runtimeJson<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await runtimeFetch(input, init);
   const body = await response.json().catch(() => null) as { error?: string } | null;
-
   if (!response.ok) {
     throw new Error(body?.error ?? `Request failed with status ${response.status}`);
   }
-
   return body as T;
 }
