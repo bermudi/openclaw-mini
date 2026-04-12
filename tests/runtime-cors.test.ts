@@ -24,8 +24,11 @@ test('runtime CORS defaults allow local runtime and dashboard origins', () => {
   expect(getRuntimeCorsAllowedOrigins()).toEqual([
     'http://localhost:3000',
     'http://localhost:3001',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:3001',
   ]);
   expect(isRuntimeCorsOriginAllowed('http://localhost:3001')).toBe(true);
+  expect(isRuntimeCorsOriginAllowed('http://127.0.0.1:3001')).toBe(true);
   expect(isRuntimeCorsOriginAllowed('https://example.com')).toBe(false);
 });
 

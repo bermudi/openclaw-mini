@@ -22,11 +22,17 @@ export function registerSkillCacheSignalHandler(): void {
     return;
   }
 
+  // Skip if not in Node.js runtime (Edge Runtime doesn't support process.addListener)
+  const nodeProcess = getNodeProcess();
+  if (!nodeProcess?.addListener) {
+    return;
+  }
+
   skillCacheSighupHandler = () => {
     markSkillCacheDirty();
   };
 
-  getNodeProcess()?.addListener?.('SIGHUP', skillCacheSighupHandler);
+  nodeProcess.addListener('SIGHUP', skillCacheSighupHandler);
 }
 
 export function resetSkillCacheSignalHandlerForTests(): void {
@@ -34,7 +40,10 @@ export function resetSkillCacheSignalHandlerForTests(): void {
     return;
   }
 
-  getNodeProcess()?.removeListener?.('SIGHUP', skillCacheSighupHandler);
+  const nodeProcess = getNodeProcess();
+  if (nodeProcess?.removeListener) {
+    nodeProcess.removeListener('SIGHUP', skillCacheSighupHandler);
+  }
   skillCacheSighupHandler = null;
   resetSkillCacheDirtyForTests();
 }

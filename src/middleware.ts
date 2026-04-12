@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRuntimeCorsHeaders, isRuntimeCorsOriginAllowed } from '@/lib/runtime-cors';
 
-export function proxy(request: NextRequest): NextResponse {
+export function middleware(request: NextRequest): NextResponse {
   const origin = request.headers.get('origin');
 
   if (request.method === 'OPTIONS') {
