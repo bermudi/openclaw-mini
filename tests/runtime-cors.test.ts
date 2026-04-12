@@ -29,6 +29,8 @@ test('runtime CORS defaults allow local runtime and dashboard origins', () => {
   ]);
   expect(isRuntimeCorsOriginAllowed('http://localhost:3001')).toBe(true);
   expect(isRuntimeCorsOriginAllowed('http://127.0.0.1:3001')).toBe(true);
+  expect(isRuntimeCorsOriginAllowed('http://127.0.0.1:42289')).toBe(true);
+  expect(isRuntimeCorsOriginAllowed('http://localhost:43123')).toBe(true);
   expect(isRuntimeCorsOriginAllowed('https://example.com')).toBe(false);
 });
 
@@ -46,6 +48,12 @@ test('runtime CORS only emits headers for allowed browser origins', () => {
 
   expect(getRuntimeCorsHeaders('https://dashboard.example.com')).toEqual({
     'Access-Control-Allow-Origin': 'https://dashboard.example.com',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    Vary: 'Origin',
+  });
+  expect(getRuntimeCorsHeaders('http://127.0.0.1:42289')).toEqual({
+    'Access-Control-Allow-Origin': 'http://127.0.0.1:42289',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     Vary: 'Origin',

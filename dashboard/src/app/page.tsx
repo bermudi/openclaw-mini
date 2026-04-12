@@ -52,6 +52,7 @@ import { SessionInspector } from '@/components/dashboard/session-inspector';
 import { WorkspaceEditor } from '@/components/dashboard/workspace-editor';
 import { MemoryBrowser } from '@/components/dashboard/memory-browser';
 import { useOpenClawEvents, ConnectionStatus } from '@/hooks/use-openclaw-events';
+import { useToast } from '@/hooks/use-toast';
 import { getDashboardRuntimeConfigError, runtimeJson } from '@/lib/dashboard-runtime-client';
 
 // Types
@@ -157,6 +158,7 @@ function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
 
 export default function OpenClawDashboard() {
   const configError = getDashboardRuntimeConfigError();
+  const { toast } = useToast();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [triggers, setTriggers] = useState<Trigger[]>([]);
@@ -187,7 +189,7 @@ export default function OpenClawDashboard() {
     }
 
     try {
-      const [agentsData, tasksData, triggersData, auditData, toolsData] = await Promise.all([
+      const [agentsData, tasksData, triggersData, auditData, toolsData] = await Promise.allSettled([
         runtimeJson<{ success: boolean; data?: Agent[] }>('/api/agents'),
         runtimeJson<{ success: boolean; data?: Task[]; stats?: Stats }>('/api/tasks'),
         runtimeJson<{ success: boolean; data?: Trigger[] }>('/api/triggers'),
@@ -195,14 +197,22 @@ export default function OpenClawDashboard() {
         runtimeJson<{ success: boolean; data?: Tool[] }>('/api/tools'),
       ]);
 
-      if (agentsData.success) setAgents(agentsData.data ?? []);
-      if (tasksData.success) {
-        setTasks(tasksData.data ?? []);
-        setStats(tasksData.stats ?? emptyStats);
+      if (agentsData.status === 'fulfilled' && agentsData.value.success) {
+        setAgents(agentsData.value.data ?? []);
       }
-      if (triggersData.success) setTriggers(triggersData.data ?? []);
-      if (auditData.success) setAuditLogs(auditData.data ?? []);
-      if (toolsData.success) setTools(toolsData.data ?? []);
+      if (tasksData.status === 'fulfilled' && tasksData.value.success) {
+        setTasks(tasksData.value.data ?? []);
+        setStats(tasksData.value.stats ?? emptyStats);
+      }
+      if (triggersData.status === 'fulfilled' && triggersData.value.success) {
+        setTriggers(triggersData.value.data ?? []);
+      }
+      if (auditData.status === 'fulfilled' && auditData.value.success) {
+        setAuditLogs(auditData.value.data ?? []);
+      }
+      if (toolsData.status === 'fulfilled' && toolsData.value.success) {
+        setTools(toolsData.value.data ?? []);
+      }
     } catch (error) {
       console.error('Failed to fetch data:', error);
     } finally {
@@ -262,9 +272,9 @@ export default function OpenClawDashboard() {
   }, [fetchData]);
 
   // Action handlers
-  const handleCreateAgent = async (name: string, description: string, skills: string) => {
+  const handleCreateAgent = async (name: string, description: string, skills: string): Promise<boolean> => {
     try {
-      const res = await runtimeJson<{ success: boolean }>('/api/agents', {
+      const res = await runtimeJson<{ success: boolean; data?: Agent; error?: string }>('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -273,9 +283,35 @@ export default function OpenClawDashboard() {
           skills: skills.split(',').map(s => s.trim()).filter(Boolean),
         }),
       });
-      if (res.success) fetchData();
+      if (!res.success || !res.data) {
+        toast({
+          title: 'Create failed',
+          description: res.error || 'Agent creation did not return an agent',
+          variant: 'destructive',
+        });
+        return false;
+      }
+
+      const createdAgent = res.data;
+
+      setAgents((prev) => {
+        const nextAgents = prev.filter((agent) => agent.id !== createdAgent.id);
+        return [createdAgent, ...nextAgents];
+      });
+      toast({
+        title: 'Agent created',
+        description: `${createdAgent.name} is now available in Agents.`,
+      });
+      void fetchData();
+      return true;
     } catch (error) {
       console.error('Failed to create agent:', error);
+      toast({
+        title: 'Create failed',
+        description: error instanceof Error ? error.message : 'Network error',
+        variant: 'destructive',
+      });
+      return false;
     }
   };
 

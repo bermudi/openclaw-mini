@@ -34,7 +34,7 @@ interface Agent {
 
 interface AgentListProps {
   agents: Agent[];
-  onCreateAgent: (name: string, description: string, skills: string) => void;
+  onCreateAgent: (name: string, description: string, skills: string) => Promise<boolean>;
   onDeleteAgent: (agentId: string) => void;
   onToggleAgent: (agent: Agent) => void;
   onSendMessage: (agent: Agent) => void;
@@ -150,14 +150,22 @@ export function AgentList({ agents, onCreateAgent, onDeleteAgent, onToggleAgent,
   const [newAgentName, setNewAgentName] = useState('');
   const [newAgentDescription, setNewAgentDescription] = useState('');
   const [newAgentSkills, setNewAgentSkills] = useState('');
+  const [creatingAgent, setCreatingAgent] = useState(false);
 
-  const handleCreate = () => {
-    if (!newAgentName.trim()) return;
-    onCreateAgent(newAgentName, newAgentDescription, newAgentSkills);
-    setNewAgentName('');
-    setNewAgentDescription('');
-    setNewAgentSkills('');
-    setCreateAgentOpen(false);
+  const handleCreate = async () => {
+    if (!newAgentName.trim() || creatingAgent) return;
+
+    setCreatingAgent(true);
+    const created = await onCreateAgent(newAgentName, newAgentDescription, newAgentSkills);
+
+    if (created) {
+      setNewAgentName('');
+      setNewAgentDescription('');
+      setNewAgentSkills('');
+      setCreateAgentOpen(false);
+    }
+
+    setCreatingAgent(false);
   };
 
   return (
@@ -218,7 +226,7 @@ export function AgentList({ agents, onCreateAgent, onDeleteAgent, onToggleAgent,
               <Button variant="outline" onClick={() => setCreateAgentOpen(false)}>
                 Cancel
               </Button>
-              <Button onClick={handleCreate} disabled={!newAgentName.trim()} className="bg-emerald-600 hover:bg-emerald-700">
+              <Button onClick={() => void handleCreate()} disabled={!newAgentName.trim() || creatingAgent} className="bg-emerald-600 hover:bg-emerald-700">
                 Create Agent
               </Button>
             </DialogFooter>

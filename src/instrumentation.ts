@@ -9,12 +9,37 @@ let skillCacheSighupHandler: (() => void) | null = null;
 
 type NodeProcessLike = {
   env?: { NEXT_RUNTIME?: string; NODE_ENV?: string };
-  addListener?: (event: 'SIGHUP', listener: () => void) => unknown;
-  removeListener?: (event: 'SIGHUP', listener: () => void) => unknown;
+  [key: string]: unknown;
 };
 
 function getNodeProcess(): NodeProcessLike | undefined {
-  return Reflect.get(globalThis, 'process') as NodeProcessLike | undefined;
+  return Reflect.get(globalThis, 'process') as unknown as NodeProcessLike | undefined;
+}
+
+function isEdgeRuntime(): boolean {
+  const edgeRuntime = Reflect.get(globalThis, 'EdgeRuntime');
+  if (typeof edgeRuntime === 'string') {
+    return true;
+  }
+
+  return false;
+}
+
+function isUnsupportedEdgeProcessApiError(error: unknown): boolean {
+  return error instanceof Error
+    && error.message.includes('not supported in the Edge Runtime');
+}
+
+function getProcessMethod(
+  nodeProcess: NodeProcessLike | undefined,
+  methodName: 'addListener' | 'removeListener',
+): ((event: 'SIGHUP', listener: () => void) => unknown) | null {
+  const candidate = nodeProcess?.[methodName];
+  if (typeof candidate !== 'function') {
+    return null;
+  }
+
+  return candidate as (event: 'SIGHUP', listener: () => void) => unknown;
 }
 
 export function registerSkillCacheSignalHandler(): void {
@@ -23,16 +48,30 @@ export function registerSkillCacheSignalHandler(): void {
   }
 
   // Skip if not in Node.js runtime (Edge Runtime doesn't support process.addListener)
-  const nodeProcess = getNodeProcess();
-  if (!nodeProcess?.addListener) {
+  if (isEdgeRuntime()) {
     return;
   }
 
-  skillCacheSighupHandler = () => {
-    markSkillCacheDirty();
-  };
+  try {
+    const nodeProcess = getNodeProcess();
+    const addListener = getProcessMethod(nodeProcess, 'addListener');
+    if (!addListener) {
+      return;
+    }
 
-  nodeProcess.addListener('SIGHUP', skillCacheSighupHandler);
+    skillCacheSighupHandler = () => {
+      markSkillCacheDirty();
+    };
+
+    addListener.call(nodeProcess, 'SIGHUP', skillCacheSighupHandler);
+  } catch (error) {
+    if (isUnsupportedEdgeProcessApiError(error)) {
+      skillCacheSighupHandler = null;
+      return;
+    }
+
+    throw error;
+  }
 }
 
 export function resetSkillCacheSignalHandlerForTests(): void {
@@ -40,9 +79,16 @@ export function resetSkillCacheSignalHandlerForTests(): void {
     return;
   }
 
-  const nodeProcess = getNodeProcess();
-  if (nodeProcess?.removeListener) {
-    nodeProcess.removeListener('SIGHUP', skillCacheSighupHandler);
+  try {
+    const nodeProcess = getNodeProcess();
+    const removeListener = getProcessMethod(nodeProcess, 'removeListener');
+    if (removeListener) {
+      removeListener.call(nodeProcess, 'SIGHUP', skillCacheSighupHandler);
+    }
+  } catch (error) {
+    if (!isUnsupportedEdgeProcessApiError(error)) {
+      throw error;
+    }
   }
   skillCacheSighupHandler = null;
   resetSkillCacheDirtyForTests();

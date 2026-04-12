@@ -709,6 +709,39 @@ test('SIGHUP clears loaded skills and binary gating caches for the next lookup',
   }
 });
 
+test('Edge runtime skips SIGHUP signal handler registration', async () => {
+  const { registerSkillCacheSignalHandler, resetSkillCacheSignalHandlerForTests } = await import('../src/instrumentation');
+  const listenersBefore = process.listenerCount('SIGHUP');
+  const originalNextRuntime = process.env.NEXT_RUNTIME;
+  const hadEdgeRuntime = Reflect.has(globalThis, 'EdgeRuntime');
+  const originalEdgeRuntime = Reflect.get(globalThis, 'EdgeRuntime');
+
+  resetSkillCacheSignalHandlerForTests();
+
+  try {
+    process.env.NEXT_RUNTIME = 'edge';
+    Reflect.set(globalThis, 'EdgeRuntime', 'edge-runtime');
+
+    registerSkillCacheSignalHandler();
+
+    expect(process.listenerCount('SIGHUP')).toBe(listenersBefore);
+  } finally {
+    resetSkillCacheSignalHandlerForTests();
+
+    if (originalNextRuntime === undefined) {
+      delete process.env.NEXT_RUNTIME;
+    } else {
+      process.env.NEXT_RUNTIME = originalNextRuntime;
+    }
+
+    if (hadEdgeRuntime) {
+      Reflect.set(globalThis, 'EdgeRuntime', originalEdgeRuntime);
+    } else {
+      Reflect.deleteProperty(globalThis, 'EdgeRuntime');
+    }
+  }
+});
+
 test('sub-agent overrides are validated and surfaced as skill diagnostics', async () => {
   writeSkill(
     'invalid-overrides',
