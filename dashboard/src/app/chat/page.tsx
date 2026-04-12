@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { Send, Bot, Loader2, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { runtimeFetch, getDashboardRuntimeConfigError, getDashboardRuntimeConfigOrNull } from '@/lib/dashboard-runtime-client';
+import { getDashboardRuntimeConfigError, getDashboardRuntimeConfigOrNull } from '@/lib/dashboard-runtime-client';
 
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 16_000;
@@ -53,6 +53,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [wsStatus, setWsStatus] = useState<ConnectionStatus>('disconnected');
   const socketRef = useRef<Socket | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -75,6 +76,10 @@ export default function ChatPage() {
     });
   }, []);
 
+  const removeMessage = useCallback((messageId: string) => {
+    setMessages(prev => prev.filter(message => message.id !== messageId));
+  }, []);
+
   // Load chat history on mount
   useEffect(() => {
     const sid = getOrCreateSessionId();
@@ -84,20 +89,27 @@ export default function ChatPage() {
       return;
     }
 
-    void runtimeFetch(`/api/sessions/messages?channel=webchat&channelKey=${encodeURIComponent(sid)}`)
+    void fetch(`/api/sessions/messages?channel=webchat&channelKey=${encodeURIComponent(sid)}`, {
+      cache: 'no-store',
+    })
       .then(async (response) => {
-        const body = await response.json() as { success: boolean; data?: Array<{ id: string; role: string; content: string; createdAt: string }> };
-        if (body.success && body.data) {
-          const loaded: ChatMessage[] = body.data.map(m => ({
-            id: m.id,
-            role: m.role === 'user' ? 'user' : 'agent',
-            content: m.content,
-            timestamp: m.createdAt,
-          }));
-          setMessages(loaded);
+        const body = await response.json() as { success: boolean; data?: Array<{ id: string; role: string; content: string; createdAt: string }>; error?: string };
+        if (!response.ok || !body.success) {
+          throw new Error(body.error ?? `Failed to load chat history (${response.status})`);
         }
+        const loaded: ChatMessage[] = (body.data ?? []).map(m => ({
+          id: m.id,
+          role: m.role === 'user' ? 'user' : 'agent',
+          content: m.content,
+          timestamp: m.createdAt,
+        }));
+        setMessages(loaded);
+        setError(null);
       })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : 'Failed to load chat history';
+        setError(message);
+      });
   }, [configError]);
 
   // WebSocket connection with reconnect
@@ -173,11 +185,12 @@ export default function ChatPage() {
     };
 
     appendMessage(userMsg);
+    setError(null);
     setInput('');
     setSending(true);
 
     try {
-      const response = await runtimeFetch('/api/input', {
+      const response = await fetch('/api/input', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -197,14 +210,18 @@ export default function ChatPage() {
       });
 
       if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
+        const body = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(body?.error ?? `Request failed with status ${response.status}`);
       }
     } catch (err) {
       console.error('Failed to send message:', err);
+      removeMessage(userMsg.id);
+      setInput(text);
+      setError(err instanceof Error ? err.message : 'Failed to send message');
     } finally {
       setSending(false);
     }
-  }, [input, sending, sessionId, appendMessage]);
+  }, [input, sending, sessionId, appendMessage, removeMessage]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -218,6 +235,11 @@ export default function ChatPage() {
       {configError && (
         <div className="border-b border-red-500/30 bg-red-500/10 px-4 py-2 text-xs text-red-300 font-mono">
           {configError}
+        </div>
+      )}
+      {error && (
+        <div className="border-b border-red-500/30 bg-red-500/10 px-4 py-2 text-xs text-red-300 font-mono">
+          {error}
         </div>
       )}
       {/* Header */}
