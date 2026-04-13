@@ -274,6 +274,32 @@ describe('ProviderRegistry', () => {
     expect(geminiModel.model).toBe('gemini-2.5-pro');
   });
 
+  test('auto-routes api.poe.com OpenAI-style configs through the Poe adapter', async () => {
+    const { ProviderRegistry } = await import('../src/lib/services/provider-registry');
+    const registry = new ProviderRegistry();
+
+    registry.reload({
+      providers: {
+        openai: {
+          id: 'openai',
+          apiType: 'openai-responses',
+          apiKey: 'poe-key',
+          baseURL: 'https://api.poe.com/v1',
+        },
+      },
+      agent: {
+        provider: 'openai',
+        model: 'gpt-5-pro',
+      },
+    });
+
+    const model = registry.getLanguageModel('openai', 'gpt-5-pro') as { provider?: string; mode?: string; baseURL?: string };
+
+    expect(model.provider).toBe('openai');
+    expect(model.mode).toBe('responses');
+    expect(model.baseURL).toBe('https://api.poe.com/v1');
+  });
+
   test('gemini adapter supports custom baseURL for Vertex AI', async () => {
     const { ProviderRegistry } = await import('../src/lib/services/provider-registry');
     const registry = new ProviderRegistry();

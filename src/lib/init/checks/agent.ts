@@ -3,6 +3,7 @@
 
 import { db } from '@/lib/db';
 import { providerRegistry } from '@/lib/services/provider-registry';
+import { agentService } from '@/lib/services/agent-service';
 import type { CheckResult } from '../types';
 
 export async function checkDefaultAgent(): Promise<CheckResult> {
@@ -13,6 +14,24 @@ export async function checkDefaultAgent(): Promise<CheckResult> {
 
     if (existingDefault) {
       return { success: true };
+    }
+
+    const usableAgents = await agentService.getUsableAgents();
+    if (usableAgents.length === 1) {
+      await db.agent.update({
+        where: { id: usableAgents[0]!.id },
+        data: { isDefault: true },
+      });
+      console.log(`[Init] Promoted existing agent '${usableAgents[0]!.id}' to default agent`);
+      return { success: true };
+    }
+
+    if (usableAgents.length > 1) {
+      return {
+        success: false,
+        error: 'Multiple usable agents exist, but none is marked as default',
+        guidance: 'Mark one agent as default or add an explicit channel binding before starting message-based adapters',
+      };
     }
 
     // Get provider/model from config

@@ -459,6 +459,29 @@ describe('exec_command tool surface output', () => {
     expect((result.data as { stdout?: string } | undefined)?.stdout).toBe('');
     expect(result.surface).toBeUndefined();
   });
+
+  it('uses the active tool execution context agentId when omitted', async () => {
+    const toolsModule = await import('../src/lib/tools');
+    const execTool = toolsModule.getTool('exec_command');
+    if (!execTool?.execute) {
+      throw new Error('exec_command tool is not registered');
+    }
+
+    const result = await toolsModule.withToolExecutionContext(
+      {
+        agentId: TEST_AGENT_ID,
+        taskId: 'task-context-agent-id',
+        taskType: 'message',
+      },
+      () => execTool.execute!(
+        { command: 'echo context agent output' },
+        { toolCallId: 'exec-context-agent', messages: [] },
+      ),
+    ) as { success: boolean; data?: { stdout?: string } };
+
+    expect(result.success).toBe(true);
+    expect(result.data?.stdout).toBe('context agent output\n');
+  });
 });
 
 describe('exec_command tool advanced runtime behavior', () => {

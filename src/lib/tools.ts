@@ -159,6 +159,7 @@ export function registerTool(name: string, registeredTool: CoreTool, meta: ToolM
         execute: async (input: unknown, options: unknown) => {
           const context = getToolExecutionContext();
           const invocationCount = context?.toolInvocationCount;
+          const startedAt = Date.now();
 
           if (context?.allowedTools) {
             const allowedTools = new Set(context.allowedTools.map(toolName => toolName.toLowerCase()));
@@ -187,7 +188,31 @@ export function registerTool(name: string, registeredTool: CoreTool, meta: ToolM
             }
           }
 
-          return execute(input, options as never);
+          console.info(`[Tools] Starting tool '${name}'`, {
+            agentId: context?.agentId,
+            taskId: context?.taskId,
+            sessionId: context?.sessionId,
+          });
+
+          try {
+            const result = await execute(input, options as never);
+            const typedResult = result as ToolResult | undefined;
+            console.info(`[Tools] Completed tool '${name}'`, {
+              agentId: context?.agentId,
+              taskId: context?.taskId,
+              success: typedResult?.success ?? false,
+              durationMs: Date.now() - startedAt,
+            });
+            return result;
+          } catch (error) {
+            console.error(`[Tools] Tool '${name}' failed`, {
+              agentId: context?.agentId,
+              taskId: context?.taskId,
+              durationMs: Date.now() - startedAt,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            throw error;
+          }
         },
       }
     : registeredTool;
@@ -1635,7 +1660,7 @@ const execLaunchModeSchema = z.enum(['child', 'pty']);
 const execCommandModeSchema = z.enum(['direct', 'shell']);
 
 const execCommandInputSchema = z.object({
-  agentId: z.string().describe('The agent ID (used to scope sandbox and exec mounts)'),
+  agentId: z.string().optional().describe('The agent ID (used to scope sandbox and exec mounts). Defaults to the current tool execution context agent when omitted.'),
   command: z.string().describe('The command to execute'),
   tier: execTierSchema.optional().describe('Execution tier: host, sandbox, or locked-down'),
   launchMode: execLaunchModeSchema.optional().describe('Launch mode: child for non-interactive, pty for interactive terminal sessions'),
@@ -1706,9 +1731,14 @@ registerTool(
     }): Promise<ToolResult> => {
       const config = getRuntimeConfig().exec;
       const context = getToolExecutionContext();
+      const resolvedAgentId = agentId ?? context?.agentId;
 
       if (!config.enabled) {
         return { success: false, error: 'exec_command is disabled. Set runtime.exec.enabled to true in openclaw.json.' };
+      }
+
+      if (!resolvedAgentId) {
+        return { success: false, error: 'exec_command requires agentId or an active task execution context' };
       }
 
       const resolvedTier = tier ?? config.defaultTier;
@@ -1730,13 +1760,24 @@ registerTool(
         };
       }
 
+      console.info('[exec_command] Preparing command execution', {
+        agentId: resolvedAgentId,
+        taskId: context?.taskId,
+        tier: resolvedTier,
+        launchMode: resolvedLaunchMode,
+        commandMode: resolvedCommandMode,
+        background: resolvedBackground,
+        cwd,
+        command,
+      });
+
       const activeSessions = processSupervisor
-        .listSessions(agentId)
+        .listSessions(resolvedAgentId)
         .filter(session => session.status === 'starting' || session.status === 'running').length;
       if (activeSessions >= config.maxSessions) {
         return {
           success: false,
-          error: `Maximum exec session limit reached for agent '${agentId}' (${config.maxSessions})`,
+          error: `Maximum exec session limit reached for agent '${resolvedAgentId}' (${config.maxSessions})`,
         };
       }
 
@@ -1747,7 +1788,7 @@ registerTool(
       let prepared;
       try {
         prepared = buildExecLaunch({
-          agentId,
+          agentId: resolvedAgentId,
           command,
           tier: resolvedTier,
           launchMode: resolvedLaunchMode,
@@ -1771,7 +1812,7 @@ registerTool(
       let session;
       try {
         session = await processSupervisor.spawnSession({
-          agentId,
+          agentId: resolvedAgentId,
           taskId: context?.taskId,
           tier: resolvedTier,
           launchMode: resolvedLaunchMode,
@@ -1782,6 +1823,14 @@ registerTool(
       } catch (error) {
         return { success: false, error: toErrorMessage(error, 'Failed to start process session') };
       }
+
+      console.info('[exec_command] Spawned process session', {
+        agentId: resolvedAgentId,
+        taskId: context?.taskId,
+        sessionId: session.sessionId,
+        status: session.status,
+        launchMode: resolvedLaunchMode,
+      });
 
       if (session.status === 'failed' || session.status === 'cancelled' || session.status === 'timed_out') {
         const failedSession = await processSupervisor.waitForSession(session.sessionId);
@@ -1817,6 +1866,12 @@ registerTool(
 
       const shouldHandOffImmediately = resolvedBackground || resolvedLaunchMode === 'pty';
       if (shouldHandOffImmediately) {
+        console.info('[exec_command] Handing off session immediately', {
+          agentId: resolvedAgentId,
+          taskId: context?.taskId,
+          sessionId: session.sessionId,
+          status: session.status,
+        });
         return {
           success: true,
           data: buildProcessHandleData({
@@ -1833,6 +1888,12 @@ registerTool(
       const completed = await processSupervisor.waitForSession(session.sessionId, config.foregroundYieldMs);
 
       if (!completed) {
+        console.info('[exec_command] Foreground yield elapsed; returning supervised session handle', {
+          agentId: resolvedAgentId,
+          taskId: context?.taskId,
+          sessionId: session.sessionId,
+          yieldMs: config.foregroundYieldMs,
+        });
         return {
           success: true,
           data: buildProcessHandleData({
@@ -1884,7 +1945,7 @@ registerTool(
       if (surfaceFiles && surfaceFiles.length > 0) {
         try {
           const surfacedFiles = surfaceExecFiles({
-            agentId,
+            agentId: resolvedAgentId,
             files: surfaceFiles,
             workingDirectory: prepared.workingDirectory,
             mounts: prepared.mounts,
@@ -1904,6 +1965,16 @@ registerTool(
           };
         }
       }
+
+      console.info('[exec_command] Command completed in foreground', {
+        agentId: resolvedAgentId,
+        taskId: context?.taskId,
+        sessionId: session.sessionId,
+        exitCode: completed.exitCode ?? 0,
+        stdoutChars: capped.stdout.length,
+        stderrChars: capped.stderr.length,
+        outputTruncated: capped.truncated,
+      });
 
       return {
         success: true,

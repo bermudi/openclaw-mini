@@ -556,6 +556,47 @@ test('message executor persists and orders surface deliveries before the respons
   });
 });
 
+test('message executor delivers tool-only exec_command output when the model emits no final text', async () => {
+  const agent = await createDefaultAgent();
+  mockResponseText = '   ';
+  mockGenerateTextSteps = [
+    makeToolStep([
+      {
+        toolName: 'exec_command',
+        output: {
+          success: true,
+          data: { stdout: '/home/daniel/build/openclaw-mini\n', stderr: '', exitCode: 0 },
+        },
+      },
+    ]),
+  ];
+
+  const messageResult = await inputManagerModule.inputManager.processInput({
+    type: 'message',
+    channel: 'telegram',
+    channelKey: 'chat-tool-only',
+    content: 'pwd?',
+  });
+
+  if (!messageResult.taskId) {
+    throw new Error(`Expected message task id, got: ${messageResult.error ?? 'unknown error'}`);
+  }
+
+  const execResult = await agentExecutorModule.agentExecutor.executeTask(messageResult.taskId);
+  expect(execResult.success).toBe(true);
+  expect(execResult.response).toBe('/home/daniel/build/openclaw-mini\n');
+
+  const deliveries = await deliveryModel().findMany();
+  expect(deliveries).toHaveLength(1);
+  expect(deliveries[0]?.text).toBe('/home/daniel/build/openclaw-mini\n');
+
+  const completedTask = await taskQueueModule.taskQueue.getTask(messageResult.taskId);
+  expect(completedTask?.result).toMatchObject({
+    response: '/home/daniel/build/openclaw-mini\n',
+    toolCalls: [{ tool: 'exec_command', success: true }],
+  });
+});
+
 test('surface deliveries are skipped for non-message tasks but still stored on the task result', async () => {
   const agent = await createDefaultAgent();
   mockResponseText = 'heartbeat summary';

@@ -46,10 +46,30 @@ function createGeminiProvider(definition: ProviderDefinition): GoogleModelFactor
   }) as GoogleModelFactory;
 }
 
+function isPoeBaseUrl(baseURL: string | undefined): boolean {
+  if (!baseURL) {
+    return false;
+  }
+
+  try {
+    return new URL(baseURL).hostname === 'api.poe.com';
+  } catch {
+    return false;
+  }
+}
+
 export function createLanguageModel(
   definition: ProviderDefinition,
   model: string,
 ): LanguageModel {
+  if (definition.apiType !== 'poe' && isPoeBaseUrl(definition.baseURL)) {
+    return createPoeLanguageModel({
+      model,
+      apiKey: definition.apiKey,
+      baseURL: definition.baseURL,
+    });
+  }
+
   switch (definition.apiType) {
     case 'openai-chat': {
       const openai = createOpenAIProvider(definition);

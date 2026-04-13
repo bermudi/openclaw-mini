@@ -489,7 +489,7 @@ function buildHostSpawnInput(input: {
         cwd: input.cwd,
         env: input.env,
         timeoutMs: input.timeoutMs,
-        stdinMode: 'pipe-open',
+        stdinMode: 'pipe-closed',
       };
     }
 
@@ -512,7 +512,7 @@ function buildHostSpawnInput(input: {
       cwd: input.cwd,
       env: input.env,
       timeoutMs: input.timeoutMs,
-      stdinMode: 'pipe-open',
+      stdinMode: 'pipe-closed',
     };
   }
 
@@ -562,7 +562,7 @@ function buildContainerSpawnInput(input: {
       cwd: process.cwd(),
       env: buildSafeExecEnv(input.tier),
       timeoutMs: input.timeoutMs,
-      stdinMode: 'pipe-open',
+      stdinMode: 'pipe-closed',
     };
   }
 

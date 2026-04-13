@@ -59,6 +59,42 @@ class AgentService {
   }
 
   /**
+   * Get agents that can actively receive work.
+   */
+  async getUsableAgents(): Promise<Agent[]> {
+    const agents = await db.agent.findMany({
+      where: {
+        status: {
+          not: 'disabled',
+        },
+      },
+      orderBy: [
+        { isDefault: 'desc' },
+        { createdAt: 'asc' },
+      ],
+    });
+
+    return agents.map(agent => this.mapAgent(agent));
+  }
+
+  /**
+   * Resolve the safest fallback agent when no explicit default exists.
+   */
+  async getFallbackRoutingAgent(): Promise<Agent | null> {
+    const defaultAgent = await this.getDefaultAgent();
+    if (defaultAgent && defaultAgent.status !== 'disabled') {
+      return defaultAgent;
+    }
+
+    const usableAgents = await this.getUsableAgents();
+    if (usableAgents.length === 1) {
+      return usableAgents[0] ?? null;
+    }
+
+    return null;
+  }
+
+  /**
    * Set an agent as the default (exactly one default)
    */
   async setDefaultAgent(agentId: string): Promise<Agent | null> {

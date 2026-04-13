@@ -322,12 +322,46 @@ test('routing resolution covers exact, wildcard, default, missing default, and e
   const overrideTask = await taskQueue.getTask(overrideResult.taskId!);
   expect(overrideTask?.agentId).toBe(agentB.id);
 
-  await db.agent.deleteMany();
-  const missingDefaultResult = await inputManager.processInput({
+  await db.channelBinding.deleteMany();
+  await db.agent.update({
+    where: { id: agentA.id },
+    data: { isDefault: false },
+  });
+  await db.agent.update({
+    where: { id: agentB.id },
+    data: { isDefault: false, status: 'disabled' },
+  });
+
+  const singleUsableFallbackResult = await inputManager.processInput({
+    type: 'message',
+    channel: 'telegram',
+    channelKey: 'chat-single-usable',
+    content: 'route me',
+  });
+  expect(singleUsableFallbackResult.success).toBe(true);
+  const singleUsableFallbackTask = await taskQueue.getTask(singleUsableFallbackResult.taskId!);
+  expect(singleUsableFallbackTask?.agentId).toBe(agentA.id);
+
+  await db.agent.update({
+    where: { id: agentB.id },
+    data: { status: 'idle' },
+  });
+
+  const ambiguousDefaultResult = await inputManager.processInput({
     type: 'message',
     channel: 'imessage',
     channelKey: 'chat-99',
     content: 'no default',
+  });
+  expect(ambiguousDefaultResult.success).toBe(false);
+  expect(ambiguousDefaultResult.error).toContain('multiple usable agents');
+
+  await db.agent.deleteMany();
+  const missingDefaultResult = await inputManager.processInput({
+    type: 'message',
+    channel: 'imessage',
+    channelKey: 'chat-100',
+    content: 'still no default',
   });
   expect(missingDefaultResult.success).toBe(false);
   expect(missingDefaultResult.error).toContain('No default agent');

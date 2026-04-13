@@ -238,11 +238,22 @@ class InputManagerService {
     }
 
     const defaultAgent = await agentService.getDefaultAgent();
-    if (!defaultAgent) {
-      return { error: 'No default agent configured' };
+    if (defaultAgent && defaultAgent.status !== 'disabled') {
+      return { agentId: defaultAgent.id };
     }
 
-    return { agentId: defaultAgent.id };
+    const fallbackAgent = await agentService.getFallbackRoutingAgent();
+    if (fallbackAgent) {
+      console.warn(`[InputManager] Routing ${channel}:${channelKey} to fallback agent '${fallbackAgent.id}' because no explicit default agent is configured`);
+      return { agentId: fallbackAgent.id };
+    }
+
+    const usableAgents = await agentService.getUsableAgents();
+    if (usableAgents.length > 1) {
+      return { error: 'No default agent configured; multiple usable agents exist, so automatic routing is ambiguous' };
+    }
+
+    return { error: 'No default agent configured' };
   }
 
   /**
