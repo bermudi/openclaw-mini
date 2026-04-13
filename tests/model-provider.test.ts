@@ -354,6 +354,37 @@ describe('agent context resolution helpers', () => {
   });
 });
 
+describe('isPoeResponsesEndpoint', () => {
+  test('returns true for Poe baseURL + responses-routed model', async () => {
+    const { isPoeResponsesEndpoint } = await import('../src/lib/services/poe-client');
+
+    expect(isPoeResponsesEndpoint('https://api.poe.com/v1', 'gpt-5-pro')).toBe(true);
+    expect(isPoeResponsesEndpoint('https://api.poe.com/v1', 'o3')).toBe(true);
+    expect(isPoeResponsesEndpoint('https://api.poe.com/v1', 'o4-mini')).toBe(true);
+  });
+
+  test('returns false for Poe baseURL + non-responses model', async () => {
+    const { isPoeResponsesEndpoint } = await import('../src/lib/services/poe-client');
+
+    expect(isPoeResponsesEndpoint('https://api.poe.com/v1', 'claude-opus-4.6')).toBe(false);
+    expect(isPoeResponsesEndpoint('https://api.poe.com/v1', 'grok-4')).toBe(false);
+  });
+
+  test('returns false for non-Poe baseURL regardless of model', async () => {
+    const { isPoeResponsesEndpoint } = await import('../src/lib/services/poe-client');
+
+    expect(isPoeResponsesEndpoint('https://api.openai.com/v1', 'gpt-5-pro')).toBe(false);
+    expect(isPoeResponsesEndpoint('https://api.openrouter.ai/v1', 'o3')).toBe(false);
+  });
+
+  test('returns false for undefined or empty baseURL', async () => {
+    const { isPoeResponsesEndpoint } = await import('../src/lib/services/poe-client');
+
+    expect(isPoeResponsesEndpoint(undefined, 'gpt-5-pro')).toBe(false);
+    expect(isPoeResponsesEndpoint('', 'gpt-5-pro')).toBe(false);
+  });
+});
+
 describe('poe provider integration', () => {
   const poeTest = HAS_REAL_POE_API_KEY ? test : test.skip;
 

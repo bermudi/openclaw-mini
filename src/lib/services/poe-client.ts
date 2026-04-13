@@ -31,6 +31,16 @@ export function getPoeEndpoint(model: string): PoeEndpoint {
   return poeEndpointForModel(model);
 }
 
+export function isPoeResponsesEndpoint(baseURL: string | undefined, model: string): boolean {
+  if (!baseURL) return false;
+  try {
+    if (new URL(baseURL).hostname !== 'api.poe.com') return false;
+  } catch {
+    return false;
+  }
+  return poeEndpointForModel(model) === 'responses';
+}
+
 export function getPoeApiKey(explicitApiKey?: string): string {
   const apiKey = explicitApiKey ?? process.env.POE_API_KEY;
 

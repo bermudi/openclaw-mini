@@ -10,6 +10,7 @@ import { sessionService, type SessionContext } from './session-service';
 import { auditService } from './audit-service';
 import { enqueueDeliveryTx, enqueueFileDeliveryTx } from './delivery-service';
 import { getModelConfig, resolveAgentContextWindow, runWithModelFallback } from './model-provider';
+import { isPoeResponsesEndpoint } from './poe-client';
 import { parseCommand, type ParsedCommand } from './command-parser';
 import { sessionProviderState } from './session-provider-state';
 import type { Prisma } from '@prisma/client';
@@ -73,6 +74,58 @@ type ParsedExecutionArtifacts = {
   actions: Record<string, unknown>[];
 };
 
+function buildToolOnlyFallbackResponse(executionToolCalls: NonNullable<ExecutionResult['toolCalls']>): string {
+  const successfulExecTool = executionToolCalls.find((toolCall) =>
+    toolCall.result.success && (toolCall.tool === 'exec_command' || toolCall.tool === 'process')
+  );
+
+  if (!successfulExecTool) {
+    return '';
+  }
+
+  if (successfulExecTool.tool === 'exec_command') {
+    const data = successfulExecTool.result.data;
+    if (data && typeof data === 'object') {
+      const stdout = typeof (data as { stdout?: unknown }).stdout === 'string'
+        ? (data as { stdout?: string }).stdout ?? ''
+        : '';
+      const stderr = typeof (data as { stderr?: unknown }).stderr === 'string'
+        ? (data as { stderr?: string }).stderr ?? ''
+        : '';
+      const sessionId = typeof (data as { sessionId?: unknown }).sessionId === 'string'
+        ? (data as { sessionId?: string }).sessionId ?? ''
+        : '';
+
+      if (stdout.trim().length > 0) {
+        return stdout;
+      }
+
+      if (stderr.trim().length > 0) {
+        return stderr;
+      }
+
+      if (sessionId) {
+        return `Started command session ${sessionId}. Use the process tool to inspect output or continue interacting with it.`;
+      }
+    }
+  }
+
+  if (successfulExecTool.tool === 'process') {
+    const data = successfulExecTool.result.data;
+    if (data && typeof data === 'object') {
+      const output = typeof (data as { output?: unknown }).output === 'string'
+        ? (data as { output?: string }).output ?? ''
+        : '';
+
+      if (output.trim().length > 0) {
+        return output;
+      }
+    }
+  }
+
+  return `Completed ${successfulExecTool.tool.replace('_', ' ')} successfully.`;
+}
+
 class AgentExecutorService {
   /**
    * Execute a task with tool support
@@ -110,6 +163,12 @@ class AgentExecutorService {
     });
 
     try {
+      console.info(`[AgentExecutor] Starting task ${taskId}`, {
+        agentId: task.agentId,
+        taskType: task.type,
+        sessionId: task.sessionId,
+      });
+
       // Load session context if available
       let sessionMessages: SessionContext['messages'] = [];
       if (task.sessionId) {
@@ -262,13 +321,16 @@ class AgentExecutorService {
           this.buildToolExecutionContext(task, deliveryTarget, resolvedSubagentConfig, asyncTaskRegistry, flushAsyncRegistry),
           () =>
             runWithModelFallback(
-              ({ model }) =>
+              ({ model, config }) =>
                 generateText({
                   model,
                   system: systemPrompt,
                   prompt,
                   tools,
                   stopWhen: stepCountIs(resolvedSubagentConfig?.maxIterations ?? 5),
+                  ...(isPoeResponsesEndpoint(config.baseURL, config.model)
+                    ? { providerOptions: { openai: { store: false } } }
+                    : {}),
                 }),
               resolvedSubagentConfig
                 ? {
@@ -316,18 +378,23 @@ class AgentExecutorService {
 
       const executeGeneration = () =>
         runWithModelFallback(
-          ({ model }) => {
+          ({ model, config }) => {
+            const zdrOptions = isPoeResponsesEndpoint(config.baseURL, config.model)
+              ? { providerOptions: { openai: { store: false } } }
+              : {};
             if (multiModalMessages) {
               return generateText({
                 ...generationArgs,
                 model,
                 messages: multiModalMessages,
+                ...zdrOptions,
               });
             }
             return generateText({
               ...generationArgs,
               model,
               prompt,
+              ...zdrOptions,
             });
           },
           resolvedSubagentConfig
@@ -351,6 +418,17 @@ class AgentExecutorService {
         executeGeneration,
       );
       const artifacts = this.parseExecutionArtifacts(result);
+      const response = artifacts.response.trim().length > 0
+        ? artifacts.response
+        : buildToolOnlyFallbackResponse(artifacts.executionToolCalls);
+
+      console.info(`[AgentExecutor] Task ${taskId} model execution completed`, {
+        agentId: task.agentId,
+        taskType: task.type,
+        toolCalls: artifacts.executionToolCalls.length,
+        responseChars: response.length,
+        surfaces: artifacts.surfaces.length,
+      });
 
       if (task.sessionId && task.type === 'message') {
         await sessionService.appendToContext(task.sessionId, {
@@ -360,16 +438,18 @@ class AgentExecutorService {
           channel: msgPayload.channel,
           channelKey: msgPayload.channelKey,
         });
-        await sessionService.appendToContext(task.sessionId, {
-          role: 'assistant',
-          content: artifacts.response,
-          channel: msgPayload.channel,
-          channelKey: msgPayload.channelKey,
-        });
+        if (response.trim().length > 0) {
+          await sessionService.appendToContext(task.sessionId, {
+            role: 'assistant',
+            content: response,
+            channel: msgPayload.channel,
+            channelKey: msgPayload.channelKey,
+          });
+        }
       }
       await this.finalizeTaskExecution({
         task,
-        response: artifacts.response,
+        response,
         deliveryTarget,
         executionToolCalls: artifacts.executionToolCalls,
         surfaces: artifacts.surfaces,
@@ -378,12 +458,18 @@ class AgentExecutorService {
 
       return {
         success: true,
-        response: artifacts.response,
+        response,
         actions: artifacts.actions,
         toolCalls: artifacts.executionToolCalls,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      console.error(`[AgentExecutor] Task ${taskId} failed`, {
+        agentId: task.agentId,
+        taskType: task.type,
+        error: errorMessage,
+      });
 
       await taskQueue.failTask(taskId, errorMessage);
       cleanOffloadFiles(taskId);
