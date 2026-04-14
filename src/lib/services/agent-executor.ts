@@ -237,10 +237,6 @@ class AgentExecutorService {
         if (command.type !== 'not-command') {
           return await this.executeCommand(taskId, task, command, msgPayload);
         }
-        const fastPathResponse = this.buildConversationalFastPathResponse(msgPayload.content ?? '');
-        if (fastPathResponse) {
-          return await this.executeImmediateResponse(taskId, task, msgPayload, fastPathResponse);
-        }
       }
 
       const subagentPayload = task.payload as {
@@ -550,8 +546,13 @@ class AgentExecutorService {
     },
   ): Promise<ExecutionResult> {
     const sessionId = task.sessionId!;
-    const commandResponse = this.buildCommandResponse(command, sessionId);
 
+    // Handle async commands that need side effects before building response
+    if (command.type === 'clear-session') {
+      await sessionService.clearHistory(sessionId);
+    }
+
+    const commandResponse = this.buildCommandResponse(command, sessionId);
     return this.executeImmediateResponse(taskId, task, payload, commandResponse);
   }
 
@@ -656,33 +657,15 @@ For greetings or status checks, I should just reply directly without testing too
         sessionProviderState.switchModel(sessionId, command.modelName);
         return `Switched to model: ${command.modelName}`;
       }
+      case 'clear-session': {
+        return 'Session context cleared. Starting fresh conversation.';
+      }
       case 'invalid-command': {
         return command.error;
       }
       default:
         return 'Unknown command';
     }
-  }
-
-  private buildConversationalFastPathResponse(content: string): string | null {
-    const normalized = content.trim().toLowerCase();
-    if (!normalized) {
-      return null;
-    }
-
-    if (/^(hello|hi|hey|hello there|hey there|yo)([!?., ]*)$/.test(normalized)) {
-      return 'Hey — I\'m here.';
-    }
-
-    if (/^(are you there|are you there\?\?*|you there)([!?., ]*)$/.test(normalized)) {
-      return 'Yep — I\'m here and listening.';
-    }
-
-    if (/^(what happened|what happened\?\?*|what\'s going on|whats going on)([!?., ]*)$/.test(normalized)) {
-      return 'I got stuck and failed to send a proper reply. I should answer simple status messages directly instead of testing tools.';
-    }
-
-    return null;
   }
 
   private buildFallbackDeliveryTarget(payload: {
@@ -973,9 +956,10 @@ For greetings or status checks, I should just reply directly without testing too
     ].join('\n');
     const messageTaskPolicy = task.type === 'message' ? [
       '## Message Task Policy',
-      '- For greetings ("hello", "hi"), status checks ("are you there?", "what happened?"), or simple chat: respond conversationally without calling any tools.',
-      '- Only use tools when the user asks you to DO something specific (run a command, search, calculate, write a note, etc.).',
-      '- Do not "explore" or "test" tools unless explicitly asked.',
+      '- Classify the user\'s intent: social/greeting ("hello", "hi", "what happened?", "wtf??") vs. action request ("run", "search", "write", etc.).',
+      '- For social/greeting intent: respond conversationally with a direct reply. Do NOT call any tools.',
+      '- For action intent: use appropriate tools to complete the request.',
+      '- Never "explore" or "test" tools unless explicitly asked.',
       '- Always send a response back to the user. An empty response is a failure.',
     ].join('\n') : '';
     const mcpDirectory = mcpService.buildMcpDirectory();

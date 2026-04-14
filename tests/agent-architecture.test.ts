@@ -1668,73 +1668,12 @@ test('message tasks include message task policy to prevent unnecessary tool call
 
   expect(execResult.response).toBe('stub response');
   expect(lastSystemPrompt).toContain('## Message Task Policy');
-  expect(lastSystemPrompt).toContain('For greetings ("hello", "hi"), status checks');
-  expect(lastSystemPrompt).toContain('respond conversationally without calling any tools');
-  expect(lastSystemPrompt).toContain('Only use tools when the user asks you to DO something specific');
-  expect(lastSystemPrompt).toContain('Do not "explore" or "test" tools unless explicitly asked');
+  expect(lastSystemPrompt).toContain('Classify the user\'s intent: social/greeting');
+  expect(lastSystemPrompt).toContain('For social/greeting intent: respond conversationally');
+  expect(lastSystemPrompt).toContain('For action intent: use appropriate tools');
+  expect(lastSystemPrompt).toContain('Never "explore" or "test" tools unless explicitly asked');
   expect(lastPrompt).toContain('For greetings, simple questions about your status, or casual chat: reply conversationally WITHOUT using any tools');
   expect(lastPrompt).toContain('You MUST provide a response. An empty reply fails the user.');
-});
-
-test('message greetings use fast path and bypass model execution', async () => {
-  const agent = await agentService.createAgent({ name: 'Greeting Fast Path Agent' });
-  const session = await db.session.create({
-    data: { agentId: agent.id, channel: 'telegram', channelKey: 'chat-fastpath-1', sessionScope: 'fastpath-greeting' },
-  });
-  const task = await taskQueue.createTask({
-    agentId: agent.id,
-    type: 'message',
-    priority: 3,
-    sessionId: session.id,
-    payload: {
-      channel: 'telegram',
-      channelKey: 'chat-fastpath-1',
-      sender: 'tester',
-      content: 'hello?',
-    },
-  });
-
-  const execResult = await agentExecutor.executeTask(task.id);
-  if (!execResult.success) {
-    throw new Error(`Executor failed: ${execResult.error ?? 'unknown error'}`);
-  }
-
-  expect(execResult.response).toBe("Hey — I'm here.");
-  expect(execResult.toolCalls).toEqual([]);
-  expect(lastSystemPrompt).toBe('');
-  expect(lastPrompt).toBe('');
-  expect(lastToolNames).toEqual([]);
-});
-
-test('message status checks use fast path and explain prior failure without model execution', async () => {
-  const agent = await agentService.createAgent({ name: 'Status Fast Path Agent' });
-  const session = await db.session.create({
-    data: { agentId: agent.id, channel: 'telegram', channelKey: 'chat-fastpath-2', sessionScope: 'fastpath-status' },
-  });
-  const task = await taskQueue.createTask({
-    agentId: agent.id,
-    type: 'message',
-    priority: 3,
-    sessionId: session.id,
-    payload: {
-      channel: 'telegram',
-      channelKey: 'chat-fastpath-2',
-      sender: 'tester',
-      content: 'what happened?',
-    },
-  });
-
-  const execResult = await agentExecutor.executeTask(task.id);
-  if (!execResult.success) {
-    throw new Error(`Executor failed: ${execResult.error ?? 'unknown error'}`);
-  }
-
-  expect(execResult.response).toContain('I got stuck and failed to send a proper reply');
-  expect(execResult.response).toContain('instead of testing tools');
-  expect(execResult.toolCalls).toEqual([]);
-  expect(lastSystemPrompt).toBe('');
-  expect(lastPrompt).toBe('');
-  expect(lastToolNames).toEqual([]);
 });
 
 test('non-message tasks do not include message task policy', async () => {

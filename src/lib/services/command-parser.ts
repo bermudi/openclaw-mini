@@ -6,6 +6,7 @@ export type ParsedCommand =
   | { type: 'switch-provider'; providerName: string }
   | { type: 'switch-model'; modelName: string }
   | { type: 'list-providers' }
+  | { type: 'clear-session' }
   | { type: 'invalid-command'; error: string }
   | { type: 'not-command' };
 
@@ -36,6 +37,10 @@ export function parseCommand(content: string): ParsedCommand {
     }
     const modelName = rest.split(/\s+/)[0]!;
     return { type: 'switch-model', modelName };
+  }
+
+  if (trimmed === '/new' || trimmed === '/clear') {
+    return { type: 'clear-session' };
   }
 
   return { type: 'not-command' };

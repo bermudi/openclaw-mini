@@ -250,6 +250,8 @@ test('command-parser correctly parses all command types', () => {
   expect(commandParser.parseCommand('/model gpt-4.1-mini')).toEqual({ type: 'switch-model', modelName: 'gpt-4.1-mini' });
   expect(commandParser.parseCommand('/provider')).toEqual({ type: 'invalid-command', error: 'Usage: /provider <name>' });
   expect(commandParser.parseCommand('/model')).toEqual({ type: 'invalid-command', error: 'Usage: /model <name>' });
+  expect(commandParser.parseCommand('/new')).toEqual({ type: 'clear-session' });
+  expect(commandParser.parseCommand('/clear')).toEqual({ type: 'clear-session' });
   expect(commandParser.parseCommand('hello world')).toEqual({ type: 'not-command' });
   expect(commandParser.parseCommand('tell me something')).toEqual({ type: 'not-command' });
   expect(commandParser.parseCommand('  /provider  anthropic  ')).toMatchObject({ type: 'switch-provider', providerName: 'anthropic' });
@@ -267,4 +269,59 @@ test('session state initializes from config defaults on first access', () => {
   const state = sessionProviderState.getOrInit('brand-new-session-id');
   expect(state.activeProvider).toBe('openai');
   expect(state.activeModel).toBe('gpt-4.1-mini');
+});
+
+test('6.7 /new clears session context and returns confirmation', async () => {
+  const agent = await createAgent('Test Agent');
+  const session = await createSession(agent.id, 'test-6-7');
+
+  // Add some messages to the session
+  await db.sessionMessage.createMany({
+    data: [
+      { sessionId: session.id, role: 'user', content: 'Hello', sender: 'test' },
+      { sessionId: session.id, role: 'assistant', content: 'Hi there!', sender: 'assistant' },
+      { sessionId: session.id, role: 'user', content: 'How are you?', sender: 'test' },
+    ],
+  });
+
+  // Verify messages exist
+  const messagesBefore = await db.sessionMessage.count({ where: { sessionId: session.id } });
+  expect(messagesBefore).toBe(3);
+
+  // Execute /new command
+  const task = await createMessageTask(agent.id, session.id, '/new');
+  const result = await agentExecutor.executeTask(task.id);
+
+  expect(result.success).toBe(true);
+  expect(result.response).toContain('Session context cleared');
+
+  // Verify old messages are cleared, but command and response are recorded (2 messages)
+  const messagesAfter = await db.sessionMessage.count({ where: { sessionId: session.id } });
+  expect(messagesAfter).toBe(2);
+});
+
+test('6.8 /clear (alias) also clears session context', async () => {
+  const agent = await createAgent('Test Agent');
+  const session = await createSession(agent.id, 'test-6-8');
+
+  // Add some messages
+  await db.sessionMessage.createMany({
+    data: [
+      { sessionId: session.id, role: 'user', content: 'Test message 1', sender: 'test' },
+      { sessionId: session.id, role: 'assistant', content: 'Response 1', sender: 'assistant' },
+      { sessionId: session.id, role: 'user', content: 'Test message 2', sender: 'test' },
+      { sessionId: session.id, role: 'assistant', content: 'Response 2', sender: 'assistant' },
+    ],
+  });
+
+  // Execute /clear command
+  const task = await createMessageTask(agent.id, session.id, '/clear');
+  const result = await agentExecutor.executeTask(task.id);
+
+  expect(result.success).toBe(true);
+  expect(result.response).toContain('Session context cleared');
+
+  // Verify old messages are cleared, but command and response are recorded (2 messages)
+  const messagesAfter = await db.sessionMessage.count({ where: { sessionId: session.id } });
+  expect(messagesAfter).toBe(2);
 });
