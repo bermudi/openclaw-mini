@@ -5,6 +5,7 @@ import type { DiagnosticsResult } from './types';
 import { checkConfigFile } from '@/lib/init/checks/config';
 import { checkProviderKeys } from '@/lib/init/checks/providers';
 import { checkDatabase } from '@/lib/init/checks/database';
+import { getTelegramConfig } from '@/lib/config/runtime';
 import {
   getInternalAuthStartupStatus,
   INTERNAL_AUTH_ENV_VAR,
@@ -98,10 +99,11 @@ export async function getStartupDiagnostics(): Promise<DiagnosticsResult> {
   }
 
   // 6. Soft: optional adapters
-  if (!process.env.TELEGRAM_BOT_TOKEN) {
+  const telegramConfig = getTelegramConfig();
+  if (!telegramConfig) {
     softWarnings.push({
       type: 'telegram-adapter',
-      warning: 'Telegram not configured (set TELEGRAM_BOT_TOKEN to enable)',
+      warning: 'Telegram not configured (set channels.telegram.botToken in openclaw.json to enable)',
     });
   }
 

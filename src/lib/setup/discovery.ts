@@ -91,6 +91,28 @@ function extractExec(
   };
 }
 
+function extractChannels(
+  raw: Record<string, unknown>,
+): SetupDiscovery['existingChannels'] {
+  const channels = raw['channels'];
+  if (!channels || typeof channels !== 'object') {
+    return null;
+  }
+  const c = channels as Record<string, unknown>;
+  const telegram = c['telegram'];
+  if (!telegram || typeof telegram !== 'object') {
+    return null;
+  }
+  const t = telegram as Record<string, unknown>;
+  return {
+    telegram: {
+      botToken: typeof t['botToken'] === 'string' ? t['botToken'] : undefined,
+      webhookSecret: typeof t['webhookSecret'] === 'string' ? t['webhookSecret'] : undefined,
+      transport: typeof t['transport'] === 'string' ? t['transport'] : undefined,
+    },
+  };
+}
+
 function parseBool(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === 'true';
 }
@@ -125,6 +147,7 @@ export function discoverSetup(): SetupDiscovery {
   let existingBrowser: Record<string, unknown> | null = null;
   let existingMcp: Record<string, unknown> | null = null;
   let existingExec: SetupDiscovery['existingExec'] = null;
+  let existingChannels: SetupDiscovery['existingChannels'] = null;
 
   if (configExists) {
     const raw = readRawConfig(configPath);
@@ -133,6 +156,7 @@ export function discoverSetup(): SetupDiscovery {
       existingAgent = extractAgent(raw);
       existingSearch = extractSearch(raw);
       existingExec = extractExec(raw);
+      existingChannels = extractChannels(raw);
       existingRuntime = (raw['runtime'] as Record<string, unknown>) ?? null;
       existingBrowser = (raw['browser'] as Record<string, unknown>) ?? null;
       existingMcp = (raw['mcp'] as Record<string, unknown>) ?? null;
@@ -153,13 +177,11 @@ export function discoverSetup(): SetupDiscovery {
     existingBrowser,
     existingMcp,
     existingExec,
+    existingChannels,
     envVars: {
       databaseUrl: process.env.DATABASE_URL,
       openclawApiKey: process.env.OPENCLAW_API_KEY,
       insecureLocal: parseBool(process.env.OPENCLAW_ALLOW_INSECURE_LOCAL),
-      telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
-      telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET,
-      telegramTransport: process.env.TELEGRAM_TRANSPORT,
       whatsappEnabled: parseBool(process.env.WHATSAPP_ENABLED),
       workspaceDirOverride: process.env.OPENCLAW_WORKSPACE_DIR,
       sessionCompactionThreshold: process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD,

@@ -319,6 +319,28 @@ const agentConfigSchema = z.object({
   }
 });
 
+const telegramTransportSchema = z.enum(['webhook', 'polling']);
+
+export type TelegramTransport = z.infer<typeof telegramTransportSchema>;
+
+const channelsSchema = z.object({
+  telegram: z.object({
+    botToken: z.string().trim().min(1),
+    webhookSecret: z.string().trim().min(1).optional(),
+    transport: telegramTransportSchema.optional(),
+  }).optional(),
+}).optional();
+
+export interface TelegramChannelConfig {
+  botToken: string;
+  webhookSecret?: string;
+  transport?: TelegramTransport;
+}
+
+export interface ChannelsConfig {
+  telegram?: TelegramChannelConfig;
+}
+
 export const runtimeConfigSchema = z.object({
   providers: providersSchema,
   agent: agentConfigSchema,
@@ -326,6 +348,7 @@ export const runtimeConfigSchema = z.object({
   browser: browserConfigSchema.optional(),
   search: searchConfigSchema.optional(),
   mcp: mcpConfigSchema.optional(),
+  channels: channelsSchema,
 }).strict().superRefine((config, context) => {
   if (!(config.agent.provider in config.providers)) {
     context.addIssue({
@@ -365,6 +388,7 @@ export interface RuntimeConfig {
   browser?: BrowserConfig;
   search?: SearchConfig;
   mcp?: McpConfig;
+  channels?: ChannelsConfig;
 }
 
 export function normalizeRuntimeConfig(input: z.infer<typeof runtimeConfigSchema>): RuntimeConfig {
@@ -390,5 +414,6 @@ export function normalizeRuntimeConfig(input: z.infer<typeof runtimeConfigSchema
     browser: input.browser,
     search: input.search,
     mcp: input.mcp,
+    channels: input.channels as ChannelsConfig | undefined,
   };
 }

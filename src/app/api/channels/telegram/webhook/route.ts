@@ -4,10 +4,12 @@ import { inputManager } from '@/lib/services/input-manager';
 import { processTelegramUpdate } from '@/lib/adapters/telegram-ingest';
 import { downloadTelegramFile } from '@/lib/adapters/telegram-adapter';
 import { withInit } from '@/lib/api/init-guard';
+import { getTelegramConfig } from '@/lib/config/runtime';
 
 export async function POST(request: NextRequest) {
   return withInit(async () => {
-    const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+    const telegramConfig = getTelegramConfig();
+    const expectedSecret = telegramConfig?.webhookSecret;
     const providedSecret = request.headers.get('x-telegram-bot-api-secret-token');
 
     if (expectedSecret && providedSecret !== expectedSecret) {
@@ -15,8 +17,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
-    const downloadBot = telegramBotToken ? new Bot(telegramBotToken) : null;
+    const downloadBot = telegramConfig ? new Bot(telegramConfig.botToken) : null;
 
     const result = await processTelegramUpdate(body, {
       processInput: (input) => inputManager.processInput(input),

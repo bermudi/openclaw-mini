@@ -155,7 +155,7 @@ export async function processTelegramUpdate(
       logger.error(`[${source}] File download error:`, error);
     }
   } else if (message.photo || message.document || message.animation) {
-    logger.warn(`[${source}] File attachments ignored: TELEGRAM_BOT_TOKEN not configured`);
+    logger.warn(`[${source}] File attachments ignored: no Telegram bot token configured`);
   }
 
   if (!content && visionInputs.length === 0 && attachments.length === 0) {

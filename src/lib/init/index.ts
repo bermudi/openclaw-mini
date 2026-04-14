@@ -14,7 +14,7 @@ import { hookSubscriptionManager } from '@/lib/services/hook-subscription-manage
 import { watchConfig } from '@/lib/config/watcher';
 import { registerOptionalTools } from '@/lib/tools';
 import { memoryIndexingService } from '@/lib/services/memory-indexing';
-import { getRuntimeConfig } from '@/lib/config/runtime';
+import { getRuntimeConfig, getTelegramConfig } from '@/lib/config/runtime';
 import { getExecStartupDiagnostics } from '@/lib/services/exec-runtime';
 import { getInternalAuthStartupStatus, INTERNAL_AUTH_ENV_VAR, INSECURE_LOCAL_AUTH_ENV_VAR } from '@/lib/internal-auth';
 
@@ -164,10 +164,10 @@ export async function initialize(): Promise<InitResult> {
 
   if (result.hardFailures.length === 0) {
     // Check Telegram adapter
-    if (!process.env.TELEGRAM_BOT_TOKEN) {
+    if (!getTelegramConfig()) {
       result.softWarnings.push({
         type: 'telegram-adapter',
-        warning: 'Telegram adapter not configured (set TELEGRAM_BOT_TOKEN to enable)',
+        warning: 'Telegram adapter not configured (set channels.telegram.botToken in openclaw.json to enable)',
       });
     }
 

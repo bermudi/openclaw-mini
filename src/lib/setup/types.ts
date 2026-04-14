@@ -49,13 +49,17 @@ export interface SetupDiscovery {
     defaultLaunchMode?: string;
     defaultBackground?: boolean;
   } | null;
+  existingChannels: {
+    telegram?: {
+      botToken?: string;
+      webhookSecret?: string;
+      transport?: string;
+    };
+  } | null;
   envVars: {
     databaseUrl?: string;
     openclawApiKey?: string;
     insecureLocal?: boolean;
-    telegramBotToken?: string;
-    telegramWebhookSecret?: string;
-    telegramTransport?: string;
     whatsappEnabled?: boolean;
     workspaceDirOverride?: string;
     sessionCompactionThreshold?: string;

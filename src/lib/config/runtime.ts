@@ -5,6 +5,7 @@ import {
 import type {
   BrowserConfig,
   BrowserViewportConfig,
+  ChannelsConfig,
   ContainerRuntime,
   EmbeddingProvider,
   ExecLaunchMode,
@@ -13,6 +14,7 @@ import type {
   ExecTier,
   McpServerConfig,
   PrismaLogLevel,
+  TelegramTransport,
   VectorRetrievalMode,
 } from '@/lib/config/schema';
 
@@ -306,6 +308,40 @@ export function getMcpServers(): Record<string, McpServerConfig> {
 
 export function getPrismaLogConfig(): PrismaLogLevel[] {
   return getRuntimeConfig().logging.prisma;
+}
+
+export function getChannelsConfig(): ChannelsConfig | undefined {
+  let state: ReturnType<typeof providerRegistry.getState> | null = null;
+  try {
+    state = ensureProviderRegistryInitialized();
+  } catch {
+    return undefined;
+  }
+
+  return state.config.channels;
+}
+
+export interface ResolvedTelegramConfig {
+  botToken: string;
+  webhookSecret?: string;
+  transport: TelegramTransport;
+}
+
+export function getTelegramConfig(): ResolvedTelegramConfig | null {
+  const channels = getChannelsConfig();
+  const telegram = channels?.telegram;
+
+  // Fall back to env vars for backwards compatibility
+  const botToken = telegram?.botToken ?? process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken) {
+    return null;
+  }
+
+  return {
+    botToken,
+    webhookSecret: telegram?.webhookSecret ?? process.env.TELEGRAM_WEBHOOK_SECRET,
+    transport: telegram?.transport ?? (process.env.TELEGRAM_TRANSPORT?.trim().toLowerCase() === 'polling' ? 'polling' : 'webhook'),
+  };
 }
 
 export function getOffloadTokenThreshold(): number {

@@ -839,6 +839,7 @@ test('telegram webhook route processes messages, ignores non-message updates, an
   expect(agent.id).toBeTruthy();
 
   process.env.TELEGRAM_WEBHOOK_SECRET = 'secret-123';
+  process.env.TELEGRAM_BOT_TOKEN = 'test-bot-token';
 
   const unauthorizedRequest = new NextRequest('http://localhost/api/channels/telegram/webhook', {
     method: 'POST',

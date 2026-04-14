@@ -23,9 +23,9 @@ export class TelegramAdapter implements ChannelAdapter {
   private pollingStarted = false;
   private stopping = false;
 
-  constructor(token: string, transport: TelegramTransport = resolveTelegramTransport()) {
+  constructor(token: string, transport?: string) {
     this.bot = new Bot(token);
-    this.transport = transport;
+    this.transport = resolveTelegramTransport(transport);
     
     // Add debug logging for all updates
     this.bot.use((ctx, next) => {

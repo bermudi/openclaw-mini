@@ -27,6 +27,13 @@ export interface ConfigWriteInput {
     navigationTimeout?: number;
   };
   mcp?: Record<string, unknown>;
+  channels?: {
+    telegram?: {
+      botToken?: string;
+      webhookSecret?: string;
+      transport?: string;
+    };
+  };
   exec?: {
     enabled?: boolean;
     defaultTier?: string;
@@ -138,6 +145,10 @@ export function writeOpenclawConfig(input: ConfigWriteInput): void {
 
   if (input.mcp && Object.keys(input.mcp).length > 0) {
     config['mcp'] = input.mcp;
+  }
+
+  if (input.channels) {
+    config['channels'] = input.channels;
   }
 
   const dir = path.dirname(input.configPath);
@@ -324,6 +335,16 @@ export async function persistSetupPlan(plan: SetupPlan): Promise<SetupPersistRes
         }
       : undefined;
 
+    const channelsInput = plan.telegramBotToken.trim()
+      ? {
+          telegram: {
+            botToken: plan.telegramBotToken.trim(),
+            ...(plan.telegramWebhookSecret.trim() ? { webhookSecret: plan.telegramWebhookSecret.trim() } : {}),
+            ...(plan.telegramTransport.trim() && plan.telegramTransport !== 'webhook' ? { transport: plan.telegramTransport.trim() } : {}),
+          },
+        }
+      : undefined;
+
     const agentInput: ConfigWriteInput['agent'] = {
       provider: plan.agentProvider,
       model: plan.agentModel,
@@ -340,6 +361,7 @@ export async function persistSetupPlan(plan: SetupPlan): Promise<SetupPersistRes
       search: searchInput,
       browser: browserInput,
       exec: execInput,
+      channels: channelsInput,
     });
   } catch (err) {
     errors.push(`Config write failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -351,11 +373,6 @@ export async function persistSetupPlan(plan: SetupPlan): Promise<SetupPersistRes
     if (plan.databaseUrl.trim()) envValues['DATABASE_URL'] = plan.databaseUrl.trim();
     if (plan.openclawApiKey.trim()) envValues['OPENCLAW_API_KEY'] = plan.openclawApiKey.trim();
     if (plan.insecureLocal) envValues['OPENCLAW_ALLOW_INSECURE_LOCAL'] = 'true';
-    if (plan.telegramBotToken.trim()) envValues['TELEGRAM_BOT_TOKEN'] = plan.telegramBotToken.trim();
-    if (plan.telegramWebhookSecret.trim()) envValues['TELEGRAM_WEBHOOK_SECRET'] = plan.telegramWebhookSecret.trim();
-    if (plan.telegramTransport.trim() && plan.telegramTransport !== 'webhook') {
-      envValues['TELEGRAM_TRANSPORT'] = plan.telegramTransport.trim();
-    }
     if (plan.whatsappEnabled) envValues['WHATSAPP_ENABLED'] = 'true';
     if (plan.workspaceDir.trim()) envValues['OPENCLAW_WORKSPACE_DIR'] = plan.workspaceDir.trim();
 

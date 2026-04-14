@@ -1,6 +1,7 @@
 import { registerAdapter } from '@/lib/services/delivery-service';
 import { TelegramAdapter } from '@/lib/adapters/telegram-adapter';
 import { WebChatAdapter } from '@/lib/adapters/webchat-adapter';
+import { getTelegramConfig } from '@/lib/config/runtime';
 import type { ChannelAdapter, DeliveryTarget } from '@/lib/types';
 
 type WhatsAppAdapterLike = ChannelAdapter & {
@@ -71,9 +72,9 @@ export function initializeAdapters(): ChannelAdapter[] {
 
   const adapters: ChannelAdapter[] = [];
 
-  const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
-  if (telegramBotToken) {
-    const telegram = new TelegramAdapter(telegramBotToken);
+  const telegramConfig = getTelegramConfig();
+  if (telegramConfig) {
+    const telegram = new TelegramAdapter(telegramConfig.botToken, telegramConfig.transport);
     registerAdapter(telegram);
     adapters.push(telegram);
   } else {
