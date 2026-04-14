@@ -13,6 +13,7 @@ let lastToolNames: string[] = [];
 let lastStepCount = 0;
 let lastPrompt = '';
 let lastMessages: unknown = undefined;
+let lastGenerationOptions: Record<string, unknown> = {};
 let mockResponseText = 'stub response';
 let mockGenerateTextSteps: Array<Record<string, unknown>> = [];
 
@@ -38,16 +39,19 @@ mock.module('ai', () => ({
     tools,
     prompt,
     messages,
+    ...options
   }: {
     system?: string;
     tools?: Record<string, unknown>;
     prompt?: string;
     messages?: unknown;
+    [key: string]: unknown;
   }) => {
     lastSystemPrompt = system ?? '';
     lastToolNames = Object.keys(tools ?? {});
     lastPrompt = prompt ?? '';
     lastMessages = messages;
+    lastGenerationOptions = options;
     return { text: mockResponseText, steps: mockGenerateTextSteps };
   },
   stepCountIs: (count: number) => {
@@ -231,6 +235,7 @@ beforeEach(async () => {
   lastStepCount = 0;
   lastPrompt = '';
   lastMessages = undefined;
+  lastGenerationOptions = {};
   mockResponseText = 'stub response';
   mockGenerateTextSteps = [];
 });
@@ -1607,6 +1612,99 @@ test('message tasks use workspace persona from SOUL.md', async () => {
   expect(execResult.response).toBe('stub response');
   expect(lastSystemPrompt).toContain('pirate captain');
   expect(lastSystemPrompt).not.toContain('Heartbeat Checklist');
+});
+
+test('message tasks include execution policy to finish explicit requests in the current turn', async () => {
+  const agent = await agentService.createAgent({ name: 'Execution Policy Agent' });
+  const task = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    priority: 3,
+    payload: {
+      channel: 'telegram',
+      channelKey: 'chat-902',
+      sender: 'tester',
+      content: 'just start using them and tell me which ones work and which ones do not',
+    },
+  });
+
+  const execResult = await agentExecutor.executeTask(task.id);
+  if (!execResult.success) {
+    throw new Error(`Executor failed: ${execResult.error ?? 'unknown error'}`);
+  }
+
+  expect(execResult.response).toBe('stub response');
+  expect(lastSystemPrompt).toContain('## Execution Policy');
+  expect(lastSystemPrompt).toContain('Complete the user\'s explicit request in this turn');
+  expect(lastSystemPrompt).toContain('do not ask for permission to continue');
+  expect(lastPrompt).toContain('Complete the user\'s request directly.');
+  expect(lastPrompt).toContain('Do not ask whether to continue if the user already told you to proceed');
+});
+
+test('message tasks forward agent generation config into model calls', async () => {
+  if (!runtimeConfigFixture) {
+    throw new Error('Runtime config fixture not initialized');
+  }
+
+  const { writeRuntimeConfig } = await import('./runtime-config-fixture');
+  const { resetProviderRegistryForTests, initializeProviderRegistry } = await import('../src/lib/services/provider-registry');
+
+  writeRuntimeConfig(runtimeConfigFixture.configPath, {
+    agent: {
+      provider: 'openai',
+      model: 'gpt-4.1-mini',
+      generation: {
+        maxOutputTokens: 777,
+        temperature: 0.25,
+        topP: 0.9,
+        topK: 40,
+        presencePenalty: 0.3,
+        frequencyPenalty: 0.2,
+        seed: 123,
+        openai: {
+          reasoningEffort: 'medium',
+          textVerbosity: 'low',
+          serviceTier: 'flex',
+        },
+      },
+    },
+  });
+  resetProviderRegistryForTests();
+  initializeProviderRegistry();
+
+  const agent = await agentService.createAgent({ name: 'Generation Config Agent' });
+  const task = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    priority: 3,
+    payload: {
+      channel: 'telegram',
+      channelKey: 'chat-903',
+      sender: 'tester',
+      content: 'hello',
+    },
+  });
+
+  const execResult = await agentExecutor.executeTask(task.id);
+  if (!execResult.success) {
+    throw new Error(`Executor failed: ${execResult.error ?? 'unknown error'}`);
+  }
+
+  expect(execResult.response).toBe('stub response');
+  expect(lastGenerationOptions.maxOutputTokens).toBe(777);
+  expect(lastGenerationOptions.temperature).toBe(0.25);
+  expect(lastGenerationOptions.topP).toBe(0.9);
+  expect(lastGenerationOptions.topK).toBe(40);
+  expect(lastGenerationOptions.presencePenalty).toBe(0.3);
+  expect(lastGenerationOptions.frequencyPenalty).toBe(0.2);
+  expect(lastGenerationOptions.seed).toBe(123);
+  expect(lastGenerationOptions.providerOptions).toEqual({
+    openai: {
+      reasoningEffort: 'medium',
+      textVerbosity: 'low',
+      serviceTier: 'flex',
+    },
+  });
 });
 
 test('HEARTBEAT.md is injected for heartbeat tasks and excluded for message tasks', async () => {

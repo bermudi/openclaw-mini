@@ -8,6 +8,7 @@ import {
 } from '@/lib/internal-auth';
 import { getRuntimeCorsHeaders, isRuntimeCorsOriginAllowed } from '@/lib/runtime-cors';
 import type { WSBroadcastEvent, WSEvent } from '@/lib/ws-events';
+import { getWebsocketConfig } from '@/lib/config/runtime';
 
 export type RuntimeReadinessState = 'booting' | 'ready' | 'failed' | 'stopping' | 'stopped';
 
@@ -27,7 +28,7 @@ export interface RuntimeRealtimeStats {
 }
 
 function getRuntimeRealtimePort(): number {
-  return Number.parseInt(process.env.OPENCLAW_WS_PORT ?? '3003', 10);
+  return getWebsocketConfig().port;
 }
 
 function getRequestOrigin(req: IncomingMessage): string | null {

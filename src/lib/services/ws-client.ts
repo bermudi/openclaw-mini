@@ -1,8 +1,9 @@
 import { buildInternalAuthHeaders } from '@/lib/internal-auth';
 import type { WSBroadcastEvent } from '@/lib/ws-events';
+import { getWebsocketConfig } from '@/lib/config/runtime';
 
 function getWsServiceUrl(): string {
-  return process.env.OPENCLAW_WS_URL || 'http://localhost:3003';
+  return getWebsocketConfig().url;
 }
 
 class WSClientService {

@@ -6,6 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
+import { getPathsConfig } from '@/lib/config/runtime';
 
 export type SkillSource = 'built-in' | 'managed';
 
@@ -83,7 +84,7 @@ function parseSkillRequirements(value: unknown): SkillRequirements | undefined {
 }
 
 export function getBuiltInSkillsDir(): string {
-  return process.env.OPENCLAW_SKILLS_DIR ?? path.join(process.cwd(), 'skills');
+  return getPathsConfig().skillsDir;
 }
 
 export function getManagedSkillsDir(): string {

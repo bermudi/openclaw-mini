@@ -8,6 +8,7 @@ import { eventBus } from '@/lib/services/event-bus';
 import { memoryIndexingService, type AutomaticRecallResult } from '@/lib/services/memory-indexing';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getSessionConfig, getMemoryDecayConfig } from '@/lib/config/runtime';
 
 export type { GitCommit };
 
@@ -19,7 +20,7 @@ export function validateMemoryKey(key: string): boolean {
 }
 
 export function getMemoryDir(): string {
-  return process.env.OPENCLAW_MEMORY_DIR ?? path.join(process.cwd(), 'data', 'memories');
+  return getMemoryDecayConfig().memoryDir;
 }
 
 function getPositiveIntegerEnv(name: string, fallback: number): number {
@@ -352,7 +353,7 @@ class MemoryService {
 
     const currentValue = memory?.value ?? '# History\n\n';
     const nextValue = memory ? currentValue + newEntry : buildHistoryValue(newEntry);
-    const historyCapBytes = getPositiveIntegerEnv('OPENCLAW_HISTORY_CAP_BYTES', 50 * 1024);
+    const historyCapBytes = getSessionConfig().historyCapBytes;
 
     if (Buffer.byteLength(nextValue, 'utf-8') > historyCapBytes && memory && memory.value.trim().length > 0) {
       await this.appendHistoryArchive(agentId, memory.value);
@@ -385,7 +386,7 @@ class MemoryService {
       return 0;
     }
 
-    const daysToKeep = retentionDays ?? getPositiveIntegerEnv('OPENCLAW_HISTORY_RETENTION_DAYS', 30);
+    const daysToKeep = retentionDays ?? getSessionConfig().historyRetentionDays;
     const cutoff = new Date();
     cutoff.setHours(0, 0, 0, 0);
     cutoff.setDate(cutoff.getDate() - daysToKeep);
@@ -514,8 +515,9 @@ class MemoryService {
    * Soft-deletes (archives) memories below the confidence floor.
    */
   async decayMemoryConfidence(): Promise<{ decayed: number; archived: number }> {
-    const halfLifeDays = getPositiveFloatEnv('OPENCLAW_MEMORY_DECAY_HALF_LIFE_DAYS', 14);
-    const floor = getPositiveFloatEnv('OPENCLAW_MEMORY_DECAY_FLOOR', 0.1);
+    const decayConfig = getMemoryDecayConfig();
+    const halfLifeDays = decayConfig.halfLifeDays;
+    const floor = decayConfig.floor;
     const now = new Date();
 
     const memories = await db.memory.findMany({

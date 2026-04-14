@@ -11,6 +11,7 @@ import { reflectOnContent } from './memory-reflector';
 import { eventBus } from './event-bus';
 import { resolveAgentContextWindow, resolveCompactionThreshold, runWithModelFallback } from './model-provider';
 import { auditService } from './audit-service';
+import { getSessionConfig } from '@/lib/config/runtime';
 
 export interface SessionContext {
   messages: Array<{
@@ -63,11 +64,6 @@ function normalizeSessionAgentConfig(agent: { id: string } & Record<string, unkn
   };
 }
 
-function getPositiveIntegerEnv(name: string, fallback: number): number {
-  const value = process.env[name];
-  const parsed = value ? Number.parseInt(value, 10) : Number.NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
 
 class SessionService {
   private readonly compactingSessions = new Map<string, Promise<CompactSessionResult>>();
@@ -419,8 +415,8 @@ class SessionService {
       return { summarized: 0, remaining: 0 };
     }
 
-    const retainCount = options?.retainCount ?? getPositiveIntegerEnv('OPENCLAW_SESSION_RETAIN_COUNT', 10);
-    const threshold = options?.threshold ?? getPositiveIntegerEnv('OPENCLAW_SESSION_COMPACTION_THRESHOLD', 40);
+    const retainCount = options?.retainCount ?? getSessionConfig().retainCount;
+    const threshold = options?.threshold ?? getSessionConfig().compactionThreshold;
 
     // Input validation
     if (retainCount <= 0) {
@@ -550,7 +546,7 @@ class SessionService {
       return false;
     }
 
-    const messageCountThreshold = getPositiveIntegerEnv('OPENCLAW_SESSION_COMPACTION_THRESHOLD', 40);
+    const messageCountThreshold = getSessionConfig().compactionThreshold;
     const messageCount = await db.sessionMessage.count({ where: { sessionId } });
 
     try {

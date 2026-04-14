@@ -1,3 +1,5 @@
+import { getNetworkConfig } from '@/lib/config/runtime';
+
 const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:3000',
   'http://localhost:3001',
@@ -23,9 +25,10 @@ function isLoopbackBrowserOrigin(origin: string): boolean {
 }
 
 export function getRuntimeCorsAllowedOrigins(): string[] {
-  const configuredOrigins = process.env.OPENCLAW_ALLOWED_ORIGINS?.trim();
-  const rawOrigins = configuredOrigins
-    ? configuredOrigins.split(',').map((origin) => origin.trim()).filter(Boolean)
+  const networkConfig = getNetworkConfig();
+  const configuredOrigins = networkConfig.allowedOrigins;
+  const rawOrigins = configuredOrigins.length > 0
+    ? configuredOrigins
     : DEFAULT_ALLOWED_ORIGINS;
 
   const normalizedOrigins = rawOrigins.flatMap((origin) => {

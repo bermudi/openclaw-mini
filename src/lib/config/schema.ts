@@ -28,6 +28,35 @@ const runtimePerformanceSchema = z.object({
   compactionThreshold: z.number().min(0).max(1).optional(),
 });
 
+const runtimeSessionSchema = z.object({
+  retainCount: z.number().int().positive().optional(),
+  compactionThreshold: z.number().int().positive().optional(),
+  historyCapBytes: z.number().int().positive().optional(),
+  historyRetentionDays: z.number().int().positive().optional(),
+});
+
+const runtimeMemoryDecaySchema = z.object({
+  halfLifeDays: z.number().positive().optional(),
+  floor: z.number().min(0).max(1).optional(),
+  offloadTokenThreshold: z.number().int().positive().optional(),
+  memoryDir: z.string().trim().min(1).optional(),
+});
+
+const runtimePathsSchema = z.object({
+  workspaceDir: z.string().trim().min(1).optional(),
+  skillsDir: z.string().trim().min(1).optional(),
+});
+
+const runtimeNetworkSchema = z.object({
+  appUrl: z.string().trim().min(1).optional(),
+  allowedOrigins: z.array(z.string().trim().min(1)).optional(),
+});
+
+const runtimeWebsocketSchema = z.object({
+  port: z.number().int().positive().optional(),
+  url: z.string().trim().min(1).optional(),
+});
+
 const embeddingProviderSchema = z.enum(['disabled', 'openai', 'google', 'anthropic', 'ollama', 'mock']);
 const vectorRetrievalModeSchema = z.enum(['disabled', 'auto', 'sqlite-vec', 'in-process']);
 const execTierSchema = z.enum(['locked-down', 'sandbox', 'host']);
@@ -58,6 +87,7 @@ const runtimeMemorySchema = z.object({
   vectorRetrievalMode: vectorRetrievalModeSchema.optional(),
   recallConfidenceThreshold: z.number().min(0).max(1).optional(),
   maxSearchResults: z.number().int().positive().optional(),
+  decay: runtimeMemoryDecaySchema.optional(),
 }).strict();
 
 export const execMountSchema = z.object({
@@ -170,6 +200,10 @@ export const runtimeSectionSchema = z.object({
   performance: runtimePerformanceSchema.optional(),
   exec: runtimeExecSchema.optional(),
   memory: runtimeMemorySchema.optional(),
+  session: runtimeSessionSchema.optional(),
+  paths: runtimePathsSchema.optional(),
+  network: runtimeNetworkSchema.optional(),
+  websocket: runtimeWebsocketSchema.optional(),
 });
 
 export interface RuntimeSafetyConfig {
@@ -196,6 +230,13 @@ export interface RuntimePerformanceConfig {
   compactionThreshold?: number;
 }
 
+export interface RuntimeMemoryDecayConfig {
+  halfLifeDays?: number;
+  floor?: number;
+  offloadTokenThreshold?: number;
+  memoryDir?: string;
+}
+
 export interface RuntimeMemoryConfig {
   embeddingProvider?: EmbeddingProvider;
   embeddingModel?: string;
@@ -206,6 +247,29 @@ export interface RuntimeMemoryConfig {
   vectorRetrievalMode?: VectorRetrievalMode;
   recallConfidenceThreshold?: number;
   maxSearchResults?: number;
+  decay?: RuntimeMemoryDecayConfig;
+}
+
+export interface RuntimeSessionConfig {
+  retainCount?: number;
+  compactionThreshold?: number;
+  historyCapBytes?: number;
+  historyRetentionDays?: number;
+}
+
+export interface RuntimePathsConfig {
+  workspaceDir?: string;
+  skillsDir?: string;
+}
+
+export interface RuntimeNetworkConfig {
+  appUrl?: string;
+  allowedOrigins?: string[];
+}
+
+export interface RuntimeWebsocketConfig {
+  port?: number;
+  url?: string;
 }
 
 export interface ExecMountConfig {
@@ -264,6 +328,10 @@ export interface RuntimeSectionConfig {
   performance?: RuntimePerformanceConfig;
   exec?: ExecConfig;
   memory?: RuntimeMemoryConfig;
+  session?: RuntimeSessionConfig;
+  paths?: RuntimePathsConfig;
+  network?: RuntimeNetworkConfig;
+  websocket?: RuntimeWebsocketConfig;
 }
 
 const searchConfigSchema = z.object({
@@ -301,11 +369,33 @@ const providersSchema = z.record(z.string().trim().min(1), providerConfigSchema)
     }
   });
 
+const openaiReasoningEffortSchema = z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+const openaiTextVerbositySchema = z.enum(['low', 'medium', 'high']);
+const openaiServiceTierSchema = z.enum(['default', 'auto', 'flex', 'priority']);
+
+const openaiGenerationSchema = z.object({
+  reasoningEffort: openaiReasoningEffortSchema.optional(),
+  textVerbosity: openaiTextVerbositySchema.optional(),
+  serviceTier: openaiServiceTierSchema.optional(),
+}).strict();
+
+const agentGenerationSchema = z.object({
+  maxOutputTokens: z.number().int().positive().optional(),
+  temperature: z.number().nonnegative().optional(),
+  topP: z.number().min(0).max(1).optional(),
+  topK: z.number().int().positive().optional(),
+  presencePenalty: z.number().optional(),
+  frequencyPenalty: z.number().optional(),
+  seed: z.number().int().optional(),
+  openai: openaiGenerationSchema.optional(),
+}).strict();
+
 const agentConfigSchema = z.object({
   provider: z.string().trim().min(1),
   model: z.string().trim().min(1),
   fallbackProvider: z.string().trim().min(1).optional(),
   fallbackModel: z.string().trim().min(1).optional(),
+  generation: agentGenerationSchema.optional(),
 }).strict().superRefine((agent, context) => {
   const hasFallbackProvider = typeof agent.fallbackProvider === 'string';
   const hasFallbackModel = typeof agent.fallbackModel === 'string';
@@ -323,12 +413,18 @@ const telegramTransportSchema = z.enum(['webhook', 'polling']);
 
 export type TelegramTransport = z.infer<typeof telegramTransportSchema>;
 
+const whatsappChannelSchema = z.object({
+  enabled: z.boolean().optional(),
+  authDir: z.string().trim().min(1).optional(),
+}).strict();
+
 const channelsSchema = z.object({
   telegram: z.object({
     botToken: z.string().trim().min(1),
     webhookSecret: z.string().trim().min(1).optional(),
     transport: telegramTransportSchema.optional(),
   }).optional(),
+  whatsapp: whatsappChannelSchema.optional(),
 }).optional();
 
 export interface TelegramChannelConfig {
@@ -337,8 +433,14 @@ export interface TelegramChannelConfig {
   transport?: TelegramTransport;
 }
 
+export interface WhatsAppChannelConfig {
+  enabled?: boolean;
+  authDir?: string;
+}
+
 export interface ChannelsConfig {
   telegram?: TelegramChannelConfig;
+  whatsapp?: WhatsAppChannelConfig;
 }
 
 export const runtimeConfigSchema = z.object({
@@ -374,11 +476,33 @@ export interface ProviderDefinition {
   apiKey: string;
 }
 
+export type OpenAIReasoningEffort = z.infer<typeof openaiReasoningEffortSchema>;
+export type OpenAITextVerbosity = z.infer<typeof openaiTextVerbositySchema>;
+export type OpenAIServiceTier = z.infer<typeof openaiServiceTierSchema>;
+
+export interface OpenAIGenerationConfig {
+  reasoningEffort?: OpenAIReasoningEffort;
+  textVerbosity?: OpenAITextVerbosity;
+  serviceTier?: OpenAIServiceTier;
+}
+
+export interface AgentGenerationConfig {
+  maxOutputTokens?: number;
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  presencePenalty?: number;
+  frequencyPenalty?: number;
+  seed?: number;
+  openai?: OpenAIGenerationConfig;
+}
+
 export interface AgentConfig {
   provider: string;
   model: string;
   fallbackProvider?: string;
   fallbackModel?: string;
+  generation?: AgentGenerationConfig;
 }
 
 export interface RuntimeConfig {
@@ -409,6 +533,7 @@ export function normalizeRuntimeConfig(input: z.infer<typeof runtimeConfigSchema
       model: input.agent.model,
       fallbackProvider: input.agent.fallbackProvider,
       fallbackModel: input.agent.fallbackModel,
+      generation: input.agent.generation,
     },
     runtime: input.runtime,
     browser: input.browser,

@@ -4,6 +4,7 @@ import * as path from 'path';
 import type { ChannelAdapter, DeliveryTarget, VisionInput, Attachment, DownloadedFile } from '@/lib/types';
 import { buildInternalAuthHeaders } from '@/lib/internal-auth';
 import { inboundFileService } from '@/lib/services/inbound-file-service';
+import { getWhatsAppConfig, getNetworkConfig } from '@/lib/config/runtime';
 
 type BaileysSocketLike = {
   ev: { on(event: string, cb: (...args: unknown[]) => void): void };
@@ -72,7 +73,9 @@ function getMediaHelpers(module: BaileysModuleLike): {
   };
 }
 
-const AUTH_DIR = process.env.WHATSAPP_AUTH_DIR || 'data/whatsapp-auth';
+function getAuthDir(): string {
+  return getWhatsAppConfig().authDir;
+}
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MULTIPLIER = 2;
 const RECONNECT_MAX_RETRIES = 5;
@@ -226,7 +229,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
       this.mediaHelpers = getMediaHelpers(baileys);
 
-      const { state, saveCreds } = await baileys.useMultiFileAuthState(AUTH_DIR);
+      const { state, saveCreds } = await baileys.useMultiFileAuthState(getAuthDir());
 
       const sock = makeWASocket({ auth: state, printQRInTerminal: false });
       this.socket = sock;
@@ -310,8 +313,9 @@ export class WhatsAppAdapter implements ChannelAdapter {
   }
 
   private clearAuthState(): void {
-    if (existsSync(AUTH_DIR)) {
-      rmSync(AUTH_DIR, { recursive: true, force: true });
+    const authDir = getAuthDir();
+    if (existsSync(authDir)) {
+      rmSync(authDir, { recursive: true, force: true });
     }
     this.connected = false;
     this.socket = null;
@@ -339,7 +343,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
   }
 
   private async routeInbound(jid: string, text: string): Promise<void> {
-    const appUrl = process.env.OPENCLAW_APP_URL ?? 'http://localhost:3000';
+    const appUrl = getNetworkConfig().appUrl;
 
     try {
       await fetch(`${appUrl}/api/input`, {
@@ -373,7 +377,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       return;
     }
 
-    const appUrl = process.env.OPENCLAW_APP_URL ?? 'http://localhost:3000';
+    const appUrl = getNetworkConfig().appUrl;
     const downloadsDir = inboundFileService.getDownloadsDir('whatsapp');
     const baileys = await getBaileysModule();
     const helpers = this.mediaHelpers.downloadMediaMessage || this.mediaHelpers.extensionForMediaMessage

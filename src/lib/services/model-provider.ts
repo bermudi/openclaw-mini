@@ -1,5 +1,6 @@
 import type { LanguageModel } from 'ai';
 import { loadCredentialRef } from '@/lib/credentials';
+import type { AgentGenerationConfig } from '@/lib/config/schema';
 import { modelCatalog } from './model-catalog';
 import { ensureProviderRegistryInitialized, providerRegistry } from './provider-registry';
 import { getRuntimeConfig } from '@/lib/config/runtime';
@@ -149,6 +150,11 @@ export function getModelConfig(options: ResolveModelConfigOptions = {}): Provide
     fallbackProvider: options.ignoreEnvFallback ? undefined : config.agent.fallbackProvider,
     fallbackModel: options.ignoreEnvFallback ? undefined : config.agent.fallbackModel,
   };
+}
+
+export function getAgentGenerationConfig(): AgentGenerationConfig | undefined {
+  const { config } = getRuntimeState();
+  return config.agent.generation;
 }
 
 export function resolveModelConfig(

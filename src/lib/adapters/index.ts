@@ -1,7 +1,7 @@
 import { registerAdapter } from '@/lib/services/delivery-service';
 import { TelegramAdapter } from '@/lib/adapters/telegram-adapter';
 import { WebChatAdapter } from '@/lib/adapters/webchat-adapter';
-import { getTelegramConfig } from '@/lib/config/runtime';
+import { getTelegramConfig, getWhatsAppConfig } from '@/lib/config/runtime';
 import type { ChannelAdapter, DeliveryTarget } from '@/lib/types';
 
 type WhatsAppAdapterLike = ChannelAdapter & {
@@ -81,7 +81,8 @@ export function initializeAdapters(): ChannelAdapter[] {
     console.log('[Adapters] Telegram adapter not configured');
   }
 
-  if (process.env.WHATSAPP_ENABLED === 'true') {
+  const whatsappConfig = getWhatsAppConfig();
+  if (whatsappConfig.enabled) {
     const whatsapp = new LazyWhatsAppAdapter();
     registerAdapter(whatsapp);
     adapters.push(whatsapp);

@@ -9,7 +9,7 @@ import { memoryService } from './memory-service';
 import { sessionService, type SessionContext } from './session-service';
 import { auditService } from './audit-service';
 import { enqueueDeliveryTx, enqueueFileDeliveryTx } from './delivery-service';
-import { getModelConfig, resolveAgentContextWindow, runWithModelFallback } from './model-provider';
+import { getAgentGenerationConfig, getModelConfig, resolveAgentContextWindow, runWithModelFallback } from './model-provider';
 import { isPoeResponsesEndpoint } from './poe-client';
 import { parseCommand, type ParsedCommand } from './command-parser';
 import { sessionProviderState } from './session-provider-state';
@@ -74,6 +74,24 @@ type ParsedExecutionArtifacts = {
   actions: Record<string, unknown>[];
 };
 
+type GenerateTextSettings = {
+  maxOutputTokens?: number;
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  presencePenalty?: number;
+  frequencyPenalty?: number;
+  seed?: number;
+  providerOptions?: {
+    openai?: {
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+      textVerbosity?: 'low' | 'medium' | 'high';
+      serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+      store?: boolean;
+    };
+  };
+};
+
 function buildToolOnlyFallbackResponse(executionToolCalls: NonNullable<ExecutionResult['toolCalls']>): string {
   const successfulExecTool = executionToolCalls.find((toolCall) =>
     toolCall.result.success && (toolCall.tool === 'exec_command' || toolCall.tool === 'process')
@@ -124,6 +142,25 @@ function buildToolOnlyFallbackResponse(executionToolCalls: NonNullable<Execution
   }
 
   return `Completed ${successfulExecTool.tool.replace('_', ' ')} successfully.`;
+}
+
+function buildGenerateTextSettings(config: { baseURL?: string; model: string }): GenerateTextSettings {
+  const generation = getAgentGenerationConfig();
+  const openaiOptions = {
+    ...(generation?.openai ?? {}),
+    ...(isPoeResponsesEndpoint(config.baseURL, config.model) ? { store: false } : {}),
+  };
+
+  return {
+    ...(generation?.maxOutputTokens !== undefined ? { maxOutputTokens: generation.maxOutputTokens } : {}),
+    ...(generation?.temperature !== undefined ? { temperature: generation.temperature } : {}),
+    ...(generation?.topP !== undefined ? { topP: generation.topP } : {}),
+    ...(generation?.topK !== undefined ? { topK: generation.topK } : {}),
+    ...(generation?.presencePenalty !== undefined ? { presencePenalty: generation.presencePenalty } : {}),
+    ...(generation?.frequencyPenalty !== undefined ? { frequencyPenalty: generation.frequencyPenalty } : {}),
+    ...(generation?.seed !== undefined ? { seed: generation.seed } : {}),
+    ...(Object.keys(openaiOptions).length > 0 ? { providerOptions: { openai: openaiOptions } } : {}),
+  };
 }
 
 class AgentExecutorService {
@@ -328,9 +365,7 @@ class AgentExecutorService {
                   prompt,
                   tools,
                   stopWhen: stepCountIs(resolvedSubagentConfig?.maxIterations ?? 5),
-                  ...(isPoeResponsesEndpoint(config.baseURL, config.model)
-                    ? { providerOptions: { openai: { store: false } } }
-                    : {}),
+                  ...buildGenerateTextSettings(config),
                 }),
               resolvedSubagentConfig
                 ? {
@@ -379,22 +414,20 @@ class AgentExecutorService {
       const executeGeneration = () =>
         runWithModelFallback(
           ({ model, config }) => {
-            const zdrOptions = isPoeResponsesEndpoint(config.baseURL, config.model)
-              ? { providerOptions: { openai: { store: false } } }
-              : {};
+            const generationSettings = buildGenerateTextSettings(config);
             if (multiModalMessages) {
               return generateText({
                 ...generationArgs,
+                ...generationSettings,
                 model,
                 messages: multiModalMessages,
-                ...zdrOptions,
               });
             }
             return generateText({
               ...generationArgs,
+              ...generationSettings,
               model,
               prompt,
-              ...zdrOptions,
             });
           },
           resolvedSubagentConfig
@@ -870,9 +903,17 @@ class AgentExecutorService {
     const workspaceContext = loadBootstrapContext();
     const heartbeatContext = task.type === 'heartbeat' ? loadHeartbeatContext() : '';
     const runtimeSection = `## Runtime Context\nCurrent task type: ${task.type}\nYour Agent ID: ${task.agentId}`;
+    const executionPolicy = [
+      '## Execution Policy',
+      '- Complete the user\'s explicit request in this turn whenever it is possible with your available tools.',
+      '- If the user has already told you to proceed, do not ask for permission to continue or offer to continue later.',
+      '- Prefer using tools to gather facts instead of speculating about what worked.',
+      '- Only say a tool worked, failed, or was tested if you actually invoked it in the current task or can cite it from the current session context.',
+      '- If you cannot finish because of a hard blocker, say exactly what remains and what blocked you.',
+    ].join('\n');
     const mcpDirectory = mcpService.buildMcpDirectory();
 
-    return [workspaceContext, heartbeatContext, mcpDirectory, skillSection, runtimeSection]
+    return [workspaceContext, heartbeatContext, mcpDirectory, skillSection, runtimeSection, executionPolicy]
       .filter(section => section.trim().length > 0)
       .join('\n\n');
   }
@@ -961,7 +1002,7 @@ Channel: ${payload.channel}
 Sender: ${payload.sender || 'Unknown'}
 Content: ${payload.content}${attachmentsSection}
 
-Please respond appropriately to this message. Use tools if needed.`;
+Complete the user's request directly. Use tools when they reduce guesswork. Do not ask whether to continue if the user already told you to proceed; either finish the work you can do now or explain the specific blocker.`;
       }
 
       case 'heartbeat':

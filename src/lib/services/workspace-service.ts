@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { getPathsConfig } from '@/lib/config/runtime';
 
 export interface BootstrapConfig {
   workspaceDir: string;
@@ -76,7 +77,7 @@ export const DEFAULT_WORKSPACE_FILES: Record<DefaultWorkspaceFileName, string> =
 
 function resolveConfig(config: Partial<BootstrapConfig> = {}): BootstrapConfig {
   return {
-    workspaceDir: config.workspaceDir ?? process.env.OPENCLAW_WORKSPACE_DIR ?? path.join(process.cwd(), 'data', 'workspace'),
+    workspaceDir: config.workspaceDir ?? getPathsConfig().workspaceDir,
     perFileCharCap: config.perFileCharCap ?? DEFAULT_PER_FILE_CHAR_CAP,
     totalCharCap: config.totalCharCap ?? DEFAULT_TOTAL_CHAR_CAP,
   };

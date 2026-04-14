@@ -1,3 +1,4 @@
+import path from 'path';
 import { ensureProviderRegistryInitialized, providerRegistry } from '@/lib/services/provider-registry';
 import {
   detectContainerRuntime,
@@ -73,6 +74,30 @@ export interface RuntimeBehaviorConfig {
     vectorRetrievalMode: VectorRetrievalMode;
     recallConfidenceThreshold: number;
     maxSearchResults: number;
+    decay?: {
+      halfLifeDays: number;
+      floor: number;
+      offloadTokenThreshold: number;
+      memoryDir: string;
+    };
+  };
+  session: {
+    retainCount: number;
+    compactionThreshold: number;
+    historyCapBytes: number;
+    historyRetentionDays: number;
+  };
+  paths: {
+    workspaceDir: string;
+    skillsDir: string;
+  };
+  network: {
+    appUrl: string;
+    allowedOrigins: string[];
+  };
+  websocket: {
+    port: number;
+    url: string;
   };
 }
 
@@ -157,6 +182,24 @@ function getDefaults(): RuntimeBehaviorConfig {
       recallConfidenceThreshold: 0.4,
       maxSearchResults: 20,
     },
+    session: {
+      retainCount: 10,
+      compactionThreshold: 40,
+      historyCapBytes: 50 * 1024,
+      historyRetentionDays: 30,
+    },
+    paths: {
+      workspaceDir: path.join(process.cwd(), 'data', 'workspace'),
+      skillsDir: path.join(process.cwd(), 'skills'),
+    },
+    network: {
+      appUrl: 'http://localhost:3000',
+      allowedOrigins: [],
+    },
+    websocket: {
+      port: 3003,
+      url: 'http://localhost:3003',
+    },
   };
 }
 
@@ -199,6 +242,7 @@ export function getRuntimeConfig(): RuntimeBehaviorConfig {
   const { config } = state;
   const runtime = config.runtime;
 
+  // Deprecated env var warnings
   if (process.env.OPENCLAW_MAX_SPAWN_DEPTH) {
     warnDeprecatedEnvVar('OPENCLAW_MAX_SPAWN_DEPTH', 'runtime.safety.maxSpawnDepth');
   }
@@ -211,6 +255,62 @@ export function getRuntimeConfig(): RuntimeBehaviorConfig {
     warnDeprecatedEnvVar('OPENCLAW_SESSION_TOKEN_THRESHOLD', 'runtime.performance.compactionThreshold');
   }
 
+  if (process.env.OPENCLAW_SESSION_RETAIN_COUNT) {
+    warnDeprecatedEnvVar('OPENCLAW_SESSION_RETAIN_COUNT', 'runtime.session.retainCount');
+  }
+
+  if (process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD) {
+    warnDeprecatedEnvVar('OPENCLAW_SESSION_COMPACTION_THRESHOLD', 'runtime.session.compactionThreshold');
+  }
+
+  if (process.env.OPENCLAW_HISTORY_CAP_BYTES) {
+    warnDeprecatedEnvVar('OPENCLAW_HISTORY_CAP_BYTES', 'runtime.session.historyCapBytes');
+  }
+
+  if (process.env.OPENCLAW_HISTORY_RETENTION_DAYS) {
+    warnDeprecatedEnvVar('OPENCLAW_HISTORY_RETENTION_DAYS', 'runtime.session.historyRetentionDays');
+  }
+
+  if (process.env.OPENCLAW_MEMORY_DECAY_HALF_LIFE_DAYS) {
+    warnDeprecatedEnvVar('OPENCLAW_MEMORY_DECAY_HALF_LIFE_DAYS', 'runtime.memory.decay.halfLifeDays');
+  }
+
+  if (process.env.OPENCLAW_MEMORY_DECAY_FLOOR) {
+    warnDeprecatedEnvVar('OPENCLAW_MEMORY_DECAY_FLOOR', 'runtime.memory.decay.floor');
+  }
+
+  if (process.env.OPENCLAW_OFFLOAD_TOKEN_THRESHOLD) {
+    warnDeprecatedEnvVar('OPENCLAW_OFFLOAD_TOKEN_THRESHOLD', 'runtime.memory.decay.offloadTokenThreshold');
+  }
+
+  if (process.env.OPENCLAW_MEMORY_DIR) {
+    warnDeprecatedEnvVar('OPENCLAW_MEMORY_DIR', 'runtime.memory.decay.memoryDir');
+  }
+
+  if (process.env.OPENCLAW_WORKSPACE_DIR) {
+    warnDeprecatedEnvVar('OPENCLAW_WORKSPACE_DIR', 'runtime.paths.workspaceDir');
+  }
+
+  if (process.env.OPENCLAW_SKILLS_DIR) {
+    warnDeprecatedEnvVar('OPENCLAW_SKILLS_DIR', 'runtime.paths.skillsDir');
+  }
+
+  if (process.env.OPENCLAW_APP_URL) {
+    warnDeprecatedEnvVar('OPENCLAW_APP_URL', 'runtime.network.appUrl');
+  }
+
+  if (process.env.OPENCLAW_ALLOWED_ORIGINS) {
+    warnDeprecatedEnvVar('OPENCLAW_ALLOWED_ORIGINS', 'runtime.network.allowedOrigins');
+  }
+
+  if (process.env.OPENCLAW_WS_PORT) {
+    warnDeprecatedEnvVar('OPENCLAW_WS_PORT', 'runtime.websocket.port');
+  }
+
+  if (process.env.OPENCLAW_WS_URL) {
+    warnDeprecatedEnvVar('OPENCLAW_WS_URL', 'runtime.websocket.url');
+  }
+
   const rawMaxDepth = parseInt(process.env.OPENCLAW_MAX_SPAWN_DEPTH ?? '', 10);
   const envMaxSpawnDepth = Number.isInteger(rawMaxDepth) && rawMaxDepth > 0 ? rawMaxDepth : undefined;
 
@@ -220,7 +320,45 @@ export function getRuntimeConfig(): RuntimeBehaviorConfig {
   const rawThreshold = process.env.OPENCLAW_SESSION_TOKEN_THRESHOLD
     ? Number.parseFloat(process.env.OPENCLAW_SESSION_TOKEN_THRESHOLD)
     : Number.NaN;
-  const envCompactionThreshold = Number.isFinite(rawThreshold) ? rawThreshold : undefined;
+  const envPerfCompactionThreshold = Number.isFinite(rawThreshold) ? rawThreshold : undefined;
+
+  // Session env fallbacks
+  const rawSessionRetainCount = parseInt(process.env.OPENCLAW_SESSION_RETAIN_COUNT ?? '', 10);
+  const envSessionRetainCount = Number.isInteger(rawSessionRetainCount) && rawSessionRetainCount > 0 ? rawSessionRetainCount : undefined;
+
+  const rawSessionCompactionThreshold = parseInt(process.env.OPENCLAW_SESSION_COMPACTION_THRESHOLD ?? '', 10);
+  const envSessionCompactionThreshold = Number.isInteger(rawSessionCompactionThreshold) && rawSessionCompactionThreshold > 0 ? rawSessionCompactionThreshold : undefined;
+
+  const rawHistoryCapBytes = parseInt(process.env.OPENCLAW_HISTORY_CAP_BYTES ?? '', 10);
+  const envHistoryCapBytes = Number.isInteger(rawHistoryCapBytes) && rawHistoryCapBytes > 0 ? rawHistoryCapBytes : undefined;
+
+  const rawHistoryRetentionDays = parseInt(process.env.OPENCLAW_HISTORY_RETENTION_DAYS ?? '', 10);
+  const envHistoryRetentionDays = Number.isInteger(rawHistoryRetentionDays) && rawHistoryRetentionDays > 0 ? rawHistoryRetentionDays : undefined;
+
+  // Memory decay env fallbacks
+  const rawDecayHalfLife = parseFloat(process.env.OPENCLAW_MEMORY_DECAY_HALF_LIFE_DAYS ?? '');
+  const envDecayHalfLife = Number.isFinite(rawDecayHalfLife) && rawDecayHalfLife > 0 ? rawDecayHalfLife : undefined;
+
+  const rawDecayFloor = parseFloat(process.env.OPENCLAW_MEMORY_DECAY_FLOOR ?? '');
+  const envDecayFloor = Number.isFinite(rawDecayFloor) && rawDecayFloor >= 0 && rawDecayFloor <= 1 ? rawDecayFloor : undefined;
+
+  const rawOffloadThreshold = parseInt(process.env.OPENCLAW_OFFLOAD_TOKEN_THRESHOLD ?? '', 10);
+  const envOffloadTokenThreshold = Number.isInteger(rawOffloadThreshold) && rawOffloadThreshold > 0 ? rawOffloadThreshold : undefined;
+
+  // Paths env fallbacks
+  const envWorkspaceDir = process.env.OPENCLAW_WORKSPACE_DIR;
+  const envSkillsDir = process.env.OPENCLAW_SKILLS_DIR;
+
+  // Network env fallbacks
+  const envAppUrl = process.env.OPENCLAW_APP_URL;
+  const envAllowedOrigins = process.env.OPENCLAW_ALLOWED_ORIGINS
+    ? process.env.OPENCLAW_ALLOWED_ORIGINS.split(',').map(o => o.trim()).filter(Boolean)
+    : undefined;
+
+  // Websocket env fallbacks
+  const rawWsPort = parseInt(process.env.OPENCLAW_WS_PORT ?? '', 10);
+  const envWsPort = Number.isInteger(rawWsPort) && rawWsPort > 0 ? rawWsPort : undefined;
+  const envWsUrl = process.env.OPENCLAW_WS_URL;
 
   const defaults = getDefaults();
   const configuredExec = runtime?.exec;
@@ -245,7 +383,25 @@ export function getRuntimeConfig(): RuntimeBehaviorConfig {
       heartbeatInterval: runtime?.performance?.heartbeatInterval ?? defaults.performance.heartbeatInterval,
       deliveryBatchSize: runtime?.performance?.deliveryBatchSize ?? defaults.performance.deliveryBatchSize,
       contextWindow: runtime?.performance?.contextWindow ?? defaults.performance.contextWindow,
-      compactionThreshold: runtime?.performance?.compactionThreshold ?? envCompactionThreshold ?? defaults.performance.compactionThreshold,
+      compactionThreshold: runtime?.performance?.compactionThreshold ?? envPerfCompactionThreshold ?? defaults.performance.compactionThreshold,
+    },
+    session: {
+      retainCount: runtime?.session?.retainCount ?? envSessionRetainCount ?? defaults.session.retainCount,
+      compactionThreshold: runtime?.session?.compactionThreshold ?? envSessionCompactionThreshold ?? defaults.session.compactionThreshold,
+      historyCapBytes: runtime?.session?.historyCapBytes ?? envHistoryCapBytes ?? defaults.session.historyCapBytes,
+      historyRetentionDays: runtime?.session?.historyRetentionDays ?? envHistoryRetentionDays ?? defaults.session.historyRetentionDays,
+    },
+    paths: {
+      workspaceDir: runtime?.paths?.workspaceDir ?? envWorkspaceDir ?? defaults.paths.workspaceDir,
+      skillsDir: runtime?.paths?.skillsDir ?? envSkillsDir ?? defaults.paths.skillsDir,
+    },
+    network: {
+      appUrl: runtime?.network?.appUrl ?? envAppUrl ?? defaults.network.appUrl,
+      allowedOrigins: runtime?.network?.allowedOrigins ?? envAllowedOrigins ?? defaults.network.allowedOrigins,
+    },
+    websocket: {
+      port: runtime?.websocket?.port ?? envWsPort ?? defaults.websocket.port,
+      url: runtime?.websocket?.url ?? envWsUrl ?? defaults.websocket.url,
     },
     exec: {
       enabled: configuredExec?.enabled ?? defaults.exec.enabled,
@@ -345,6 +501,77 @@ export function getTelegramConfig(): ResolvedTelegramConfig | null {
 }
 
 export function getOffloadTokenThreshold(): number {
+  const runtime = getRuntimeConfig();
+  const fromMemory = runtime.memory.decay;
+  if (fromMemory?.offloadTokenThreshold) {
+    return fromMemory.offloadTokenThreshold;
+  }
+  // Legacy env fallback
   const raw = parseInt(process.env.OPENCLAW_OFFLOAD_TOKEN_THRESHOLD ?? '', 10);
   return Number.isInteger(raw) && raw > 0 ? raw : 2000;
+}
+
+export function getSessionConfig(): RuntimeBehaviorConfig['session'] {
+  return getRuntimeConfig().session;
+}
+
+export function getPathsConfig(): RuntimeBehaviorConfig['paths'] {
+  return getRuntimeConfig().paths;
+}
+
+export function getNetworkConfig(): RuntimeBehaviorConfig['network'] {
+  return getRuntimeConfig().network;
+}
+
+export function getWebsocketConfig(): RuntimeBehaviorConfig['websocket'] {
+  return getRuntimeConfig().websocket;
+}
+
+export interface ResolvedWhatsAppConfig {
+  enabled: boolean;
+  authDir: string;
+}
+
+export function getWhatsAppConfig(): ResolvedWhatsAppConfig {
+  const channels = getChannelsConfig();
+  const defaults = {
+    enabled: false,
+    authDir: 'data/whatsapp-auth',
+  };
+
+  // Legacy env fallbacks
+  const envEnabled = process.env.WHATSAPP_ENABLED === 'true';
+  const envAuthDir = process.env.WHATSAPP_AUTH_DIR;
+
+  const whatsapp = channels?.whatsapp;
+
+  if (process.env.WHATSAPP_ENABLED) {
+    warnDeprecatedEnvVar('WHATSAPP_ENABLED', 'channels.whatsapp.enabled');
+  }
+  if (process.env.WHATSAPP_AUTH_DIR) {
+    warnDeprecatedEnvVar('WHATSAPP_AUTH_DIR', 'channels.whatsapp.authDir');
+  }
+
+  return {
+    enabled: whatsapp?.enabled ?? envEnabled ?? defaults.enabled,
+    authDir: whatsapp?.authDir ?? envAuthDir ?? defaults.authDir,
+  };
+}
+
+export function getMemoryDecayConfig(): NonNullable<RuntimeBehaviorConfig['memory']['decay']> {
+  const runtime = getRuntimeConfig();
+  const defaults = {
+    halfLifeDays: 14,
+    floor: 0.1,
+    offloadTokenThreshold: 2000,
+    memoryDir: path.join(process.cwd(), 'data', 'memories'),
+  };
+
+  const decay = runtime.memory.decay;
+  return {
+    halfLifeDays: decay?.halfLifeDays ?? defaults.halfLifeDays,
+    floor: decay?.floor ?? defaults.floor,
+    offloadTokenThreshold: decay?.offloadTokenThreshold ?? defaults.offloadTokenThreshold,
+    memoryDir: decay?.memoryDir ?? defaults.memoryDir,
+  };
 }

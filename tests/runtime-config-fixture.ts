@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import type { RuntimeConfig, RuntimeSectionConfig } from '../src/lib/config/schema';
+import type { AgentConfig, RuntimeConfig, RuntimeSectionConfig } from '../src/lib/config/schema';
 
 interface RuntimeProviderConfig {
   apiType: string;
@@ -14,6 +14,7 @@ interface RuntimeAgentConfig {
   model: string;
   fallbackProvider?: string;
   fallbackModel?: string;
+  generation?: AgentConfig['generation'];
 }
 
 interface RuntimeConfigFixtureData {
