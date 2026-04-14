@@ -198,6 +198,18 @@ test('6.4 /providers lists all configured providers', async () => {
   expect(result.response).toContain('openrouter');
 });
 
+test('6.4b /help is handled as a deterministic slash command', async () => {
+  const agent = await createAgent('Test Agent');
+  const session = await createSession(agent.id, 'test-6-4b');
+  const task = await createMessageTask(agent.id, session.id, '/help');
+
+  const result = await agentExecutor.executeTask(task.id);
+  expect(result.success).toBe(true);
+  expect(result.response).toContain('**Help**');
+  expect(result.response).toContain('You can talk to me in plain English');
+  expect(result.response).toContain('For greetings or status checks, I should just reply directly without testing tools.');
+});
+
 test('6.5 session isolation: multiple sessions maintain independent provider state', async () => {
   const agent = await createAgent('Test Agent');
   const sessionA = await createSession(agent.id, 'test-6-5-a');
@@ -232,6 +244,7 @@ test('6.6 new session uses config defaults, not previous session switches', asyn
 });
 
 test('command-parser correctly parses all command types', () => {
+  expect(commandParser.parseCommand('/help')).toEqual({ type: 'help' });
   expect(commandParser.parseCommand('/providers')).toEqual({ type: 'list-providers' });
   expect(commandParser.parseCommand('/provider anthropic')).toEqual({ type: 'switch-provider', providerName: 'anthropic' });
   expect(commandParser.parseCommand('/model gpt-4.1-mini')).toEqual({ type: 'switch-model', modelName: 'gpt-4.1-mini' });

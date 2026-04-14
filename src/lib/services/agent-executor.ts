@@ -237,6 +237,10 @@ class AgentExecutorService {
         if (command.type !== 'not-command') {
           return await this.executeCommand(taskId, task, command, msgPayload);
         }
+        const fastPathResponse = this.buildConversationalFastPathResponse(msgPayload.content ?? '');
+        if (fastPathResponse) {
+          return await this.executeImmediateResponse(taskId, task, msgPayload, fastPathResponse);
+        }
       }
 
       const subagentPayload = task.payload as {
@@ -548,6 +552,21 @@ class AgentExecutorService {
     const sessionId = task.sessionId!;
     const commandResponse = this.buildCommandResponse(command, sessionId);
 
+    return this.executeImmediateResponse(taskId, task, payload, commandResponse);
+  }
+
+  private async executeImmediateResponse(
+    taskId: string,
+    task: Task,
+    payload: {
+      content?: string;
+      sender?: string;
+      channel?: ChannelType;
+      channelKey?: string;
+      deliveryTarget?: DeliveryTarget;
+    },
+    responseText: string,
+  ): Promise<ExecutionResult> {
     if (task.sessionId) {
       try {
         await sessionService.appendToContext(task.sessionId, {
@@ -559,7 +578,7 @@ class AgentExecutorService {
         });
         await sessionService.appendToContext(task.sessionId, {
           role: 'assistant',
-          content: commandResponse,
+          content: responseText,
           channel: payload.channel,
           channelKey: payload.channelKey,
         });
@@ -570,12 +589,12 @@ class AgentExecutorService {
     }
 
     const taskResult = {
-      response: commandResponse,
+      response: responseText,
       taskType: task.type,
       toolCalls: [] as { tool: string; success: boolean }[],
     };
     const deliveryTarget = payload.deliveryTarget ?? this.buildFallbackDeliveryTarget(payload);
-    const shouldAutoDeliver = commandResponse.trim().length > 0 && !!deliveryTarget;
+    const shouldAutoDeliver = responseText.trim().length > 0 && !!deliveryTarget;
 
     if (shouldAutoDeliver && deliveryTarget) {
       await db.$transaction(async (tx) => {
@@ -586,7 +605,7 @@ class AgentExecutorService {
           deliveryTarget.channel,
           deliveryTarget.channelKey,
           JSON.stringify(deliveryTarget),
-          commandResponse,
+          responseText,
           `task:${taskId}`,
         );
       });
@@ -595,13 +614,33 @@ class AgentExecutorService {
       await taskQueue.completeTask(taskId, taskResult);
     }
 
-    await this.runPostCommitSideEffects(task.agentId, taskId, task, commandResponse, []);
+    await this.runPostCommitSideEffects(task.agentId, taskId, task, responseText, []);
 
-    return { success: true, response: commandResponse, actions: [], toolCalls: [] };
+    return { success: true, response: responseText, actions: [], toolCalls: [] };
   }
 
   private buildCommandResponse(command: ParsedCommand, sessionId: string): string {
     switch (command.type) {
+      case 'help': {
+        return `**Help**
+
+You can talk to me in plain English. I can:
+
+- Inspect the workspace, memory, and files
+- Run supported tools when you ask for a specific action
+- Use the runtime for commands and process inspection
+- Search/fetch the web
+- Coordinate sub-agents for focused work
+
+Examples:
+- \`list files\`
+- \`calculate 37*19\`
+- \`run command: pwd\`
+- \`search the web for OpenAI API pricing\`
+- \`spawn a researcher to compare two hosting providers\`
+
+For greetings or status checks, I should just reply directly without testing tools.`;
+      }
       case 'list-providers': {
         const providers = sessionProviderState.listProviders();
         return `Available providers: ${providers.join(', ')}`;
@@ -623,6 +662,27 @@ class AgentExecutorService {
       default:
         return 'Unknown command';
     }
+  }
+
+  private buildConversationalFastPathResponse(content: string): string | null {
+    const normalized = content.trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+
+    if (/^(hello|hi|hey|hello there|hey there|yo)([!?., ]*)$/.test(normalized)) {
+      return 'Hey — I\'m here.';
+    }
+
+    if (/^(are you there|are you there\?\?*|you there)([!?., ]*)$/.test(normalized)) {
+      return 'Yep — I\'m here and listening.';
+    }
+
+    if (/^(what happened|what happened\?\?*|what\'s going on|whats going on)([!?., ]*)$/.test(normalized)) {
+      return 'I got stuck and failed to send a proper reply. I should answer simple status messages directly instead of testing tools.';
+    }
+
+    return null;
   }
 
   private buildFallbackDeliveryTarget(payload: {
@@ -911,9 +971,16 @@ class AgentExecutorService {
       '- Only say a tool worked, failed, or was tested if you actually invoked it in the current task or can cite it from the current session context.',
       '- If you cannot finish because of a hard blocker, say exactly what remains and what blocked you.',
     ].join('\n');
+    const messageTaskPolicy = task.type === 'message' ? [
+      '## Message Task Policy',
+      '- For greetings ("hello", "hi"), status checks ("are you there?", "what happened?"), or simple chat: respond conversationally without calling any tools.',
+      '- Only use tools when the user asks you to DO something specific (run a command, search, calculate, write a note, etc.).',
+      '- Do not "explore" or "test" tools unless explicitly asked.',
+      '- Always send a response back to the user. An empty response is a failure.',
+    ].join('\n') : '';
     const mcpDirectory = mcpService.buildMcpDirectory();
 
-    return [workspaceContext, heartbeatContext, mcpDirectory, skillSection, runtimeSection, executionPolicy]
+    return [workspaceContext, heartbeatContext, mcpDirectory, skillSection, runtimeSection, executionPolicy, messageTaskPolicy]
       .filter(section => section.trim().length > 0)
       .join('\n\n');
   }
@@ -1002,7 +1069,13 @@ Channel: ${payload.channel}
 Sender: ${payload.sender || 'Unknown'}
 Content: ${payload.content}${attachmentsSection}
 
-Complete the user's request directly. Use tools when they reduce guesswork. Do not ask whether to continue if the user already told you to proceed; either finish the work you can do now or explain the specific blocker.`;
+RESPONSE INSTRUCTIONS:
+- For greetings, simple questions about your status, or casual chat: reply conversationally WITHOUT using any tools.
+- Only use tools when the user explicitly asks you to perform an action (run commands, search, file operations, etc.).
+- Complete the user's request directly.
+- Complete the task in this turn when possible. Do not ask to continue if the user already said to proceed.
+- Do not ask whether to continue if the user already told you to proceed.
+- You MUST provide a response. An empty reply fails the user.`;
       }
 
       case 'heartbeat':

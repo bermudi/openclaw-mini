@@ -195,8 +195,14 @@ beforeAll(async () => {
   fs.mkdirSync(path.dirname(TEST_DB_PATH), { recursive: true });
   captureInitialMemoryDirs();
 
+  for (const sqlitePath of [TEST_DB_PATH, `${TEST_DB_PATH}-shm`, `${TEST_DB_PATH}-wal`]) {
+    if (fs.existsSync(sqlitePath)) {
+      fs.rmSync(sqlitePath, { force: true });
+    }
+  }
+
   const dbPush = Bun.spawnSync({
-    cmd: ['bunx', 'prisma', 'db', 'push'],
+    cmd: ['bunx', 'prisma', 'db', 'push', '--accept-data-loss'],
     env: { ...process.env, DATABASE_URL: TEST_DB_URL, NO_ENV_FILE: '1' },
     stdout: 'pipe',
     stderr: 'pipe',
@@ -1639,6 +1645,115 @@ test('message tasks include execution policy to finish explicit requests in the 
   expect(lastSystemPrompt).toContain('do not ask for permission to continue');
   expect(lastPrompt).toContain('Complete the user\'s request directly.');
   expect(lastPrompt).toContain('Do not ask whether to continue if the user already told you to proceed');
+});
+
+test('message tasks include message task policy to prevent unnecessary tool calls', async () => {
+  const agent = await agentService.createAgent({ name: 'Message Policy Agent' });
+  const task = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    priority: 3,
+    payload: {
+      channel: 'telegram',
+      channelKey: 'chat-903',
+      sender: 'tester',
+      content: 'hello there',
+    },
+  });
+
+  const execResult = await agentExecutor.executeTask(task.id);
+  if (!execResult.success) {
+    throw new Error(`Executor failed: ${execResult.error ?? 'unknown error'}`);
+  }
+
+  expect(execResult.response).toBe('stub response');
+  expect(lastSystemPrompt).toContain('## Message Task Policy');
+  expect(lastSystemPrompt).toContain('For greetings ("hello", "hi"), status checks');
+  expect(lastSystemPrompt).toContain('respond conversationally without calling any tools');
+  expect(lastSystemPrompt).toContain('Only use tools when the user asks you to DO something specific');
+  expect(lastSystemPrompt).toContain('Do not "explore" or "test" tools unless explicitly asked');
+  expect(lastPrompt).toContain('For greetings, simple questions about your status, or casual chat: reply conversationally WITHOUT using any tools');
+  expect(lastPrompt).toContain('You MUST provide a response. An empty reply fails the user.');
+});
+
+test('message greetings use fast path and bypass model execution', async () => {
+  const agent = await agentService.createAgent({ name: 'Greeting Fast Path Agent' });
+  const session = await db.session.create({
+    data: { agentId: agent.id, channel: 'telegram', channelKey: 'chat-fastpath-1', sessionScope: 'fastpath-greeting' },
+  });
+  const task = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    priority: 3,
+    sessionId: session.id,
+    payload: {
+      channel: 'telegram',
+      channelKey: 'chat-fastpath-1',
+      sender: 'tester',
+      content: 'hello?',
+    },
+  });
+
+  const execResult = await agentExecutor.executeTask(task.id);
+  if (!execResult.success) {
+    throw new Error(`Executor failed: ${execResult.error ?? 'unknown error'}`);
+  }
+
+  expect(execResult.response).toBe("Hey — I'm here.");
+  expect(execResult.toolCalls).toEqual([]);
+  expect(lastSystemPrompt).toBe('');
+  expect(lastPrompt).toBe('');
+  expect(lastToolNames).toEqual([]);
+});
+
+test('message status checks use fast path and explain prior failure without model execution', async () => {
+  const agent = await agentService.createAgent({ name: 'Status Fast Path Agent' });
+  const session = await db.session.create({
+    data: { agentId: agent.id, channel: 'telegram', channelKey: 'chat-fastpath-2', sessionScope: 'fastpath-status' },
+  });
+  const task = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'message',
+    priority: 3,
+    sessionId: session.id,
+    payload: {
+      channel: 'telegram',
+      channelKey: 'chat-fastpath-2',
+      sender: 'tester',
+      content: 'what happened?',
+    },
+  });
+
+  const execResult = await agentExecutor.executeTask(task.id);
+  if (!execResult.success) {
+    throw new Error(`Executor failed: ${execResult.error ?? 'unknown error'}`);
+  }
+
+  expect(execResult.response).toContain('I got stuck and failed to send a proper reply');
+  expect(execResult.response).toContain('instead of testing tools');
+  expect(execResult.toolCalls).toEqual([]);
+  expect(lastSystemPrompt).toBe('');
+  expect(lastPrompt).toBe('');
+  expect(lastToolNames).toEqual([]);
+});
+
+test('non-message tasks do not include message task policy', async () => {
+  const agent = await agentService.createAgent({ name: 'Non-Message Policy Agent' });
+  const task = await taskQueue.createTask({
+    agentId: agent.id,
+    type: 'heartbeat',
+    priority: 3,
+    payload: {},
+  });
+
+  const execResult = await agentExecutor.executeTask(task.id);
+  if (!execResult.success) {
+    throw new Error(`Executor failed: ${execResult.error ?? 'unknown error'}`);
+  }
+
+  expect(execResult.response).toBe('stub response');
+  expect(lastSystemPrompt).not.toContain('## Message Task Policy');
+  expect(lastSystemPrompt).toContain('## Execution Policy');
 });
 
 test('message tasks forward agent generation config into model calls', async () => {

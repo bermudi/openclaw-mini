@@ -56,3 +56,5 @@ server.log
 /data/memories/
 prisma/db/*.db-shm
 prisma/db/*.db-wal
+db/*.db-shm
+db/*.db-wal

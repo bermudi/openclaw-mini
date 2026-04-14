@@ -2,6 +2,7 @@
 // Parse inline slash commands from message content
 
 export type ParsedCommand =
+  | { type: 'help' }
   | { type: 'switch-provider'; providerName: string }
   | { type: 'switch-model'; modelName: string }
   | { type: 'list-providers' }
@@ -10,6 +11,10 @@ export type ParsedCommand =
 
 export function parseCommand(content: string): ParsedCommand {
   const trimmed = content.trim();
+
+  if (trimmed === '/help') {
+    return { type: 'help' };
+  }
 
   if (trimmed === '/providers') {
     return { type: 'list-providers' };
