@@ -560,6 +560,102 @@ test('scheduler health sweep marks unrecoverable stale busy agents as error', as
   expect(taskRecord?.status).toBe('processing')
 })
 
+test('sweepErrorAgents recovers error-state agents and fails their stale processing tasks', async () => {
+  const agent = await db.agent.create({
+    data: { name: 'error-recovery-agent' },
+  })
+  // Simulate a task stuck in processing from a crashed run
+  const task = await db.task.create({
+    data: {
+      agentId: agent.id,
+      type: 'message',
+      status: 'processing',
+      payload: JSON.stringify({ text: 'stuck' }),
+      startedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+    },
+  })
+  await db.agent.update({ where: { id: agent.id }, data: { status: 'error' } })
+
+  // Verify preconditions
+  let agentRecord = await db.agent.findUnique({ where: { id: agent.id } })
+  expect(agentRecord?.status).toBe('error')
+
+  // Run the sweep directly
+  const result = await taskQueue.sweepErrorAgents()
+  expect(result.inspected).toBe(1)
+  expect(result.recovered).toBe(1)
+  expect(result.tasksFailed).toBe(1)
+
+  agentRecord = await db.agent.findUnique({ where: { id: agent.id } })
+  expect(agentRecord?.status).toBe('idle')
+
+  const taskRecord = await db.task.findUnique({ where: { id: task.id } })
+  expect(taskRecord?.status).toBe('failed')
+  expect(taskRecord?.error).toContain('Recovered from error state')
+
+  const auditLog = await db.auditLog.findFirst({
+    where: {
+      entityType: 'agent',
+      entityId: agent.id,
+      action: 'agent_recovered_from_error',
+    },
+    orderBy: { createdAt: 'desc' },
+  })
+  expect(auditLog).not.toBeNull()
+})
+
+test('sweepErrorAgents via scheduler health recovers error-state agents', async () => {
+  const agent = await db.agent.create({
+    data: { name: 'error-health-agent' },
+  })
+  await db.agent.update({ where: { id: agent.id }, data: { status: 'error' } })
+
+  const response = await schedulerHealthRoute.POST(bearerRequest('http://localhost/api/scheduler/health', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      processDeliveries: false,
+      sweepOrphanedSubagents: false,
+      sweepStaleBusyAgents: false,
+      sweepErrorAgents: true,
+      cleanupOldTasks: false,
+    }),
+  }))
+
+  const body = await response.json() as {
+    success: boolean;
+    data: {
+      errorAgents: {
+        inspected: number;
+        recovered: number;
+        tasksFailed: number;
+      } | null;
+    };
+  }
+
+  expect(response.status).toBe(200)
+  expect(body.success).toBe(true)
+  expect(body.data.errorAgents?.recovered).toBe(1)
+
+  const updatedAgent = await db.agent.findUnique({ where: { id: agent.id } })
+  expect(updatedAgent?.status).toBe('idle')
+})
+
+test('sweepErrorAgents returns empty when no error agents exist', async () => {
+  const agent = await db.agent.create({
+    data: { name: 'healthy-agent' },
+  })
+  // Agent is idle, not error
+
+  const result = await taskQueue.sweepErrorAgents()
+  expect(result.inspected).toBe(0)
+  expect(result.recovered).toBe(0)
+  expect(result.tasksFailed).toBe(0)
+
+  const agentRecord = await db.agent.findUnique({ where: { id: agent.id } })
+  expect(agentRecord?.status).toBe('idle')
+})
+
 test('sqlite busy helper maps lock errors to 503 guidance', () => {
   const response = storageErrorResponse(new Error('SQLITE_BUSY: database is locked'))
 

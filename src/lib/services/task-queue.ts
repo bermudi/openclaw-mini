@@ -17,6 +17,12 @@ export interface BusyAgentRecoveryResult {
   errored: number;
 }
 
+export interface ErrorAgentRecoveryResult {
+  inspected: number;
+  recovered: number;
+  tasksFailed: number;
+}
+
 export interface CreateTaskInput {
   agentId: string;
   sessionId?: string;
@@ -480,6 +486,75 @@ class TaskQueueService {
       recovered,
       errored,
     };
+  }
+
+  /**
+   * Recover agents stuck in 'error' status back to 'idle'.
+   *
+   * When sweepStaleBusyAgents transitions an agent to 'error', nothing ever
+   * resets it back to 'idle', so the agent is permanently dead. This sweep
+   * fails any remaining processing tasks for error-state agents and
+   * returns them to 'idle' so they can resume work.
+   */
+  async sweepErrorAgents(): Promise<ErrorAgentRecoveryResult> {
+    const errorAgents = await db.agent.findMany({
+      where: { status: 'error' },
+      select: { id: true, name: true },
+    });
+
+    if (errorAgents.length === 0) {
+      return { inspected: 0, recovered: 0, tasksFailed: 0 };
+    }
+
+    let recovered = 0;
+    let tasksFailed = 0;
+
+    for (const agent of errorAgents) {
+      try {
+        // Fail any tasks still in 'processing' for this agent
+        const staleTasks = await db.task.findMany({
+          where: {
+            agentId: agent.id,
+            status: 'processing',
+          },
+          select: { id: true },
+        });
+
+        for (const task of staleTasks) {
+          await db.$transaction(
+            async (tx) => this.failTaskTx(tx, task.id, 'Recovered from error state: task was stuck in processing'),
+            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+          );
+          tasksFailed += 1;
+        }
+
+        // Reset agent from error → idle. Use a broad where to avoid racing with
+        // failTaskSideEffects which may have already set it to idle.
+        const resetResult = await db.agent.updateMany({
+          where: { id: agent.id, status: { in: ['error', 'busy', 'idle'] } },
+          data: { status: 'idle' },
+        });
+
+        if (resetResult.count >= 1) {
+          recovered += 1;
+          await auditService.log({
+            action: 'agent_recovered_from_error',
+            entityType: 'agent',
+            entityId: agent.id,
+            details: {
+              agentName: agent.name,
+              reason: 'error_state_recovered',
+              previousStatus: 'error',
+              staleTasksFailed: staleTasks.length,
+            },
+          });
+        }
+      } catch (error) {
+        console.error('[TaskQueue] Failed to recover error agent:', agent.id, error);
+      }
+    }
+
+    return { inspected: errorAgents.length, recovered, tasksFailed };
   }
 
   /**
