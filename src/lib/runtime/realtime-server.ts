@@ -148,14 +148,16 @@ export class RuntimeRealtimeServer {
     this.httpServer = null;
     this.startPromise = null;
 
+    // Close Socket.IO first (also closes the underlying http server)
     if (io) {
-      const closePromise = io.close();
-      this.destroyOpenConnections();
-      await closePromise;
-      return;
-    }
-
-    if (httpServer) {
+      try {
+        const closePromise = io.close();
+        this.destroyOpenConnections();
+        await closePromise;
+      } catch (error) {
+        console.error('[RealtimeServer] Error closing Socket.IO:', error);
+      }
+    } else if (httpServer) {
       await new Promise<void>((resolve, reject) => {
         if (!httpServer.listening) {
           resolve();

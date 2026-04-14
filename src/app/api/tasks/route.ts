@@ -7,6 +7,8 @@ import { taskQueue } from '@/lib/services/task-queue';
 import { requireInternalAuth } from '@/lib/api-auth';
 import { storageErrorResponse } from '@/lib/api/storage-errors';
 
+const VALID_TASK_TYPES = new Set(['message', 'heartbeat', 'cron', 'webhook', 'hook', 'a2a']);
+
 // GET /api/tasks - List tasks with optional filters
 export async function GET(request: NextRequest) {
   return withInit(async () => {
@@ -18,7 +20,8 @@ export async function GET(request: NextRequest) {
       const agentId = searchParams.get('agentId') ?? undefined;
       const status = searchParams.get('status') ?? undefined;
       const type = searchParams.get('type') ?? undefined;
-      const limit = searchParams.get('limit') ? parseInt(searchParams.get('limit')!) : 50;
+      const rawLimit = searchParams.get('limit') ? parseInt(searchParams.get('limit')!, 10) : 50;
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 50;
 
       const tasks = await taskQueue.getTasks({
         agentId,
@@ -60,6 +63,20 @@ export async function POST(request: NextRequest) {
       if (!agentId || !type || !payload) {
         return NextResponse.json(
           { success: false, error: 'agentId, type, and payload are required' },
+          { status: 400 }
+        );
+      }
+
+      if (!VALID_TASK_TYPES.has(type)) {
+        return NextResponse.json(
+          { success: false, error: `Invalid task type "${type}". Must be one of: ${[...VALID_TASK_TYPES].join(', ')}` },
+          { status: 400 }
+        );
+      }
+
+      if (priority !== undefined && (typeof priority !== 'number' || !Number.isFinite(priority) || priority < 0 || priority > 10)) {
+        return NextResponse.json(
+          { success: false, error: 'priority must be a number between 0 and 10' },
           { status: 400 }
         );
       }

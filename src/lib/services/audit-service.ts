@@ -4,6 +4,14 @@
 import { db } from '@/lib/db';
 import { getRuntimeConfig } from '@/lib/config/runtime';
 
+function safeParseJson(raw: string): Record<string, unknown> {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { _raw: raw };
+  }
+}
+
 export interface AuditLogEntry {
   action: string;
   entityType: string;
@@ -59,7 +67,7 @@ class AuditService {
     return logs.map(log => ({
       id: log.id,
       action: log.action,
-      details: JSON.parse(log.details),
+      details: safeParseJson(log.details),
       severity: log.severity,
       createdAt: log.createdAt,
     }));
@@ -97,7 +105,7 @@ class AuditService {
       action: log.action,
       entityType: log.entityType,
       entityId: log.entityId,
-      details: JSON.parse(log.details),
+      details: safeParseJson(log.details),
       severity: log.severity,
       createdAt: log.createdAt,
     }));

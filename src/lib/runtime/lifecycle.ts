@@ -109,16 +109,18 @@ export class RuntimeLifecycleManager {
       this.cleanupTask = null;
     }
 
-    await this.stopAdapters(getRegisteredAdapters());
-    await this.realtimeServer.stop();
-    await db.$disconnect();
-
-    this.dispatchingAgents.clear();
-    this.adapterWasConnected.clear();
-    this.state = 'stopped';
-    this.readinessError = null;
-    this.startPromise = null;
-    this.stopPromise = null;
+    try {
+      await this.stopAdapters(getRegisteredAdapters());
+      await this.realtimeServer.stop();
+      await db.$disconnect();
+    } finally {
+      this.dispatchingAgents.clear();
+      this.adapterWasConnected.clear();
+      this.state = 'stopped';
+      this.readinessError = null;
+      this.startPromise = null;
+      this.stopPromise = null;
+    }
   }
 
   getReadinessSnapshot(): RuntimeReadinessSnapshot {
@@ -333,18 +335,21 @@ export class RuntimeLifecycleManager {
 
   private async startAdapters(adapters: ChannelAdapter[]): Promise<void> {
     for (const adapter of adapters) {
-      this.adapterWasConnected.set(adapter.channel, adapter.isConnected?.() ?? false);
+      const wasConnectedBefore = adapter.isConnected?.() ?? false;
+      this.adapterWasConnected.set(adapter.channel, wasConnectedBefore);
+
       if (typeof adapter.start !== 'function') {
         continue;
       }
 
       try {
         await adapter.start();
+        // Only record connected state if start() succeeded
+        this.adapterWasConnected.set(adapter.channel, adapter.isConnected?.() ?? false);
       } catch (error) {
+        // Keep the pre-start connected state so health checks will retry
         console.error(`[Runtime] Adapter start failed (${adapter.channel}):`, error);
       }
-
-      this.adapterWasConnected.set(adapter.channel, adapter.isConnected?.() ?? false);
     }
   }
 

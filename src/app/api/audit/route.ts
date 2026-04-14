@@ -16,12 +16,13 @@ export async function GET(request: NextRequest) {
       const { searchParams } = new URL(request.url);
       const severity = searchParams.get('severity') as 'info' | 'warning' | 'error' | 'critical' | null;
       const action = searchParams.get('action');
-      const limit = searchParams.get('limit') ? parseInt(searchParams.get('limit')!) : 100;
+      const limit = searchParams.get('limit') ? parseInt(searchParams.get('limit')!, 10) : 100;
+      const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 100;
 
       const logs = await auditService.getRecentLogs({
         severity: severity || undefined,
         action: action || undefined,
-        limit,
+        limit: safeLimit,
       });
 
       const stats = await auditService.getStats();

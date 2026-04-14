@@ -609,7 +609,7 @@ function pruneAsyncRegistry(registry: Map<string, AsyncTaskRecord>): void {
   for (const [key, record] of registry) {
     if (terminalStatuses.has(record.status)) {
       const t = new Date(record.createdAt).getTime();
-      if (t < oldestTerminalTime) {
+      if (!Number.isNaN(t) && t < oldestTerminalTime) {
         oldestTerminalTime = t;
         oldestTerminalKey = key;
       }
@@ -626,7 +626,7 @@ function pruneAsyncRegistry(registry: Map<string, AsyncTaskRecord>): void {
 
   for (const [key, record] of registry) {
     const t = new Date(record.createdAt).getTime();
-    if (t < oldestTime) {
+    if (!Number.isNaN(t) && t < oldestTime) {
       oldestTime = t;
       oldestKey = key;
     }
@@ -1073,7 +1073,7 @@ registerTool(
         const content = fs.readFileSync(filePath, 'utf-8');
         return { success: true, data: { filename: safeName, content } };
       } catch (error) {
-        return { success: false, error: `Failed to read file: ${error}` };
+        return { success: false, error: `Failed to read file: ${error instanceof Error ? error.message : String(error)}` };
       }
     },
   }),
@@ -1185,7 +1185,7 @@ registerTool(
 
         return { success: true, data: { filename, path: filePath } };
       } catch (error) {
-        return { success: false, error: `Failed to write note: ${error}` };
+        return { success: false, error: `Failed to write note: ${error instanceof Error ? error.message : String(error)}` };
       }
     },
   }),
@@ -1298,7 +1298,7 @@ registerTool(
 
         return { success: true, data: { files } };
       } catch (error) {
-        return { success: false, error: `Failed to list files: ${error}` };
+        return { success: false, error: `Failed to list files: ${error instanceof Error ? error.message : String(error)}` };
       }
     },
   }),
@@ -1603,7 +1603,7 @@ registerTool(
 
         return { success: false, error: result.error ?? 'Failed to send message' };
       } catch (error) {
-        return { success: false, error: `Failed to send message: ${error}` };
+        return { success: false, error: `Failed to send message: ${error instanceof Error ? error.message : String(error)}` };
       }
     },
   }),
@@ -1640,7 +1640,7 @@ registerTool(
         }
         return { success: false, error: result.error };
       } catch (error) {
-        return { success: false, error: `Failed to log event: ${error}` };
+        return { success: false, error: `Failed to log event: ${error instanceof Error ? error.message : String(error)}` };
       }
     },
   }),
